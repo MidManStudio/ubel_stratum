@@ -243,6 +243,50 @@ compiler sees.
   `At` (`@`) token. `#` was not a lexable character in this language
   at all before this delivery. Needed for the alternate-form flag in
   a format spec (docs/PRINT_FORMAT_RULES.md §4).
+- (this delivery) `handle_logos_token` and the old `tokenize()` outer
+  loop were merged into one new primitive, `next_token`, which
+  produces exactly one real token per call (or `None` at true end of
+  input) instead of dispatch logic that only ever ran from inside
+  `tokenize()`'s own loop. `tokenize()` is now just `next_token()`
+  called in a loop until exhausted, plus the trailing `Eof`. The
+  actual reason for the split: `lexer/string_parser.rs`'s
+  interpolation-hole scanner now drives this exact primitive directly
+  on a fresh `LogosLexer` instance, so a hole's closing brace is found
+  by tracking real tokens instead of a second, separate raw-byte scan.
+  One dispatch path, used both ways, instead of two that could drift
+  apart.
+- (this delivery) Added `take_lexical_errors`, a `pub(crate)`
+  passthrough to the lexer's own `ErrorManager`, so a caller driving
+  `next_token()` directly (rather than going through `tokenize()`'s
+  `Result`) can still learn whether anything failed.
+
+### `lexer/string_parser.rs`
+
+**What it does:** Parses interpolated (`$"..."`), verbatim (`@"..."`),
+and interpolated-verbatim (`$@"..."`) string literals: the outer
+text/hole alternation, escape sequences, and each interpolation hole's
+own token vector.
+
+**Decisions:**
+- (this delivery) `parse_interpolation_expr` (finds a hole's closing
+  `}`) no longer counts raw `{`/`}` bytes to find the boundary. It
+  drives a fresh `LogosLexer` over the rest of the file one token at a
+  time (via the new `next_token` primitive, see `lexer/logos_lexer.rs`
+  above) and tracks depth using genuine `LeftBrace`/`RightBrace`
+  TOKENS. Anything already living inside a nested string, char
+  literal, or comment is consumed atomically by the same dispatch used
+  everywhere else, including recursively for a nested `$"..."`, so it
+  can never be mistaken for a hole boundary the way a raw byte scan
+  would. See "Fixes and Problems" below for the bug this replaces.
+- (this delivery) A hole's own `Vec<Token>` still ends with a synthetic
+  `Eof`, matching what the old two-phase approach (calling `tokenize()`
+  on an isolated substring) produced. This isn't cosmetic:
+  `rd_parser::Cursor::peek_token` clamps its index access on the
+  explicit assumption that every token slice handed to it ends with
+  `Eof` (`tokens[pos.min(len - 1)]`), so a hole's tokens without one
+  would misbehave the moment a real `Parser` consumed them (see
+  `crates/rd_parser/src/parsers/parse_expr.rs`'s `parse_interp`), even
+  though nothing in this crate's own tests would catch it.
 
 ### `lexer/token.rs`
 
@@ -443,6 +487,53 @@ type checking (TYPE-1xx range).
   port, not a wiring job, so it was left alone rather than either fixed
   unasked or deleted outright.
 
+### `lexer/string_parser.rs`
+
+- `parse_interpolation_expr` found a hole's closing `}` by counting raw
+  `{`/`}` bytes with no awareness of strings, char literals, or
+  comments. This happened to come out right whenever whatever was
+  nested inside had internally balanced braces (a plain nested string,
+  even a nested `$"..."`), which is why the language appeared to
+  already "support" nested strings in holes. It broke specifically when
+  something nested contained a genuinely unbalanced brace character,
+  which is ordinary: a string like `"missing an { arg"`, a comment
+  mentioning a brace, a char literal `'{'`. Confirmed empirically with a
+  throwaway probe against the real lexer before choosing a fix, not
+  assumed from reading the code; the doc note this replaces
+  (docs/PRINT_FORMAT_RULES.md's old §8) had slightly mischaracterized
+  the trigger as "any nested string", not specifically an unbalanced
+  one. Three fix options were presented to Abdulhamid: patch the raw
+  scanner to be string/comment-aware by hand, drive the real lexer
+  incrementally, or bulk-tokenize-and-walk. The incremental,
+  token-driven option was chosen for architectural correctness (no
+  duplicated string/comment logic to drift out of sync later) over the
+  smaller diff either of the other two would have been. See
+  `lexer/logos_lexer.rs`'s `next_token` above for the primitive this is
+  built on.
+- Caught during this delivery's own fixture sweep, not before: the
+  first pass at the fix dropped each hole's trailing `Eof` token, since
+  the new `next_token` primitive deliberately never produces one (only
+  `tokenize()`'s own wrapper does). `rd_parser::Cursor` depends on that
+  `Eof` being present (see the Decisions note above); every relocated
+  `string_interpolation_test.rs` assertion that checked a hole's exact
+  token list failed with an extra-token mismatch until it was added
+  back explicitly.
+
+### `lexer/logos_lexer.rs`
+
+- `handle_error`'s span used `span_range.start`/`span_range.end`
+  directly instead of the `abs_start`-based computation the ordinary-
+  token path already used. `span_range` comes from
+  `self.logos_lex.span()`, which is relative to whichever slice
+  `self.logos_lex` currently wraps, not to the whole file, once at
+  least one string or comment earlier in the file has caused a rebase
+  (`self.logos_lex = LogosToken::lexer(&self.input[pos..])`). This is
+  the exact same bug already found and fixed for the normal-token path
+  (see that fix's own comment, still in the code); it had just never
+  been mirrored into the "unexpected character" error path. Found and
+  fixed while restructuring this function for the `next_token` split
+  above, not sought out separately.
+
 ## Documentation convention: scope note
 
 `interpreter/value.rs`, `interpreter/eval/mod.rs`, `interpreter/eval/expr.rs`,
@@ -467,3 +558,13 @@ for a purely cosmetic gain. Same incremental principle the guidelines
 file itself states for the documentation split: real, separate future
 work if
 wanted, not assumed, ask first.
+
+A third, separate delivery this session (the nested-string-literal-
+inside-interpolation-hole fix, roadmap housekeeping item 3(c)) touched
+`lexer/string_parser.rs` and `lexer/logos_lexer.rs` again, plus
+`docs/PRINT_FORMAT_RULES.md` (removing its now-resolved §8 entry).
+`lexer/string_parser.rs` did not have a NOTICE header before this
+delivery; one was added, matching the convention `lexer/logos_lexer.rs`
+already used. Same discipline followed as the note above: no em dashes
+or first/second person in anything actually added or rewritten, not a
+retroactive sweep of either file's pre-existing comments.

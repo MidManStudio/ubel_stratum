@@ -1,0 +1,12 @@
+// tests/fixtures/err_interpolation_unclosed_isolated.ubl
+// Focused test for the interpolation-hole boundary fix's own error
+// path: a hole that never closes at all. The fix replaced a raw
+// byte-counting scan with one driven by a real sub-lexer tracking
+// LeftBrace/RightBrace TOKENS, so this checks that a genuinely unclosed
+// hole still reports "Unclosed interpolation expression" instead of
+// silently running off the end of the file.
+// Expected: LEX FAIL (Unclosed interpolation expression).
+
+fn main() void {
+    println($"this hole never closes: {missing_close")
+}

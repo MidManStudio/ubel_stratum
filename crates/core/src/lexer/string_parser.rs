@@ -1,6 +1,10 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "lexer/string_parser.rs"
+// ============================================================================
 //! String interpolation and verbatim string parsing
 
-use crate::lexer::{Token, TokenType, Span, InterpolationPart};
+use crate::lexer::{Token, TokenType, Span, InterpolationPart, LogosLexer};
 use crate::error_management::errors::{LexicalError, StringType};
 
 pub struct StringParser<'a> {
@@ -149,6 +153,21 @@ impl<'a> StringParser<'a> {
     }
 
     /// Parse expression inside { }
+    ///
+    /// Finds the hole's closing brace by driving a real `LogosLexer` over
+    /// the remainder of the file, one token at a time, and tracking
+    /// brace depth using genuine `LeftBrace`/`RightBrace` TOKENS rather
+    /// than raw bytes. This is what makes it safe for a hole to contain
+    /// a nested string, char literal, or comment with an unbalanced `{`
+    /// or `}` inside it (e.g. `{"a { b"}`, `{x == '{'}`, `{x /* a { */ }`):
+    /// anything already living inside one of those is consumed
+    /// atomically by `LogosLexer`'s own string/comment sub-parsing (the
+    /// same dispatch used everywhere else, including recursively for a
+    /// nested `$"..."`), so it can never surface as a stray brace
+    /// character the way the old byte-counting scan saw it. A nested
+    /// sub-`LogosLexer` only ever scans as far as the matching close (or
+    /// true end of file if the hole is genuinely unclosed); it does not
+    /// eagerly tokenize the rest of the file up front.
     fn parse_interpolation_expr(&mut self) -> Result<Vec<Token>, LexicalError> {
         // Skip {
         self.position += 1;
@@ -157,75 +176,90 @@ impl<'a> StringParser<'a> {
         let expr_start = self.position;
         let expr_start_line = self.line;
         let expr_start_column = self.column;
-        let mut depth = 1; // We're inside one {
 
-        while self.position < self.input.len() && depth > 0 {
-            let ch = self.char_at(self.position);
+        let mut sub_lexer = LogosLexer::new(&self.input[expr_start..]);
+        let mut depth: i32 = 1; // already inside the opening '{'
+        let mut hole_tokens: Vec<Token> = Vec::new();
+        // (byte offset of the closing '}' relative to expr_start, its
+        // absolute end line, its absolute end column)
+        let mut closed_at: Option<(usize, usize, usize)> = None;
 
-            match ch {
-                '{' => {
-                    depth += 1;
-                    self.position += 1;
-                    self.column += 1;
+        while let Some(mut tok) = sub_lexer.next_token() {
+            // Tokens come back with spans relative to the hole's own
+            // slice (starting at byte 0, line 1). Rebase them to be
+            // relative to the whole file, same offsetting this function
+            // already did for the old bulk re-tokenize call.
+            tok.span.start += expr_start;
+            tok.span.end += expr_start;
+            if tok.span.line == 1 {
+                tok.span.column += expr_start_column - 1;
+            }
+            tok.span.line += expr_start_line - 1;
+
+            if tok.kind == TokenType::LeftBrace {
+                depth += 1;
+                hole_tokens.push(tok);
+            } else if tok.kind == TokenType::RightBrace {
+                depth -= 1;
+                if depth == 0 {
+                    // This brace closes OUR hole, not a nested one: don't
+                    // include it in the hole's own tokens, and remember
+                    // where to resume outer scanning from. It's exactly
+                    // one character wide, so its own end position is
+                    // simply one column past where it started.
+                    let rel_end = tok.span.end - expr_start;
+                    closed_at = Some((rel_end, tok.span.line, tok.span.column + 1));
+                    break;
                 }
-                '}' => {
-                    depth -= 1;
-                    self.position += 1;
-                    self.column += 1;
-                }
-                '\n' => {
-                    self.position += 1;
-                    self.line += 1;
-                    self.column = 1;
-                }
-                _ => {
-                    self.position += ch.len_utf8();
-                    self.column += 1;
-                }
+                hole_tokens.push(tok);
+            } else {
+                hole_tokens.push(tok);
             }
         }
 
-        if depth != 0 {
+        let sub_errors = sub_lexer.take_lexical_errors();
+
+        let (rel_end, end_line, end_column) = match closed_at {
+            Some(v) => v,
+            None => {
+                // The sub-lexer ran off the true end of the file without
+                // depth ever returning to 0 - a genuinely unclosed hole.
+                return Err(LexicalError::InvalidInterpolation {
+                    message: "Unclosed interpolation expression".to_string(),
+                    span: Span::new(self.input.len(), self.input.len(), self.line, self.column),
+                    suggestion: Some("Add closing }".to_string()),
+                });
+            }
+        };
+
+        if let Some(first_err) = sub_errors.into_iter().next() {
             return Err(LexicalError::InvalidInterpolation {
-                message: "Unclosed interpolation expression".to_string(),
-                span: Span::new(self.position, self.position, self.line, self.column),
-                suggestion: Some("Add closing }".to_string()),
+                message: format!("invalid expression in interpolation hole: {}", first_err.message()),
+                span: Span::new(expr_start, expr_start + rel_end, expr_start_line, expr_start_column),
+                suggestion: None,
             });
         }
 
-        // Loop above consumed the closing '}' already (in the '}' arm), so
-        // self.position sits one byte past it; the hole's own source text
-        // excludes that final brace, same as before this rewrite.
-        let expr_end = self.position - 1;
-        let expr_src = &self.input[expr_start..expr_end];
+        self.position = expr_start + rel_end;
+        self.line = end_line;
+        self.column = end_column;
 
-        match crate::lexer::tokenize(expr_src) {
-            Ok(mut tokens) => {
-                // Tokens come back with spans relative to `expr_src` (starting
-                // at byte 0, line 1). Offset them to be relative to the whole
-                // file so later error messages point at the right place.
-                for tok in &mut tokens {
-                    tok.span.start += expr_start;
-                    tok.span.end += expr_start;
-                    if tok.span.line == 1 {
-                        tok.span.column += expr_start_column - 1;
-                    }
-                    tok.span.line += expr_start_line - 1;
-                }
-                Ok(tokens)
-            }
-            Err(mut err_mgr) => {
-                let detail = err_mgr.take_lexical_errors().into_iter().next();
-                Err(LexicalError::InvalidInterpolation {
-                    message: match detail {
-                        Some(e) => format!("invalid expression in interpolation hole: {}", e.message()),
-                        None => "invalid expression in interpolation hole".to_string(),
-                    },
-                    span: Span::new(expr_start, expr_end, expr_start_line, expr_start_column),
-                    suggestion: None,
-                })
-            }
-        }
+        // `rd_parser::Cursor` clamps its index access on the assumption
+        // that every token slice it's handed ends with `Eof` (see its own
+        // `peek_token` doc comment): a hole's tokens get fed straight
+        // into a fresh `Cursor` at the parser level (parse_expr.rs's
+        // `parse_interp`), so this isn't optional bookkeeping, it's a
+        // real invariant a downstream consumer relies on. `next_token`
+        // itself never yields one (only `tokenize`'s own wrapper does,
+        // deliberately, since `next_token` is the shared primitive both
+        // paths pull from), so it has to be added here explicitly.
+        hole_tokens.push(Token::new(
+            TokenType::Eof,
+            Span::new(self.position, self.position, self.line, self.column),
+            String::new(),
+        ));
+
+        Ok(hole_tokens)
     }
 
     /// Parse verbatim string: @"C:\path\to\file"

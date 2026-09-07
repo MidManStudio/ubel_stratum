@@ -1,0 +1,41 @@
+// tests/fixtures/ok_interpolation_unbalanced_brace_combined.ubl
+// Real-world usage: a config-field validator whose error hint quotes
+// example template syntax containing a single unmatched brace (showing
+// someone how a template should start without closing it in the same
+// breath). Combined with an enum for the field kind, a struct for the
+// field itself, and a match over it, so the unbalanced-brace nested
+// string sits inside genuinely realistic code instead of a one-liner.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+enum FieldKind {
+    PlainText
+    Template
+}
+
+struct ConfigField {
+    name:  string
+    kind:  FieldKind
+    value: string
+}
+
+fn validate(field: ConfigField) string {
+    match field.kind {
+        FieldKind.Template => {
+            if field.value.contains("{") {
+                return $"{field.name}: ok"
+            }
+            return $"{field.name}: templates must start with a brace, e.g. {"a { placeholder"}"
+        }
+        FieldKind.PlainText => { return $"{field.name}: ok" }
+    }
+}
+
+fn main() void {
+    let bad = ConfigField { name = "greeting", kind = FieldKind.Template, value = "hello" }
+    let msg = validate(bad)
+    assert(msg == "greeting: templates must start with a brace, e.g. a { placeholder",
+        "hint message built from a nested, unbalanced-brace string comes out intact")
+
+    let good = ConfigField { name = "greeting", kind = FieldKind.Template, value = "hi {name}" }
+    assert(validate(good) == "greeting: ok", "sanity: the happy path is untouched")
+}

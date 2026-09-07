@@ -1,0 +1,26 @@
+// tests/fixtures/err_interpolation_unclosed_combined.ubl
+// Real-world/combined: the same unclosed-hole mistake, but buried in
+// otherwise-ordinary code (a struct, a helper function, a second,
+// perfectly valid interpolated string right next to it) rather than a
+// one-liner, to confirm the lexer still cleanly reports the missing
+// brace instead of getting confused by everything else nearby.
+// Expected: LEX FAIL (Unclosed interpolation expression).
+
+struct Player {
+    name:  string
+    score: int
+}
+
+fn greeting(p: Player) string {
+    return $"Welcome, {p.name}!"
+}
+
+fn broken_report(p: Player) string {
+    return $"{p.name} scored {p.score"
+}
+
+fn main() void {
+    let p = Player { name = "Ada", score = 42 }
+    println(greeting(p))
+    println(broken_report(p))
+}

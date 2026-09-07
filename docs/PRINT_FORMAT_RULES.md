@@ -261,10 +261,8 @@ evidently didn't include doctests. Fixed by tagging both fences
 
 ## 8. Open questions for the next slice
 
-- Whether nested string literals inside a `{}` hole should be
-  supported — currently `$"{cond} {"literal"}"`-style holes containing
-  their own `"..."` string will confuse the *outer* interpolated
-  string's own boundary scan (a separate, real, still-open limitation,
-  not touched by this delivery — the outer scanner doesn't track
-  whether it's "inside a hole" when looking for the string's own
-  closing `"`).
+(none currently. The previous entry here, about nested string literals
+inside interpolation holes confusing the hole's own boundary scan, has
+been fixed. See docs/ubel_stratum.md, section "lexer/string_parser.rs",
+for what changed.)
+

@@ -277,13 +277,8 @@ impl<'a> LogosLexer<'a> {
     }
 
     pub fn tokenize(mut self) -> Result<Vec<Token>, ErrorManager> {
-        while let Some(token_result) = self.logos_lex.next() {
-            let span_range = self.logos_lex.span();
-            let lexeme = self.logos_lex.slice().to_string();
-            match token_result {
-                Ok(logos_token) => self.handle_logos_token(logos_token, span_range, lexeme),
-                Err(_)          => self.handle_error(span_range, lexeme),
-            }
+        while let Some(token) = self.next_token() {
+            self.tokens.push(token);
         }
         self.tokens.push(Token::new(
             TokenType::Eof,
@@ -297,99 +292,124 @@ impl<'a> LogosLexer<'a> {
         }
     }
 
-    fn handle_logos_token(
-        &mut self,
-        logos_token: LogosToken,
-        span_range: std::ops::Range<usize>,
-        lexeme: String,
-    ) {
-        // `span_range` (from `self.logos_lex.span()`) is relative to
-        // whichever slice `self.logos_lex` currently starts from — and
-        // every branch below rebases it (`LogosToken::lexer(&self.input
-        // [pos..])`) after a string/comment, so after the FIRST rebase,
-        // `span_range` is no longer relative to `self.input` at all.
-        // `self.position`, by contrast, is a plain running byte counter
-        // (`update_position`) that's never reset by a rebase — it's the
-        // one value here that's always absolute. This was the actual
-        // root cause of the documented "a second interpolated string
-        // anywhere later currently breaks the lexer" gap (see
-        // ok_collections_full.ubl's own header comment): a SECOND
-        // InterpolatedStringStart's sub-parser was being told to start
-        // scanning from a rebase-relative offset as if it were absolute,
-        // landing it somewhere else in the file entirely.
-        let abs_start = self.position;
-        match logos_token {
-            LogosToken::InterpolatedStringStart => {
-                let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
-                match parser.parse_interpolated_string() {
-                    Ok((token, pos, line, col)) => {
-                        self.tokens.push(token);
-                        self.position = pos; self.line = line; self.column = col;
-                        self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+    /// Pulls the next single real token, or `None` at true end of input.
+    /// This is `tokenize`'s bulk loop's own primitive (below); it is also
+    /// driven directly by `StringParser::parse_interpolation_expr` on a
+    /// fresh `LogosLexer` over the remainder of the file, so an
+    /// interpolation hole's closing brace can be found by tracking real
+    /// `LeftBrace`/`RightBrace` TOKENS instead of raw bytes: anything
+    /// already living inside a nested string, char literal, or comment
+    /// is consumed atomically here exactly as it is everywhere else, so
+    /// it can never be mistaken for a hole boundary. One dispatch path,
+    /// used both ways, instead of a second copy of it.
+    ///
+    /// On a bad character, the error is recorded on `self.error_manager`
+    /// and scanning continues with the next raw token rather than
+    /// stopping, matching this lexer's existing resilient-on-error
+    /// design elsewhere (a single bad character shouldn't hide every
+    /// token after it).
+    pub(crate) fn next_token(&mut self) -> Option<Token> {
+        loop {
+            let token_result = self.logos_lex.next()?;
+            let span_range = self.logos_lex.span();
+            let lexeme = self.logos_lex.slice().to_string();
+            // `span_range` (from `self.logos_lex.span()`) is relative to
+            // whichever slice `self.logos_lex` currently starts from,
+            // and every branch below rebases it (`LogosToken::lexer(
+            // &self.input[pos..])`) after a string/comment, so after the
+            // FIRST rebase, `span_range` is no longer relative to
+            // `self.input` at all. `self.position`, by contrast, is a
+            // plain running byte counter (`update_position`) that's
+            // never reset by a rebase: it's the one value here that's
+            // always absolute. This was the actual root cause of the
+            // documented "a second interpolated string anywhere later
+            // currently breaks the lexer" gap (see ok_collections_full
+            // .ubl's own header comment): a SECOND InterpolatedStringStart's
+            // sub-parser was being told to start scanning from a
+            // rebase-relative offset as if it were absolute, landing it
+            // somewhere else in the file entirely.
+            let abs_start = self.position;
+            match token_result {
+                Ok(LogosToken::InterpolatedStringStart) => {
+                    let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
+                    match parser.parse_interpolated_string() {
+                        Ok((token, pos, line, col)) => {
+                            self.position = pos; self.line = line; self.column = col;
+                            self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                            return Some(token);
+                        }
+                        Err(err) => { self.error_manager.add_lexical_error(err); continue; }
                     }
-                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
-                return;
-            }
-            LogosToken::VerbatimStringStart => {
-                let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
-                match parser.parse_verbatim_string() {
-                    Ok((token, pos, line, col)) => {
-                        self.tokens.push(token);
-                        self.position = pos; self.line = line; self.column = col;
-                        self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                Ok(LogosToken::VerbatimStringStart) => {
+                    let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
+                    match parser.parse_verbatim_string() {
+                        Ok((token, pos, line, col)) => {
+                            self.position = pos; self.line = line; self.column = col;
+                            self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                            return Some(token);
+                        }
+                        Err(err) => { self.error_manager.add_lexical_error(err); continue; }
                     }
-                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
-                return;
-            }
-            LogosToken::InterpolatedVerbatimStart => {
-                let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
-                match parser.parse_interpolated_verbatim_string() {
-                    Ok((token, pos, line, col)) => {
-                        self.tokens.push(token);
-                        self.position = pos; self.line = line; self.column = col;
-                        self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                Ok(LogosToken::InterpolatedVerbatimStart) => {
+                    let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
+                    match parser.parse_interpolated_verbatim_string() {
+                        Ok((token, pos, line, col)) => {
+                            self.position = pos; self.line = line; self.column = col;
+                            self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                            return Some(token);
+                        }
+                        Err(err) => { self.error_manager.add_lexical_error(err); continue; }
                     }
-                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
-                return;
-            }
-            LogosToken::BlockCommentStart => {
-                let mut parser = CommentParser::new(self.input, abs_start, self.line, self.column);
-                match parser.parse_block_comment() {
-                    Ok((_token, pos, line, col)) => {
-                        self.position = pos; self.line = line; self.column = col;
-                        self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                Ok(LogosToken::BlockCommentStart) => {
+                    let mut parser = CommentParser::new(self.input, abs_start, self.line, self.column);
+                    match parser.parse_block_comment() {
+                        Ok((_token, pos, line, col)) => {
+                            self.position = pos; self.line = line; self.column = col;
+                            self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                            continue;
+                        }
+                        Err(err) => { self.error_manager.add_lexical_error(err); continue; }
                     }
-                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
-                return;
-            }
-            LogosToken::DocCommentStar | LogosToken::DocCommentBang => {
-                let marker = if matches!(logos_token, LogosToken::DocCommentStar) { "/**" } else { "/*!" };
-                let mut parser = CommentParser::new(self.input, abs_start, self.line, self.column);
-                match parser.parse_doc_comment(marker) {
-                    Ok((token, pos, line, col)) => {
-                        self.tokens.push(token);
-                        self.position = pos; self.line = line; self.column = col;
-                        self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                Ok(logos_token @ (LogosToken::DocCommentStar | LogosToken::DocCommentBang)) => {
+                    let marker = if matches!(logos_token, LogosToken::DocCommentStar) { "/**" } else { "/*!" };
+                    let mut parser = CommentParser::new(self.input, abs_start, self.line, self.column);
+                    match parser.parse_doc_comment(marker) {
+                        Ok((token, pos, line, col)) => {
+                            self.position = pos; self.line = line; self.column = col;
+                            self.logos_lex = LogosToken::lexer(&self.input[pos..]);
+                            return Some(token);
+                        }
+                        Err(err) => { self.error_manager.add_lexical_error(err); continue; }
                     }
-                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
-                return;
+                Ok(LogosToken::LineComment | LogosToken::Newline | LogosToken::Whitespace) => {
+                    self.update_position(&lexeme);
+                    continue;
+                }
+                Ok(logos_token) => {
+                    let span = Span::new(abs_start, abs_start + (span_range.end - span_range.start), self.line, self.column);
+                    self.update_position(&lexeme);
+                    let token_type = self.map_logos_token(logos_token, &lexeme);
+                    return Some(Token::new(token_type, span, lexeme));
+                }
+                Err(_) => {
+                    self.handle_error(abs_start, span_range, lexeme);
+                    continue;
+                }
             }
-            LogosToken::LineComment | LogosToken::Newline | LogosToken::Whitespace => {
-                self.update_position(&lexeme);
-                return;
-            }
-            _ => {}
         }
+    }
 
-        let span = Span::new(abs_start, abs_start + (span_range.end - span_range.start), self.line, self.column);
-        self.update_position(&lexeme);
-        let token_type = self.map_logos_token(logos_token, &lexeme);
-        self.tokens.push(Token::new(token_type, span, lexeme));
+    /// Drains any lexical errors recorded by `next_token` calls made on
+    /// this lexer so far. Used by `StringParser::parse_interpolation_expr`
+    /// after driving a sub-`LogosLexer` over a hole's contents, to learn
+    /// whether anything inside the hole failed to tokenize cleanly.
+    pub(crate) fn take_lexical_errors(&mut self) -> Vec<LexicalError> {
+        self.error_manager.take_lexical_errors()
     }
 
     fn map_logos_token(&self, logos_token: LogosToken, lexeme: &str) -> TokenType {
@@ -529,8 +549,17 @@ impl<'a> LogosLexer<'a> {
         }
     }
 
-    fn handle_error(&mut self, span_range: std::ops::Range<usize>, lexeme: String) {
-        let span = Span::new(span_range.start, span_range.end, self.line, self.column);
+    fn handle_error(&mut self, abs_start: usize, span_range: std::ops::Range<usize>, lexeme: String) {
+        // `span_range` is relative to whatever `self.logos_lex` currently
+        // wraps, which is rebase-relative (not absolute) after the first
+        // string/comment in the file; see `next_token`'s comment on
+        // `abs_start` above. Using `span_range` directly here (as this
+        // used to) is the same class of bug that was already found and
+        // fixed for ordinary tokens; it just hadn't been mirrored into
+        // this error path yet. Length is safe to take from `span_range`
+        // either way, since a rebase only shifts the start, not the
+        // width of the current match.
+        let span = Span::new(abs_start, abs_start + (span_range.end - span_range.start), self.line, self.column);
         let ch = lexeme.chars().next().unwrap_or('\0');
         self.error_manager.add_lexical_error(LexicalError::UnexpectedChar {
             ch,

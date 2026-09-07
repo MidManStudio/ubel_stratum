@@ -1,0 +1,30 @@
+// tests/fixtures/ok_interpolation_unbalanced_brace_isolated.ubl
+// Focused test for the interpolation-hole boundary fix: a hole's own
+// closing brace is now found by tracking real LeftBrace/RightBrace
+// TOKENS (via a token-driven sub-lexer), not by counting raw `{`/`}`
+// bytes. Before this fix, any of the three cases below broke the
+// lexer entirely (either an "Unclosed interpolation expression" or a
+// cascading "Unexpected character" error), because a single unbalanced
+// brace inside a nested string, char literal, or comment threw off the
+// old byte-counting scan. All three are now correctly treated as
+// atomic tokens, exactly as they already are everywhere else in the
+// language.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+fn main() void {
+    // A nested string literal containing a single, unmatched '{'.
+    let hint = $"missing argument: {"needs a { placeholder"}"
+    assert(hint == "missing argument: needs a { placeholder",
+        "nested string with an unbalanced brace survives the hole scan intact")
+
+    // A char literal whose value is just '{'.
+    let opens_with_brace = $"{'{' == '{'}"
+    assert(opens_with_brace == "true",
+        "char literal containing a brace doesn't confuse the hole scan")
+
+    // A comment inside the hole mentioning an unmatched brace. Comments
+    // are discarded as usual and never reach the hole's own tokens.
+    let commented = $"{ 1 + 1 /* note: { is unbalanced here on purpose */ }"
+    assert(commented == "2",
+        "a comment with an unbalanced brace inside a hole is skipped like any other comment")
+}
