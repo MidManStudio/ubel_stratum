@@ -1,18 +1,21 @@
 // tests/fixtures/err_unique_missing_type_argument.ubl
-// Unique<T>/Shared<T>/SyncShared<T> take exactly one type argument — same
-// arity check every other single-argument generic wrapper gets, reusing
-// the existing GenericArgCountMismatch diagnostic rather than a bespoke
-// error path.
+// Unique<T>/Shared<T>/SyncShared<T> take exactly one type argument, the
+// same arity check every other single-argument generic wrapper gets,
+// reusing the existing GenericArgCountMismatch diagnostic rather than a
+// bespoke error path.
 //
-// Expected: sema FAIL (GenericArgCountMismatch), reported TWICE at the
-// same span — not a bug in this feature. Every existing param-level type
-// arity fixture used a `let` binding annotation instead of a function
-// parameter, so this is the first fixture to surface a real, pre-existing,
-// unrelated sema characteristic: a parameter's type annotation is resolved
-// once during signature collection (`collect_fn_sig`) and again during
-// body-seeding (`seed_param`), independently, so any error on a param's
-// own type reports once per resolution. Tracked separately — not
-// something this delivery's scope covers fixing.
+// Was the first fixture to surface a real, pre-existing, unrelated sema
+// characteristic: a parameter's type annotation used to be resolved
+// twice, independently (once in collect_fn_sig during signature
+// collection, again in seed_param during body-seeding), so an error on
+// a param's own type reported twice at the same span. Tracked as Open
+// Decision #6 (docs/MEMORY_MODEL.md §12) and fixed in a later session:
+// seed_param now reuses the type collect_fn_sig/collect_method_sig
+// already resolved instead of resolving it again from scratch. See
+// tests/fixtures/err_param_type_reported_once_isolated.ubl and
+// ok_param_type_single_resolution_isolated.ubl for fixtures targeting
+// that fix directly.
+// Expected: sema FAIL (GenericArgCountMismatch), reported exactly ONCE.
 
 fn bad(x: Unique) void {}
 

@@ -14,6 +14,7 @@
 //! | `top_level`        | name       | `DefId`            | name_resolution  |
 //! | `def_types`        | `DefId`    | `TypeId`           | type_infer       |
 //! | `expr_types`       | `Span`     | `TypeId`           | type_infer       |
+//! | `binding_types`    | `Span`     | `TypeId`           | type_infer       |
 //! | `symbols`          | —          | `SymbolTable`      | name_resolution  |
 //! | `types`            | —          | `TypeTable`        | type_infer       |
 
@@ -86,6 +87,10 @@ impl SemaContext {
 
     pub fn set_binding_type(&mut self, span: Span, ty: TypeId) {
         self.binding_types.insert(span, ty);
+    }
+
+    pub fn binding_type(&self, span: Span) -> Option<TypeId> {
+        self.binding_types.get(&span).copied()
     }
 
     /// The resolved type of a definition. `None` until type_infer visits it.

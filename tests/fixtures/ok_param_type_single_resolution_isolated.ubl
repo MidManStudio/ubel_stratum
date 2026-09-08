@@ -1,0 +1,30 @@
+// tests/fixtures/ok_param_type_single_resolution_isolated.ubl
+// Open Decision #6 fix (docs/MEMORY_MODEL.md §12): a function
+// parameter's type is now resolved once, during signature collection
+// under the function's own generic scope, and reused for body-seeding
+// instead of being resolved a second, independent time with no generic
+// scope of its own. Focused check that a generic free function's param
+// is usable, and usable correctly, inside its own body across several
+// different concrete instantiations, and that two same-named T params
+// in one signature both resolve consistently.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+fn identity<T>(x: T) T {
+    return x
+}
+
+fn pick_first<T>(a: T, b: T) T {
+    return a
+}
+
+fn main() void {
+    let i: int    = identity(5)
+    let s: string = identity("hi")
+    let b: bool   = identity(true)
+    assert(i == 5,    "int instantiation")
+    assert(s == "hi", "string instantiation, same generic function")
+    assert(b == true, "bool instantiation, same generic function again")
+
+    assert(pick_first(1, 2) == 1,       "two T params, int instantiation")
+    assert(pick_first("x", "y") == "x", "two T params, string instantiation")
+}

@@ -916,12 +916,16 @@ impl<'a> InferCtx<'a> {
 
     fn collect_fn_sig<'ast>(&mut self, f: &FunctionDecl<'ast>) -> TypeId {
         let prev_generics = self.push_generic_scope(f.generic_params);
-        let param_tys: Vec<TypeId> = f.params.iter()
-            .filter_map(|p| match p.kind {
-                ParamKind::Named { ty, .. } | ParamKind::Discard { ty } => ty.map(|t| self.ast_type_to_sema(t)),
-                _ => None,
-            })
-            .collect();
+        let mut param_tys: Vec<TypeId> = Vec::with_capacity(f.params.len());
+        for p in f.params {
+            if let ParamKind::Named { ty, .. } | ParamKind::Discard { ty } = p.kind {
+                if let Some(t) = ty {
+                    let ty_id = self.ast_type_to_sema(t);
+                    param_tys.push(ty_id);
+                    self.seed_param_type(p, ty_id);
+                }
+            }
+        }
         let (ret_ty, is_fallible) = self.return_type_to_sema(f.return_type.as_ref());
         self.pop_generic_scope(prev_generics);
         let fn_ty = self.ctx.types.insert(SemaType::Function {
@@ -939,17 +943,21 @@ impl<'a> InferCtx<'a> {
 
     fn collect_method_sig<'ast>(&mut self, m: &MethodDecl<'ast>) -> TypeId {
         // NOTE: a method's *own* extra generic params (beyond whatever
-        // struct-level scope the caller may already have pushed — see
+        // struct-level scope the caller may already have pushed, see
         // `collect_struct_sig`) aren't substituted at call sites yet;
         // scoped out for now (GENERICS_RULES.md "Known gaps"). Pushing
         // here would only matter for that unimplemented case, so it's
         // deliberately skipped rather than half-wired.
-        let param_tys: Vec<TypeId> = m.params.iter()
-            .filter_map(|p| match p.kind {
-                ParamKind::Named { ty, .. } | ParamKind::Discard { ty } => ty.map(|t| self.ast_type_to_sema(t)),
-                _ => None,
-            })
-            .collect();
+        let mut param_tys: Vec<TypeId> = Vec::with_capacity(m.params.len());
+        for p in m.params {
+            if let ParamKind::Named { ty, .. } | ParamKind::Discard { ty } = p.kind {
+                if let Some(t) = ty {
+                    let ty_id = self.ast_type_to_sema(t);
+                    param_tys.push(ty_id);
+                    self.seed_param_type(p, ty_id);
+                }
+            }
+        }
         let (ret_ty, is_fallible) = self.return_type_to_sema(m.return_type.as_ref());
         let fn_ty = self.ctx.types.insert(SemaType::Function {
             params: param_tys,
@@ -1577,17 +1585,38 @@ impl<'a> InferCtx<'a> {
         self.current_tier     = prev_tier;
     }
 
+    /// Records a param's already-resolved type into the same side tables
+    /// `seed_param` used to compute independently: the definition's own
+    /// type (via `resolutions`, populated earlier by name_resolution) and
+    /// its binding type (keyed by the param's own span). Called from
+    /// `collect_fn_sig`/`collect_method_sig`, under whatever generic scope
+    /// is active there, so a function's own generic params resolve
+    /// correctly. `seed_param` below reads `binding_type` back instead of
+    /// resolving `ast_type_to_sema` a second time with no generic scope of
+    /// its own. See Open Decision #6, docs/MEMORY_MODEL.md.
+    fn seed_param_type<'ast>(&mut self, param: &Param<'ast>, ty_id: TypeId) {
+        if let Some(def_id) = self.ctx.resolutions.get(param.span) {
+            self.ctx.set_def_type(def_id, ty_id);
+            self.ctx.set_binding_type(param.span, ty_id);
+        }
+    }
+
     fn seed_param<'ast>(&mut self, param: &Param<'ast>) {
         match param.kind {
             ParamKind::Named { ty, .. } => {
+                if self.ctx.binding_type(param.span).is_some() {
+                    // Already resolved by collect_fn_sig/collect_method_sig,
+                    // under the correct generic scope. Resolving again here
+                    // used to both waste the work and, for a bad annotation,
+                    // double-report the exact same diagnostic (see
+                    // tests/fixtures/err_unique_missing_type_argument.ubl).
+                    return;
+                }
                 let ty_id = ty.map(|t| self.ast_type_to_sema(t))
                     .unwrap_or_else(|| self.fresh_var());
-                if let Some(def_id) = self.ctx.resolutions.get(param.span) {
-                    self.ctx.set_def_type(def_id, ty_id);
-                    self.ctx.set_binding_type(param.span, ty_id);
-                }
+                self.seed_param_type(param, ty_id);
             }
-            _ => {} // self params — TODO when current_struct_type threaded in
+            _ => {} // self params (TODO when current_struct_type threaded in)
         }
     }
 

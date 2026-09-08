@@ -1,0 +1,31 @@
+// tests/fixtures/err_param_type_reported_once_combined.ubl
+// Real-world/combined: the same single-report fix, but on a METHOD
+// param this time (not a free function), sitting next to a second,
+// legitimate method on the same generic struct and a free helper
+// function used from main. Confirms the fix holds for the method path
+// too, and that a bad param type on one method doesn't cascade into
+// spurious errors anywhere else in the file.
+// Expected: sema FAIL (GenericArgCountMismatch on `replace`'s `v`
+// param), reported exactly ONCE. `get`, `helper`, and `main` are all
+// otherwise legitimate and contribute no errors of their own.
+
+struct Wrapper<T> {
+    value: T
+
+    pub fn get(self) T {
+        return self.value
+    }
+
+    pub fn replace(self, v: Unique) void {
+        self.value = v
+    }
+}
+
+fn helper(n: int) int {
+    return n * 2
+}
+
+fn main() void {
+    let w = Wrapper { value = 5 }
+    let doubled = helper(w.get())
+}

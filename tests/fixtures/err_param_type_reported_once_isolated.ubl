@@ -1,0 +1,22 @@
+// tests/fixtures/err_param_type_reported_once_isolated.ubl
+// Open Decision #6 (docs/MEMORY_MODEL.md §12): a function parameter's
+// type annotation used to be resolved twice, independently, from raw
+// AST (once in collect_fn_sig during signature collection, again in
+// seed_param during body-seeding), so any error on a param's own type
+// reported twice at the same span. tests/fixtures/
+// err_unique_missing_type_argument.ubl already covered this through
+// the ownership-wrapper special case (Unique/Shared/SyncShared); this
+// one goes through the general named-type arity check instead (a
+// user-declared generic struct), for coverage of the other diagnostic
+// call site that used to double-report the same way.
+// Expected: sema FAIL (GenericArgCountMismatch), reported exactly ONCE.
+
+struct Pair<A, B> {
+    first:  A
+    second: B
+}
+
+fn bad(x: Pair<int>) void {}
+
+fn main() void {
+}

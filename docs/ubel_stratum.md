@@ -114,6 +114,57 @@ checks gate.
   for sema to type-check; the combination is simply never grammatically
   valid to begin with.
 
+**Decisions (Open Decision #6, docs/MEMORY_MODEL.md §12, resolved):**
+- `collect_fn_sig`/`collect_method_sig` used to resolve each param's
+  type annotation (`ast_type_to_sema`) purely to build the function's
+  own aggregate `SemaType::Function` for call-site checking, and threw
+  the per-param result away otherwise. `seed_param` then resolved the
+  exact same AST node again, independently, later, to seed the param's
+  binding type for body-checking. New `seed_param_type` helper: both
+  `collect_fn_sig` and `collect_method_sig` now call it right after
+  resolving each param, recording that `TypeId` into
+  `SemaContext::binding_types` (keyed by the param's own span, a new
+  `binding_type` getter added alongside the existing `set_binding_type`)
+  and into `def_types` via the param's own `DefId`, exactly what
+  `seed_param` used to do itself. `seed_param` now checks
+  `binding_type` first and returns early if it's already set, falling
+  back to its old resolve-from-scratch behavior only for the params
+  that never went through signature collection at all (there currently
+  are none in practice, but this keeps the function correct rather than
+  assuming that always holds).
+- Confirmed empirically before touching anything, not assumed from the
+  doc note that first flagged this: the bug isn't only a duplicate
+  diagnostic. `collect_fn_sig` pushes the function's own generic scope
+  before resolving param types; `seed_param`'s independent second
+  resolution never had that scope pushed anywhere in its own call
+  chain. For a free function's own generic param (`fn identity<T>(x:
+  T)`), that meant the body-checking side silently treated `x` as an
+  unconstrained type instead of the real `Param(0)` placeholder: `let
+  y: int = x` type-checked with zero errors before this fix. Threading
+  the signature-collection result through fixes both problems at once,
+  since it removes the second, scope-less resolution entirely rather
+  than just deduplicating whatever diagnostic it happened to produce.
+- Checked the method case specifically before calling this done: inline
+  struct methods were never affected by the generic-scope half of the
+  bug, since `collect_struct_sig`/`infer_struct_bodies` already push the
+  struct's generic scope once, around both `collect_method_sig` and
+  `infer_method_body` together, so both phases already agreed. The fix
+  is a pure efficiency and diagnostic-count win there, not a behavior
+  change. `impl`/`extend`-block methods are a separate, already-
+  documented gap (GENERICS_RULES.md "Known gaps"): neither phase pushes
+  a struct's generic scope around them at all, so this fix doesn't
+  touch that case either way.
+
+**Tests:** `tests/fixtures/err_param_type_reported_once_isolated.ubl`
+and `_combined.ubl` (single-report, both the ownership-wrapper and the
+general named-type arity paths); `ok_param_type_single_resolution_
+isolated.ubl` and `_combined.ubl` (a generic param stays correctly and
+consistently typed across repeated calls with different concrete
+instantiations, both for a free function and an inline struct method).
+`err_unique_missing_type_argument.ubl`'s header comment updated to
+match: it used to document the double-report as expected, pre-existing
+behavior; it now expects a single report.
+
 ### `interpreter/value.rs`
 
 **What it does:** Runtime `Value` representation and its core
@@ -568,3 +619,12 @@ delivery; one was added, matching the convention `lexer/logos_lexer.rs`
 already used. Same discipline followed as the note above: no em dashes
 or first/second person in anything actually added or rewritten, not a
 retroactive sweep of either file's pre-existing comments.
+
+A fourth delivery this session (Open Decision #6, docs/MEMORY_MODEL.md
+§12, the last housekeeping item on the roadmap before design-only work
+on outlives scoping) touched `sema/type_infer.rs` and
+`sema/sema_context.rs`, plus `docs/MEMORY_MODEL.md` §12's own status
+row. Same discipline again: only the lines actually written this
+delivery were checked for em dashes and first/second person, not a
+sweep of `type_infer.rs`'s substantial pre-existing prose elsewhere in
+the same file.

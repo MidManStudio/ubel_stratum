@@ -1,0 +1,38 @@
+// tests/fixtures/ok_param_type_single_resolution_combined.ubl
+// Real-world/combined: the same fix, exercised through an inline
+// generic struct method's own param instead of a free function's,
+// alongside a second, non-generic method on the same struct and a free
+// helper using match and string interpolation, so the correctly-
+// resolved param type has to hold up next to ordinary shipped features
+// rather than in isolation.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Stack<T> {
+    items: List<T>
+
+    pub fn push_item(self, v: T) void {
+        self.items.push(v)
+    }
+
+    pub fn size(self) int {
+        return self.items.len()
+    }
+}
+
+fn describe_size(n: int) string {
+    match n {
+        0 => { return "empty" }
+        _ => { return $"{n} item(s)" }
+    }
+}
+
+fn main() void {
+    let s = Stack { items = List.new() }
+    s.push_item(1)
+    s.push_item(2)
+    s.push_item(3)
+    assert(s.size() == 3,
+        "generic struct method's own param type threads through correctly across repeated calls")
+    assert(describe_size(s.size()) == "3 item(s)",
+        "combined with match and string interpolation")
+}
