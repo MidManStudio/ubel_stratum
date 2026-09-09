@@ -1,0 +1,25 @@
+// tests/fixtures/err_lifetime_cycle_combined.ubl
+// Real-world/combined: an outlives cycle this time (the trivial
+// self-outlives case, `L outlives L`), on an edge struct rather than a
+// function, sitting next to a second, legitimate edge struct and a
+// free function elsewhere in the file. Confirms a malformed
+// declaration in one place doesn't cascade into spurious errors
+// anywhere else.
+// Expected: sema FAIL (OutlivesCycle on `Broken`'s own `L`), reported
+// once. `Fine` and `helper` are both otherwise legitimate and
+// contribute no errors of their own.
+
+edge struct Broken [lifetime L where L outlives L] {
+    value: &L int
+}
+
+edge struct Fine [lifetime L] {
+    value: &L int
+}
+
+fn helper(n: int) int {
+    return n + 1
+}
+
+fn main() void {
+}

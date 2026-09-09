@@ -1,17 +1,25 @@
 // src/sema/mod.rs
-//! Semantic analysis — five passes over the arena AST.
+//! Semantic analysis, six passes over the arena AST.
 //!
 //! Pass order:
 //!   1. name_resolution  → SymbolTable, ResolutionMap, top_level map
-//!   2. type_infer       → TypeTable, expr_types, def_types, arena coloring
-//!   3. tier_check       → enforces HIGH/MID/LOW cross-tier rules
-//!   4. borrow_check     → LOW-tier liveness-gated borrow checking
-//!      (Phase D — cfg.rs builds the graph, facts.rs collects loan/kill/
+//!   2. lifetime_check   → well-formedness of `[lifetime L]`/`[lifetime
+//!      L where L outlives M]` declarations on functions and structs,
+//!      and of the lifetime names their own signatures/fields use.
+//!      Purely structural, no CFG or type information needed, which is
+//!      why it runs this early rather than alongside borrow_check. Does
+//!      NOT check that real usage respects a declared outlives bound,
+//!      that fixed point is still borrow_check's unbuilt job (see
+//!      lifetime_check.rs's own module doc)
+//!   3. type_infer       → TypeTable, expr_types, def_types, arena coloring
+//!   4. tier_check       → enforces HIGH/MID/LOW cross-tier rules
+//!   5. borrow_check     → LOW-tier liveness-gated borrow checking
+//!      (Phase D: cfg.rs builds the graph, facts.rs collects loan/kill/
 //!      invalidation facts over it, borrow_check.rs runs the actual
 //!      liveness/reaching fixed point and turns real violations into
 //!      diagnostics; see borrow_check.rs's module doc for exactly what
 //!      this pass does and doesn't catch yet)
-//!   5. move_check       → LOW-tier use-after-move checking for
+//!   6. move_check       → LOW-tier use-after-move checking for
 //!      `Unique<T>` locals (move_facts.rs collects move candidates over
 //!      the same cfg.rs graph, move_check.rs runs the reachability fixed
 //!      point and turns real violations into diagnostics; see
@@ -25,6 +33,7 @@ pub mod symbol_table;
 pub mod sema_context;
 pub mod type_table;
 pub mod name_resolution;
+pub mod lifetime_check;
 pub mod type_infer;
 pub mod tier_check;
 pub mod borrow_check;
@@ -60,19 +69,25 @@ pub fn analyse<'ast>(
         return Err(errors);
     }
 
-    // ── Pass 2: Type inference + arena coloring ──────────────────
+    // ── Pass 2: Lifetime declaration well-formedness ─────────────
+    lifetime_check::check(program, &mut errors);
+    if errors.has_errors() {
+        return Err(errors);
+    }
+
+    // ── Pass 3: Type inference + arena coloring ───────────────────
     type_infer::infer(program, &mut ctx, &mut errors);
     if errors.has_errors() {
         return Err(errors);
     }
 
-    // ── Pass 3: Tier rule enforcement ────────────────────────────
+    // ── Pass 4: Tier rule enforcement ─────────────────────────────
     tier_check::check(program, &ctx, &mut errors);
     if errors.has_errors() {
         return Err(errors);
     }
 
-    // ── Pass 4: LOW-tier borrow checking (Phase D) ───────────────
+    // ── Pass 5: LOW-tier borrow checking (Phase D) ────────────────
     for violation in borrow_check::check_program(program) {
         errors.add_borrow_error(BorrowError::ConflictingAccessWhileBorrowed {
             place: violation.place,
@@ -84,7 +99,7 @@ pub fn analyse<'ast>(
         return Err(errors);
     }
 
-    // ── Pass 5: LOW-tier move checking ───────────────────────────
+    // ── Pass 6: LOW-tier move checking ────────────────────────────
     for violation in move_check::check_program(program) {
         errors.add_move_error(MoveError::UseAfterMove {
             place: violation.place,

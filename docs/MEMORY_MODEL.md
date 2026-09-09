@@ -365,7 +365,7 @@ didn't exist before this section had any type checking at all.
 
 ---
 
-## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking, the Ownership-Model Type Axis, and Move Checking All Landed; `outlives`/Lifetime Checking Still Ahead
+## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking, the Ownership-Model Type Axis, and Move Checking All Landed; `outlives`/Lifetime Well-Formedness Landed, Real Enforcement Still Ahead
 
 `OwnedRef` and full move/ownership checking are still marked "Phase 4" in
 the codebase's own comments — that part's still true. The reference
@@ -426,13 +426,47 @@ References are valid in **every** tier, not LOW-only — a HIGH/MID function
 handing out a read-only view is fine on its own terms. What's still LOW-only
 is *enforcement*, and both halves of it are now real:
 
-🚧 **Not implemented — `outlives`/lifetime checking, the one piece of the
-LOW-tier enforcement story still missing.** The parser has parsed
-`[lifetime L, lifetime M where M outlives L]` on functions and `edge
-struct` for a while — see `PARSER_RULES.md` §5.1's neighbor content —
-but nothing in sema consumes it yet. Both the loan half (`borrow_check.rs`)
-and the move half (`move_check.rs`, described below) are landed and don't
-need this to be useful on their own.
+✅ **Implemented: `outlives`/lifetime declaration well-formedness, the
+first slice of the LOW-tier enforcement story's last missing piece.**
+The parser has parsed `[lifetime L, lifetime M where M outlives L]` on
+functions and `edge struct` for a while, see `PARSER_RULES.md` §5.1's
+neighbor content, but nothing in sema consumed any of it until this
+delivery. New pass, `sema/lifetime_check.rs` (`LIFETIME-0xx`), runs
+right after name resolution, before type inference, since it's purely
+structural (no CFG, no type information needed): every lifetime name
+in a declaration is declared once each, every name a `where` clause
+references is one of them, the declared constraints don't form a cycle
+(including the trivial `L outlives L` case), and every `&name`/`ref
+name` written directly in that same declaration's own signature or
+fields (however deeply nested inside other types) names one of them.
+
+Deliberately scoped to well-formedness only, not real enforcement: it
+does not check that usage in a function body actually respects a
+declared bound, and it does not look at method bodies or param/return
+types at all (`MethodDecl` has no `lifetime_params` of its own, only
+an enclosing struct can declare any, and checking a method's own
+`&name` usage against its enclosing struct's declared names needs a
+scope-inheritance story this pass doesn't build yet). The actual
+outlives/subset fixed point remains the borrow checker's job, and
+remains unbuilt. Both the loan half (`borrow_check.rs`) and the move
+half (`move_check.rs`, described below) are landed and don't need this
+to be useful on their own.
+
+One thing worth being explicit about: this isn't only a LOW-tier
+enforcement gap. `edge struct` exists specifically for arena-resident
+types holding references into the same arena, and checked empirically
+before choosing what to build here: marking a struct `edge` with a
+matching `[lifetime L]` currently changes *nothing* about how the
+existing arena-escape checker (§6) treats it, a plain, non-`edge`
+struct storing an arena value into a field is rejected by
+`ArenaRefEscapesBoundary` exactly the same way. `is_edge` and
+`lifetime_params` were, before this delivery, decorative everywhere in
+sema. This slice doesn't change that connection either (§6 still
+doesn't consult `is_edge`), that remains real, separate follow-up, but
+it's worth being clear that the well-formedness checking added here
+doesn't yet make `edge struct` functional for the arena-reference-field
+case it was designed for; it only guarantees the *declaration itself*
+isn't nonsense.
 
 ✅ **Implemented — Phase A, the CFG builder** (`sema/cfg.rs`). Builds a
 statement-granularity control-flow graph for one function body: real

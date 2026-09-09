@@ -1,0 +1,10 @@
+// tests/fixtures/err_lifetime_undeclared_isolated.ubl
+// Focused check for the new lifetime well-formedness pass
+// (sema/lifetime_check.rs, LIFETIME-001): a `where` clause naming a
+// lifetime that was never declared in the same `[lifetime ...]` list.
+// Expected: sema FAIL (UndeclaredLifetime, naming `M`).
+
+fn foo [lifetime L where L outlives M] () void {}
+
+fn main() void {
+}

@@ -1,7 +1,7 @@
 // src/error_management/error_manager.rs
 
 use crate::error_management::errors::{
-    LexicalError, ParseError, NameError, TypeError, TierError, BorrowError, MoveError,
+    LexicalError, ParseError, NameError, TypeError, TierError, BorrowError, MoveError, LifetimeError,
 };
 use crate::error_management::logger::Logger;
 use crate::error_management::Diagnosable;
@@ -9,40 +9,43 @@ use crate::error_management::Diagnosable;
 /// Central error accumulator for the entire compiler pipeline.
 ///
 /// Each phase appends its errors here.  The manager never stops the
-/// pipeline immediately — callers check `has_errors()` at phase
+/// pipeline immediately, callers check `has_errors()` at phase
 /// boundaries and decide whether to continue.
 ///
 /// Phase order:
 ///   1. Lex    → `add_lexical_error`
 ///   2. Parse  → `add_parse_error`
 ///   3. Resolve → `add_name_error`
-///   4. TypeCheck → `add_type_error`
-///   5. TierCheck → `add_tier_error`
-///   6. BorrowCheck (LOW tier only) → `add_borrow_error`
-///   7. MoveCheck (LOW tier only) → `add_move_error`
+///   4. LifetimeCheck (declaration well-formedness only) → `add_lifetime_error`
+///   5. TypeCheck → `add_type_error`
+///   6. TierCheck → `add_tier_error`
+///   7. BorrowCheck (LOW tier only) → `add_borrow_error`
+///   8. MoveCheck (LOW tier only) → `add_move_error`
 #[derive(Debug)]
 pub struct ErrorManager {
-    lexical_errors: Vec<LexicalError>,
-    parse_errors:   Vec<ParseError>,
-    name_errors:    Vec<NameError>,
-    type_errors:    Vec<TypeError>,
-    tier_errors:    Vec<TierError>,
-    borrow_errors:  Vec<BorrowError>,
-    move_errors:    Vec<MoveError>,
-    source:         String,
-    max_errors:     usize,
+    lexical_errors:   Vec<LexicalError>,
+    parse_errors:     Vec<ParseError>,
+    name_errors:      Vec<NameError>,
+    lifetime_errors:  Vec<LifetimeError>,
+    type_errors:      Vec<TypeError>,
+    tier_errors:      Vec<TierError>,
+    borrow_errors:    Vec<BorrowError>,
+    move_errors:      Vec<MoveError>,
+    source:           String,
+    max_errors:       usize,
 }
 
 impl ErrorManager {
     pub fn new(source: String) -> Self {
         ErrorManager {
-            lexical_errors: Vec::new(),
-            parse_errors:   Vec::new(),
-            name_errors:    Vec::new(),
-            type_errors:    Vec::new(),
-            tier_errors:    Vec::new(),
-            borrow_errors:  Vec::new(),
-            move_errors:    Vec::new(),
+            lexical_errors:  Vec::new(),
+            parse_errors:    Vec::new(),
+            name_errors:     Vec::new(),
+            lifetime_errors: Vec::new(),
+            type_errors:     Vec::new(),
+            tier_errors:     Vec::new(),
+            borrow_errors:   Vec::new(),
+            move_errors:     Vec::new(),
             source,
             max_errors: 100,
         }
@@ -104,6 +107,20 @@ impl ErrorManager {
         std::mem::take(&mut self.type_errors)
     }
 
+    // ── Lifetime well-formedness ──────────────────────────────────
+
+    pub fn add_lifetime_error(&mut self, error: LifetimeError) {
+        if self.total_errors() < self.max_errors {
+            self.lifetime_errors.push(error);
+        }
+    }
+
+    pub fn lifetime_error_count(&self) -> usize { self.lifetime_errors.len() }
+
+    pub fn take_lifetime_errors(&mut self) -> Vec<LifetimeError> {
+        std::mem::take(&mut self.lifetime_errors)
+    }
+
     // ── Tier / arena-boundary checking ──────────────────────────────
 
     pub fn add_tier_error(&mut self, error: TierError) {
@@ -152,6 +169,7 @@ impl ErrorManager {
         !self.lexical_errors.is_empty()
             || !self.parse_errors.is_empty()
             || !self.name_errors.is_empty()
+            || !self.lifetime_errors.is_empty()
             || !self.type_errors.is_empty()
             || !self.tier_errors.is_empty()
             || !self.borrow_errors.is_empty()
@@ -162,6 +180,7 @@ impl ErrorManager {
         self.lexical_errors.len()
             + self.parse_errors.len()
             + self.name_errors.len()
+            + self.lifetime_errors.len()
             + self.type_errors.len()
             + self.tier_errors.len()
             + self.borrow_errors.len()
@@ -176,6 +195,7 @@ impl ErrorManager {
         self.report_section("lexical", &self.lexical_errors);
         self.report_section("parse", &self.parse_errors);
         self.report_section("name resolution", &self.name_errors);
+        self.report_section("lifetime", &self.lifetime_errors);
         self.report_section("type", &self.type_errors);
         self.report_section("tier", &self.tier_errors);
         self.report_section("borrow", &self.borrow_errors);

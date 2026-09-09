@@ -58,6 +58,9 @@ fn main() {
                 for e in errs.take_name_errors() {
                     println!("                    name:  {:?}", e);
                 }
+                for e in errs.take_lifetime_errors() {
+                    println!("                    lifetime:  {:?}", e);
+                }
                 for e in errs.take_type_errors() {
                     println!("                    type:  {:?}", e);
                 }

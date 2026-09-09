@@ -165,6 +165,61 @@ instantiations, both for a free function and an inline struct method).
 match: it used to document the double-report as expected, pre-existing
 behavior; it now expects a single report.
 
+### `sema/lifetime_check.rs`
+
+**What it does:** New pass, well-formedness checking for `[lifetime L]`
+/ `[lifetime L where L outlives M]` declarations on functions and
+`edge struct`s: LIFETIME-0xx (`UndeclaredLifetime`,
+`DuplicateLifetimeParam`, `OutlivesCycle`). Runs right after name
+resolution, before type inference, since it's purely structural and
+needs neither. See docs/MEMORY_MODEL.md §9 and
+docs/DIAGNOSTICS_RULES.md's `LIFETIME-0xx` entry for the full picture;
+this is the first of two roadmap slices (well-formedness now, real
+outlives/subset enforcement a separate, later, and much larger piece
+of work).
+
+**Decisions:**
+- Scope picked from three options presented to Abdulhamid (patch the
+  raw declaration text only, check declaration well-formedness plus
+  every `&name` used in that same declaration's own signature/fields,
+  or go straight to real region-inference-level checking): the middle
+  one, "well-formedness only," covering both function lifetimes and
+  edge-struct lifetimes together rather than sequencing them, per
+  direct instruction.
+- Deliberately does not walk method bodies or param/return types at
+  all. `MethodDecl` has no `lifetime_params` of its own, only an
+  enclosing struct can declare any (confirmed by reading the AST, not
+  assumed), so checking a method's own `&name` usage would need a
+  scope-inheritance story (does a method's `&L` refer to its enclosing
+  struct's declared `L`, and if so, which enclosing struct when a
+  method reaches this pass outside of `infer_struct_bodies`'s own
+  generic-scope push) that this pass doesn't build. Left as a real,
+  separate, documented follow-up rather than half-wired.
+- `check_type_lifetimes` recurses through the full type structure
+  (`List<&L T>`, tuple elements, a function type's own param/return,
+  ...), not just a type's top level, so a lifetime name buried inside
+  a generic argument still gets checked. Matched against
+  `TypeKind`'s full 18-variant surface directly rather than assuming
+  which ones could plausibly nest a `Reference`.
+- Found empirically, not assumed, while scoping this delivery (see
+  docs/MEMORY_MODEL.md §9's own new paragraph on this): marking a
+  struct `edge` with a matching `[lifetime L]` currently changes
+  nothing about how the existing arena-escape checker (§6) treats it.
+  This pass doesn't fix that connection either, `is_edge` still isn't
+  consulted by `check_assign_arena_escape` after this delivery, that
+  remains real, separate follow-up, but it's why the module doc above
+  is explicit that well-formedness checking alone doesn't make `edge
+  struct` functional for the case it exists for.
+
+**Tests:** `tests/fixtures/ok_lifetime_wellformed_isolated.ubl` and
+`_combined.ubl` (a function with a valid multi-lifetime outlives
+constraint, and an edge struct with a matching field, both actually
+run, not just type-check); `err_lifetime_undeclared_isolated.ubl` (an
+undeclared name in a `where` clause) and
+`err_lifetime_cycle_combined.ubl` (the trivial self-outlives case on
+an edge struct, next to otherwise-legitimate code, confirming no
+cascade).
+
 ### `interpreter/value.rs`
 
 **What it does:** Runtime `Value` representation and its core
@@ -585,6 +640,23 @@ type checking (TYPE-1xx range).
   fixed while restructuring this function for the `next_token` split
   above, not sought out separately.
 
+### `crates/rd_parser/examples/pipeline.rs`
+
+- The `[SEMA-FAIL]` reporting block explicitly enumerates
+  `take_name_errors`/`take_type_errors`/`take_tier_errors`/
+  `take_borrow_errors`/`take_move_errors` one by one, rather than
+  walking every error category generically. Adding a new category
+  (`LifetimeError`) meant this script, used by both local fixture
+  sweeps and `ci-check.yml`, silently printed `[SEMA-FAIL]` with no
+  detail at all for any file that failed only on a lifetime error,
+  found while empirically verifying `sema/lifetime_check.rs` against
+  real probes, where every one of them showed a blank error list. Added
+  the missing `take_lifetime_errors` loop, same shape as its siblings.
+  Same class of gap `DIAGNOSTICS_RULES.md` §9's own case study already
+  names as the thing that *can* still drift silently even with the
+  registry discipline: a new error class not being drained by every
+  place that walks `ErrorManager`'s output.
+
 ## Documentation convention: scope note
 
 `interpreter/value.rs`, `interpreter/eval/mod.rs`, `interpreter/eval/expr.rs`,
@@ -628,3 +700,17 @@ row. Same discipline again: only the lines actually written this
 delivery were checked for em dashes and first/second person, not a
 sweep of `type_infer.rs`'s substantial pre-existing prose elsewhere in
 the same file.
+
+A fifth delivery this session (roadmap item 4, first slice: well-
+formedness checking for `[lifetime L]`/`[lifetime L where L outlives
+M]`, scoped as design-only in a prior session and picked up for real
+implementation after presenting depth options and getting "well-
+formedness only, both areas" back) added a new file,
+`sema/lifetime_check.rs`, a new error family (`error_management/
+errors/lifetime/mod.rs`, `LIFETIME-0xx`), touched `sema/mod.rs` and
+`error_management/error_manager.rs` to wire the new pass in, touched
+`crates/rd_parser/examples/pipeline.rs` for the reporting-gap fix
+above, and touched `docs/MEMORY_MODEL.md` §9 and
+`docs/DIAGNOSTICS_RULES.md`'s registry. Same discipline again: checked
+every line this delivery actually wrote, not a sweep of any of these
+files' substantial pre-existing content.

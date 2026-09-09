@@ -169,9 +169,11 @@ pub enum SemaType {
     /// to `OwnedRef`/`ArenaRef`/`GcRef`: this is "an alias to a place,"
     /// not "how the pointee's own memory is managed" — `inner` is
     /// whatever `TypeId` the borrowed place already had, tier wrapper
-    /// and all. `lifetime` is carried but not yet checked — the actual
-    /// outlives/subset fixed point is the borrow checker's job, still
-    /// unbuilt (see docs/MEMORY_MODEL.md §9).
+    /// and all. `lifetime` is carried through and (as of the well-
+    /// formedness pass, sema/lifetime_check.rs) checked to be a real
+    /// declared name, but not yet checked against real usage: the
+    /// actual outlives/subset fixed point is still the borrow checker's
+    /// job, still unbuilt (see docs/MEMORY_MODEL.md §9).
     Reference {
         mutable:  bool,
         lifetime: Option<String>,

@@ -14,6 +14,7 @@ pub mod types;
 pub mod tier;
 pub mod borrow;
 pub mod move_check;
+pub mod lifetime;
 
 pub use lexical::{LexicalError, StringType};
 pub use parse::{ParseContext, ParseError};
@@ -22,3 +23,4 @@ pub use types::TypeError;
 pub use tier::TierError;
 pub use borrow::BorrowError;
 pub use move_check::MoveError;
+pub use lifetime::LifetimeError;

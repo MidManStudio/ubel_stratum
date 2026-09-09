@@ -1,0 +1,29 @@
+// tests/fixtures/ok_lifetime_wellformed_isolated.ubl
+// Roadmap item 4, first slice: well-formedness checking for [lifetime
+// L] / [lifetime L where L outlives M] declarations (new
+// sema/lifetime_check.rs, LIFETIME-0xx). Focused check that correctly
+// formed declarations, on both a function and an edge struct, are
+// accepted: multiple declared lifetimes with a valid outlives
+// constraint between them, and every &name reference in the
+// declaration's own signature/fields naming one of them.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+fn first [lifetime L, lifetime M where L outlives M] (a: &L int, b: &M int) &L int {
+    return a
+}
+
+edge struct Holder [lifetime L] {
+    value: &L int
+}
+
+fn main() void {
+    let x = 10
+    let y = 20
+    let result = first(&x, &y)
+    assert(*result == 10,
+        "function with a multi-lifetime declaration and a valid outlives constraint still runs correctly")
+
+    let h = Holder { value = &x }
+    assert(*h.value == 10,
+        "edge struct with a well-formed lifetime declaration still runs correctly")
+}

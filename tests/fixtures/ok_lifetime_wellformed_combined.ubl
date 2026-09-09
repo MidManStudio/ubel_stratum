@@ -1,0 +1,37 @@
+// tests/fixtures/ok_lifetime_wellformed_combined.ubl
+// Real-world/combined: the same well-formedness pass, exercised
+// alongside other shipped features rather than in isolation, an edge
+// struct field that's a reference to an ordinary struct, an inline
+// method on the edge struct, and a free function with its own lifetime
+// param combined with match and string interpolation.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Point {
+    x: int
+    y: int
+}
+
+edge struct View [lifetime L] {
+    point: &L Point
+
+    pub fn get(self) Point {
+        return *self.point
+    }
+}
+
+fn describe [lifetime L] (v: &L int) string {
+    match v {
+        _ => { return $"value is {*v}" }
+    }
+}
+
+fn main() void {
+    let p = Point { x = 3, y = 4 }
+    let v = View { point = &p }
+    assert(v.get().x == 3,
+        "edge struct field access through a well-formed lifetime-annotated reference")
+
+    let n = 5
+    assert(describe(&n) == "value is 5",
+        "function with a lifetime-annotated param combines with match and string interpolation")
+}

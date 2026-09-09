@@ -282,6 +282,32 @@ of `a`, the safe direction while method dispatch through a `Unique`
 wrapper is itself still an open question elsewhere (`MEMORY_MODEL.md`
 §9).
 
+### LIFETIME-0xx: lifetime declaration well-formedness, `errors/lifetime/mod.rs`
+
+| Code | Variant |
+|---|---|
+| LIFETIME-001 | UndeclaredLifetime |
+| LIFETIME-002 | DuplicateLifetimeParam |
+| LIFETIME-003 | OutlivesCycle |
+
+New family, not folded into `BORROW-0xx`/`MOVE-0xx` even though all
+three eventually serve the same LOW-tier memory-safety story
+(`MEMORY_MODEL.md` §9/§12): this one is a purely structural check over
+declared names and constraints in `[lifetime L]`/`[lifetime L where L
+outlives M]` on functions and `edge struct`s, no CFG or liveness fixed
+point involved, so it doesn't share `borrow_check.rs`/`move_check.rs`'s
+machinery or scope. Fires from `sema/lifetime_check.rs`, a new pass
+that runs right after name resolution, before type inference, since it
+needs neither. Checks a declaration's own lifetime names are declared
+once each, that every name a `where` clause references is one of them,
+that the declared `outlives` constraints don't form a cycle (including
+the trivial `L outlives L` case), and that every `&name`/`ref name`
+written directly in that same declaration's own signature or fields
+(however deeply nested inside other types) names one of them. Does
+*not* check that real usage in a function body actually respects a
+declared bound — that's the actual outlives/subset fixed point, still
+the borrow checker's job, and still unbuilt.
+
 **Adding a new variant:** append at the end of its class's range
 (don't renumber to keep things "tidy" — see above), add the `code()`
 match arm, add a row to the relevant table above, and add an entry to
@@ -367,6 +393,11 @@ larger effort, not started.
 
 **MOVE-0xx**
 - `MOVE-001` `UseAfterMove` — *Error*. "use of `place` after it was already moved" — MEMORY_MODEL.md §9, `sema/move_check.rs`. Fires when a `Unique<T>`-typed local's bare (non-`&`/`&mut`) use is forward-reachable, over the same point-level CFG walk `BORROW-001` uses, from an *earlier* bare use of the same local, with no reinitialization (`facts::place_defined_at`) in between. May-analysis, same direction `BORROW-001` already takes: reachable on *some* path is enough, not every path. Reachability deliberately allows a move point to reach itself — the mechanism that catches a value consumed on every loop iteration without ever being reinitialized (see `err_move_in_loop_combined.ubl`); when that's what fired, `moved_span` and `used_span` point at the same line, correctly. Secondary span points at the earlier consuming use ("value moved here"). Suggestion: borrow instead of moving if the earlier use didn't need to consume the value, or reassign a fresh value before this point. Scope, today: only `let`-bound locals are tracked — a move-tracked local is identified *syntactically* (an explicit `Unique<...>` annotation, or an initializer that's directly a `Unique.new(...)` call), not via real type inference, so a `Unique<T>` value arriving more indirectly (returned from another function, round-tripped through a field) isn't tracked at all yet; a `Unique<T>`-typed function *parameter* isn't tracked either, only locals bound via `let`; a method-call receiver (`a.method()`) is conservatively treated as a move of `a`, matching the fact that `resolve_receiver` doesn't strip a `Unique` wrapper for dispatch yet either (`MEMORY_MODEL.md` §9's own open question) — each of these is real, separate, documented follow-up, not silently dropped.
+
+**LIFETIME-0xx**
+- `LIFETIME-001` `UndeclaredLifetime`: *Error*. "undeclared lifetime `name`", from `sema/lifetime_check.rs`. Fires for a name used in a `where X outlives Y` clause, or written as `&name T`/`ref name T` anywhere inside a function's own param/return types or an `edge struct`'s own field types, that isn't one of the names that same declaration's `[lifetime ...]` list actually declares. Suggestion: add `lifetime name` to the declaration, or use a name it already declares.
+- `LIFETIME-002` `DuplicateLifetimeParam`: *Error*. "lifetime `name` declared more than once". Secondary span points at the first declaration. Suggestion: remove one of the two entries, or rename one of them.
+- `LIFETIME-003` `OutlivesCycle`: *Error*. "lifetime `name` cannot outlive itself" for the trivial one-element case (`L outlives L`); "outlives constraints form a cycle among `L`, `M`, ..." for a longer cycle found via a plain DFS over the declaration's own (always tiny) constraint graph. Suggestion: outlives relationships must form a strict ordering, with no lifetime directly or indirectly outliving itself.
 
 ---
 
