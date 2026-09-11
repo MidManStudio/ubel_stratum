@@ -1,0 +1,13 @@
+// tests/fixtures/err_ownership_genuine_move_isolated.ubl
+// Focused check that legalizing method dispatch through Unique/Shared/
+// SyncShared didn't also legalize genuine use-after-move: a bare
+// re-use (not a method call) of a Unique-tracked local is still a
+// real move, still caught.
+// Expected: sema FAIL (UseAfterMove on `u`).
+
+@tier(low)
+fn main() void {
+    let u = Unique.new("hello")
+    let v = u
+    let w = u
+}

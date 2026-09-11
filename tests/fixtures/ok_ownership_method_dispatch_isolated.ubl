@@ -1,0 +1,26 @@
+// tests/fixtures/ok_ownership_method_dispatch_isolated.ubl
+// MEMORY_MODEL.md §9's Open Decision #5, method-dispatch half: does
+// resolve_receiver strip Unique<T>/Shared<T>/SyncShared<T> to dispatch
+// methods on the inner type? Focused check that it now does, at both
+// the sema (resolve_receiver, builtins/instance.rs) and interpreter
+// (eval_method_call, interpreter/eval/expr.rs) layers, for repeated
+// calls on the same value, which also exercises the move_facts.rs fix
+// this needed alongside it (a builtin method call no longer
+// conservatively counts as a move of its receiver).
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(low)
+fn main() void {
+    let u = Unique.new("hello")
+    let a = u.len()
+    let b = u.to_upper()
+    assert(a == 5, "method call through Unique<string> resolves and runs")
+    assert(b == "HELLO", "a second method call on the same Unique value still works")
+
+    let s = Shared.new("hi")
+    let c = s.len()
+    let s2 = s
+    let d = s2.to_upper()
+    assert(c == 2, "method call through Shared<string> resolves and runs")
+    assert(d == "HI", "calling through an aliased Shared handle also works")
+}

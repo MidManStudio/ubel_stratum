@@ -597,27 +597,34 @@ below, is exactly that consuming phase for the move half).
 
 A `let`-bound local is identified as move-tracked *syntactically* — an
 explicit `Unique<...>` type annotation, or an initializer that's
-directly a `Unique.new(...)` call — deliberately not by consulting real
+directly a `Unique.new(...)` call, deliberately not by consulting real
 type inference, same restraint `Place::Unknown` and `Loan::bound_place`
 already use elsewhere in this checker family. A move is any bare
-(non-`&`/`&mut`) use of a tracked local's name; the walker adds two
+(non-`&`/`&mut`) use of a tracked local's name; the walker adds three
 opacity rules on top of `facts.rs`'s own `Lambda`/`Block`/`If`/`Match`
 boundary: `Borrow`'s contents are never descended into at all (borrowing
-never consumes), and an assignment's *target* is never treated as a use
-(a definition site, not a read of the old value — matches
+never consumes), an assignment's *target* is never treated as a use
+(a definition site, not a read of the old value, matches
 `facts::classify_access`'s existing "Reassign, not Conflict"
-classification of that exact shape). One deliberate over-approximation,
-named rather than left implicit: a method-call receiver (`a.method()`)
-counts as a move of `a`, the safe direction while `resolve_receiver`
-still doesn't strip a `Unique` wrapper for dispatch either (open
-question, noted just above). Only `let`-bound locals are tracked, not
-`Unique<T>`-typed *parameters* — real, separate follow-up. 9 unit tests
+classification of that exact shape), and a call to a known builtin
+instance method never treats its own receiver as a bare use either
+(added alongside Open Decision #5's method-dispatch resolution just
+above: once `resolve_receiver`/`eval_method_call` made
+`Unique<List<int>>.push(5)` legal, the previous blanket "any method
+call is a move" rule would have made the type nearly unusable, flagging
+every call after the first as a use-after-move). That third rule is
+name-based (`instance::is_builtin_instance_method_name`), not
+type-based: a same-named user-declared method still falls through to
+the general bare-use rule and still counts as a move, a known, narrow,
+accepted gap, real follow-up once the language is more mature, not
+solved here. Only `let`-bound locals are tracked, not
+`Unique<T>`-typed *parameters*, real, separate follow-up. 9 unit tests
 (both identification rules, move-vs-borrow, move-vs-reassignment-target,
 multiple-candidates-on-one-place, and the `@tier(low)`-only program
 walk).
 
 ✅ **Implemented — move enforcement** (`sema/move_check.rs`), landed the
-same delivery as the fixed point itself, not a separate slice — a
+same delivery as the fixed point itself, not a separate slice, a
 `moved_at` candidate is a real violation (`MoveError::UseAfterMove`,
 `MOVE-001`) if it's forward-reachable, same point-level worklist
 `borrow_check::compute_reaches_before` already uses for loans, from
@@ -1040,5 +1047,5 @@ sema-fail all firing their specific intended variant.
 | 2 | Generational handles as opt-out default, or opt-in? | ✅ Resolved — generational only in v1; no raw-index opt-out was built |
 | 3 | Does a `@tier(mid)` function require an explicit `with arena(...)` for every collection, or should entering a `@tier(mid)` function implicitly open a function-scoped arena? | Open |
 | 4 | Does `with pool<T>(n)` get the same `@tier(mid)`-only restriction `with arena(...)` currently has (`ArenaInWrongTier`), or should fixed-capacity pools be legal from HIGH-tier code too (an "unsafe-block"-style local optimization)? | ✅ Resolved — same `@tier(mid)`-only restriction as arena (`PoolInWrongTier`) |
-| 5 | Is `Unique<T>`/`Shared<T>`/`SyncShared<T>` restricted to any particular tier, and does `resolve_receiver` strip these wrappers to dispatch methods on the inner type (e.g. is `Unique<List<int>>.push(5)` legal)? | ✅ Resolved (tier) — construction banned outside `@tier(low)` (`OwnershipWrapperOutsideLowTier`, TIER-014), inverse of `CollectionConstructionInLowTier`. Open (method dispatch) — `resolve_receiver` still doesn't strip these wrappers |
+| 5 | Is `Unique<T>`/`Shared<T>`/`SyncShared<T>` restricted to any particular tier, and does `resolve_receiver` strip these wrappers to dispatch methods on the inner type (e.g. is `Unique<List<int>>.push(5)` legal)? | ✅ Resolved. Tier: construction banned outside `@tier(low)` (`OwnershipWrapperOutsideLowTier`, TIER-014), inverse of `CollectionConstructionInLowTier`. Method dispatch: `resolve_receiver` and `eval_method_call` both strip one ownership wrapper before their existing tier/kind resolution, so `Unique<List<int>>.push(5)` is legal at both sema and runtime. `move_facts.rs`'s method-call-as-move over-approximation was refined alongside this (see its own module doc): a call to a known builtin instance method no longer counts as a move of its receiver. A same-named user-declared method still does, name-based, not type-based, and confirmed empirically to bite on genuinely common names (`get`, shared with `List`/`Dictionary`/`Pool`), not just a theoretical edge case; deliberately not resolved now, real follow-up once the language is more mature, same call the person made explicitly |
 | 6 | Function/method parameter type annotations are resolved twice, independently, from raw AST (`collect_fn_sig`/`collect_method_sig` during signature collection, `seed_param` during body-seeding), so any error on a param's own type reports twice. Thread the already-computed signature type into `seed_param`, or deduplicate identical-span errors in the error manager? | ✅ Resolved, threaded. `collect_fn_sig`/`collect_method_sig` now record each param's resolved type into `SemaContext::binding_types` (new `seed_param_type` helper) as they compute it, under the correct generic scope; `seed_param` reads that back instead of calling `ast_type_to_sema` again. This turned out to matter for more than the duplicate diagnostic: `seed_param`'s old independent call never had the function's own generic scope pushed the way `collect_fn_sig` does, so a free function's own generic param (`fn identity<T>(x: T)`) silently resolved to an unconstrained type inside the body instead of the real `Param` placeholder, confirmed empirically (`let y: int = x` where `x: T` type-checked with zero errors before this fix). Inline struct methods were unaffected by that half of the bug (their generic scope is already pushed once, around both phases together, by `collect_struct_sig`/`infer_struct_bodies`), so the fix is a pure win there: same result, computed once instead of twice. `impl`/`extend`-block methods remain a separate, already-documented gap (§3 above / GENERICS_RULES.md "Known gaps") untouched by this fix either way, since neither phase pushes a struct's generic scope around them |

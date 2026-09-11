@@ -314,7 +314,7 @@ pub fn walk_expr<'ast, V: AstVisitor<'ast> + ?Sized>(v: &mut V, e: &'ast Expr<'a
     }
 }
 
-fn walk_arg_kind<'ast, V: AstVisitor<'ast> + ?Sized>(v: &mut V, a: &ArgKind<'ast>) {
+pub(crate) fn walk_arg_kind<'ast, V: AstVisitor<'ast> + ?Sized>(v: &mut V, a: &ArgKind<'ast>) {
     match a {
         ArgKind::Positional(e)    => v.visit_expr(e),
         ArgKind::Named { value, .. } => v.visit_expr(value),

@@ -54,6 +54,27 @@ pub fn method_names(kind: ReceiverKind) -> &'static [&'static str] {
     }
 }
 
+/// Is `name` a known builtin instance method, on any receiver kind at
+/// all (not narrowed to one)? Consulted by `sema/move_facts.rs`, which
+/// works purely syntactically and has no type information to know which
+/// kind a given call site's receiver actually is: every builtin
+/// instance method takes its receiver by reference in spirit (`&self`/
+/// `&mut self`, never a consuming `self`/`mut self` the way a user-
+/// declared method's own self-kind might), so a call to one is never a
+/// move of its receiver, unlike a user-declared method call, which this
+/// deliberately does not attempt to resolve yet (see move_facts.rs's
+/// own module doc for the full scope note). A name collision with an
+/// unrelated user-declared method of the same name (someone's own
+/// struct with a consuming `push(self, ...)`, say) is a known, narrow,
+/// accepted gap, not solved here.
+pub fn is_builtin_instance_method_name(name: &str) -> bool {
+    [
+        ReceiverKind::List, ReceiverKind::Str, ReceiverKind::Dict, ReceiverKind::Tuple,
+        ReceiverKind::Queue, ReceiverKind::Stack, ReceiverKind::Pool,
+        ReceiverKind::InlineList, ReceiverKind::Linqerizer,
+    ].iter().any(|&kind| method_names(kind).contains(&name))
+}
+
 /// What ref kind wrapped the receiver — carried through so an
 /// allocation-producing method's result can be re-wrapped the same way
 /// (MEMORY_MODEL.md §8's "allocate into the same arena as the receiver"
@@ -83,6 +104,24 @@ pub enum ReceiverWrap {
 /// matching the rest of the type system's "GcRef is the default when
 /// nothing says otherwise" convention.
 pub fn resolve_receiver(table: &TypeTable, ty: TypeId) -> Option<(ReceiverWrap, ReceiverKind, TypeId)> {
+    // Peel off at most one ownership-model wrapper (Unique/Shared/
+    // SyncShared) before doing the existing tier-wrap resolution on
+    // whatever's underneath. Orthogonal axes (DATASTRUCTURES.md,
+    // MEMORY_MODEL.md §9's Open Decision #5): a value's tier answers
+    // "where does this live", ownership answers "who owns it", and a
+    // method call needs to see through ownership to reach whatever tier
+    // wrap (if any) is on the inner value, same as it already sees
+    // through tier wraps to reach the bare collection underneath. Not
+    // folded into the `wrap`/`bare` match below because `ReceiverWrap`
+    // exists specifically to remember which *tier* wrap to reapply to an
+    // allocating method's result (`method_return_type` in
+    // `type_infer.rs`); ownership doesn't need that: nothing here
+    // returns a value that itself needs `Unique`/`Shared`/`SyncShared`
+    // re-applied, only the tier the method's own receiver already had.
+    let ty = match table.get(ty) {
+        SemaType::Unique(inner) | SemaType::Shared(inner) | SemaType::SyncShared(inner) => *inner,
+        _ => ty,
+    };
     let (wrap, bare) = match table.get(ty) {
         SemaType::GcRef(inner) => (ReceiverWrap::Gc, *inner),
         SemaType::ArenaRef { arena, mutable, inner } =>

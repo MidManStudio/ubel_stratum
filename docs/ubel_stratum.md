@@ -331,12 +331,78 @@ method calls, struct/anon-object construction.
   present (the well-established convention this feature is modeled
   on, Rust's own `format!`, does the same). It always pads
   immediately before the digits, after any sign and prefix.
+- `eval_method_call` (MEMORY_MODEL.md §9's Open Decision #5, method-
+  dispatch half): peels off at most one `Unique`/`Shared`/`SyncShared`
+  wrapper before its own dispatch match, mirroring `resolve_receiver`
+  on the sema side (`builtins/instance.rs`). Checked directly before
+  writing this: cloning the unwrapped inner `Value` (the regular
+  `Clone`, not `deep_clone`) is O(1) and a mutating method still
+  mutates real shared storage regardless, since every collection and
+  `Value::Struct` already keeps its own mutable state behind its own
+  `Rc<RefCell<...>>`; the clone only shares that inner `Rc`, it never
+  duplicates the storage itself.
 
 **Tests:** the four new fixtures under `ok_format_spec_extended_*` and
 `ok_format_spec_numeric_base_*` / `err_format_spec_*` exercise all of
 this end to end. No unit tests for this function specifically, same
 precedent the original precision-only version of this feature already
 set (fixture-tested only).
+
+### `builtins/instance.rs`
+
+**What it does:** The canonical registry for every builtin instance
+method: which names exist per collection kind, their return shape and
+arity, which are HIGH-tier only, and `resolve_receiver`, which strips
+tier wrappers off a receiver type before matching it against a kind.
+
+**Decisions:**
+- (MEMORY_MODEL.md §9's Open Decision #5, method-dispatch half)
+  `resolve_receiver` now also peels off at most one `Unique`/`Shared`/
+  `SyncShared` wrapper first, before its existing tier-wrap match.
+  Kept as a separate step ahead of the `wrap`/`bare` match rather than
+  folded into it: `ReceiverWrap` exists specifically to remember which
+  *tier* wrap to reapply to an allocating method's result
+  (`method_return_type` in `type_infer.rs`); ownership doesn't need
+  that, nothing a builtin instance method returns needs `Unique`/
+  `Shared`/`SyncShared` re-applied, only whatever tier the receiver
+  already had.
+- New `is_builtin_instance_method_name`, a name-only check across all
+  nine `ReceiverKind`s' own `METHOD_NAMES`, added specifically for
+  `sema/move_facts.rs` to consult (see that module's own entry below);
+  it has no type information available to know which kind a given call
+  site's receiver actually is, so this is deliberately name-based, not
+  kind-specific.
+
+### `sema/move_facts.rs`
+
+**Decisions:**
+- (MEMORY_MODEL.md §9's Open Decision #5, method-dispatch half) Once
+  `resolve_receiver`/`eval_method_call` made
+  `Unique<List<int>>.push(5)` legal, the walker's previous blanket "a
+  method-call receiver is a move of its receiver" rule would have made
+  the type nearly unusable: every call after the first on the same
+  value would have been flagged as a use-after-move. New third opacity
+  rule in `MoveExprWalker::visit_expr`: a call whose callee is a known
+  builtin instance method name (`instance::is_builtin_instance_method_
+  name`) no longer visits its own receiver as a bare use, while still
+  walking the receiver normally when it is not a bare identifier (a
+  move could be buried deeper inside it) and always walking every arg.
+  Name-based, not type-based, same restraint `is_unique_new_call`
+  already uses elsewhere in this file. Confirmed empirically, not just
+  theorized, that the resulting name-collision gap is a real one, not
+  a rare edge case: a hand-built `Counter` struct with its own
+  `get(self)` method, wrapped in `Unique`, was silently exempted from
+  move-checking too, purely because `get` also happens to be a real
+  `List`/`Dictionary`/`Pool` method name. Left as is, real follow-up
+  once the language is more mature, direct instruction rather than
+  something to silently paper over now.
+
+### `ast/visitor.rs`
+
+- `walk_arg_kind` bumped from private to `pub(crate)` so
+  `sema/move_facts.rs` could call the exact same two-line arg-walking
+  logic `ast::visitor::walk_expr`'s own `Call` handling already uses,
+  rather than a second copy of it living in a different module.
 
 ### `lexer/logos_lexer.rs`
 
@@ -713,4 +779,16 @@ errors/lifetime/mod.rs`, `LIFETIME-0xx`), touched `sema/mod.rs` and
 above, and touched `docs/MEMORY_MODEL.md` §9 and
 `docs/DIAGNOSTICS_RULES.md`'s registry. Same discipline again: checked
 every line this delivery actually wrote, not a sweep of any of these
+files' substantial pre-existing content.
+
+A sixth delivery this session (MEMORY_MODEL.md §9's Open Decision #5,
+method-dispatch half: does `resolve_receiver` strip `Unique`/`Shared`/
+`SyncShared` to dispatch methods on the inner type) touched
+`builtins/instance.rs`, `interpreter/eval/expr.rs`,
+`sema/move_facts.rs`, `ast/visitor.rs` (one line, a visibility bump),
+and `docs/MEMORY_MODEL.md` §9's own Open Decision #5 entry plus its
+"one deliberate over-approximation" paragraph just above it, updated
+rather than left stale once the over-approximation it described no
+longer matched the code. Same discipline again: checked every line
+this delivery actually wrote or rewrote, not a sweep of any of these
 files' substantial pre-existing content.

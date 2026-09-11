@@ -1,0 +1,32 @@
+// tests/fixtures/ok_ownership_method_dispatch_combined.ubl
+// Real-world/combined: the same fix, exercised through a struct field
+// and a free function parameter rather than a bare local, alongside
+// match and string interpolation, so the ownership-wrapper method
+// dispatch has to hold up next to ordinary shipped features rather
+// than in isolation.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Tag {
+    label: Shared<string>
+}
+
+@tier(low)
+fn shout(label: Unique<string>) string {
+    match label.len() {
+        0 => { return "" }
+        _ => { return label.to_upper() }
+    }
+}
+
+@tier(low)
+fn main() void {
+    let t = Tag { label = Shared.new("draft") }
+    assert(t.label.len() == 5, "struct field holding a Shared<string> dispatches through it correctly")
+
+    let u = Unique.new("release")
+    let result = shout(u)
+    assert(result == "RELEASE", "function parameter typed as Unique<string> dispatches through match and back out")
+
+    let announcement = $"status: {t.label.to_upper()}"
+    assert(announcement == "status: DRAFT", "combined with string interpolation")
+}

@@ -223,6 +223,33 @@ impl<'w, 'ast, F: FnMut(&'ast Expr<'ast>, &'ast str)> crate::ast::visitor::AstVi
             ExprKind::Borrow { .. } => return,
             ExprKind::Assign { value, .. } => { self.visit_expr(value); return; }
             ExprKind::Lambda(_) | ExprKind::Block(_) | ExprKind::If(_) | ExprKind::Match(_) => return,
+            ExprKind::Call { callee, args } => {
+                // A call to a known builtin instance method (`.push()`,
+                // `.len()`, ...) borrows its receiver in spirit: no
+                // builtin instance method takes a consuming `self`/`mut
+                // self`, so `target` here isn't a bare/moving use the
+                // way a plain function call's callee, or an unrecognized
+                // (e.g. user-declared) method's receiver, still is.
+                // Name-based, not type-based, same syntactic restraint
+                // `is_unique_new_call` already uses; a same-named user-
+                // declared consuming method on some unrelated type is a
+                // known, narrow, accepted gap (see
+                // `instance::is_builtin_instance_method_name`'s own doc).
+                // Still walk `target` normally when it is not a bare
+                // identifier (a move could be buried deeper inside it,
+                // e.g. an index expression), and always walk every arg.
+                if let ExprKind::Field { target, field } = &callee.kind {
+                    if crate::builtins::instance::is_builtin_instance_method_name(field) {
+                        if !matches!(target.kind, ExprKind::Ident(_)) {
+                            self.visit_expr(target);
+                        }
+                        for a in *args {
+                            crate::ast::visitor::walk_arg_kind(self, &a.kind);
+                        }
+                        return;
+                    }
+                }
+            }
             _ => {}
         }
         crate::ast::visitor::walk_expr(self, e);

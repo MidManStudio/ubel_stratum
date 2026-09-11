@@ -1,0 +1,23 @@
+// tests/fixtures/err_ownership_genuine_move_combined.ubl
+// Real-world/combined: several legitimate method calls through a
+// Unique value, which must NOT be flagged (that's the whole point of
+// this delivery), sitting right next to a genuine bare re-use of the
+// same value, which must still be flagged. Confirms the fix is precise
+// rather than accidentally loosening move-checking in general.
+// Expected: sema FAIL (UseAfterMove on `u`), and nothing else. The
+// three method calls above the move must not contribute any errors of
+// their own.
+
+@tier(low)
+fn main() void {
+    let u = Unique.new("hello")
+    let a = u.len()
+    let b = u.to_upper()
+    let c = u.contains("ell")
+    assert(a == 5, "sanity: methods still work before the move below")
+    assert(b == "HELLO", "sanity: repeated methods still work before the move below")
+    assert(c == true, "sanity: a third method call still works before the move below")
+
+    let moved_away = u
+    let broken = u
+}
