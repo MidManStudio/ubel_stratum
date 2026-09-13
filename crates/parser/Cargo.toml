@@ -1,4 +1,16 @@
 # ubel_stratum_parser/Cargo.toml
+#
+# Empty [workspace] table: this crate is intentionally not a member of the
+# root workspace (see the root Cargo.toml's own comment on why), but
+# without this, cargo refuses to build it standalone at all — "current
+# package believes it's in a workspace when it's not" — because it's
+# nested under a directory that has a [workspace] which doesn't list it.
+# Confirmed by trying the documented `cargo build --manifest-path
+# crates/parser/Cargo.toml` command directly: it failed with exactly that
+# error before this table was added. Same fix crates/wasm_playground needs
+# and ships with from the start.
+[workspace]
+
 [package]
 name        = "ubel_stratum_parser"
 version     = "0.1.0"
@@ -26,3 +38,5 @@ path = "src/main.rs"
 [[bench]]
 name    = "parser_bench"
 harness = false
+
+[workspace]

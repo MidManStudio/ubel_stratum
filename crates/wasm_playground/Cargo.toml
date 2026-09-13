@@ -1,0 +1,40 @@
+[workspace]
+# Deliberately its own workspace root, not a member of the root Cargo.toml
+# — same reasoning as crates/parser (see the root manifest's own comment):
+# this crate exists to be cross-compiled to wasm32-unknown-unknown for the
+# browser playground, never as part of the native compiler-dev build/test
+# loop. Keeping it out of `cargo build/test --workspace` means every
+# ordinary compiler change stays fast, and this crate's own release
+# profile (below, tuned for .wasm size) doesn't leak into the main
+# workspace's profiles, which is where profile settings are required to
+# live once a crate *is* a member.
+#
+# Build/test it explicitly:
+#   cargo build --manifest-path crates/wasm_playground/Cargo.toml \
+#     --target wasm32-unknown-unknown --release
+
+[package]
+name        = "ubel_stratum_wasm"
+version     = "0.1.0"
+edition     = "2021"
+publish     = false
+description = "wasm bindings exposing the tokenize -> parse -> sema -> interpret pipeline for the browser playground"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ubel_stratum    = { path = "../core" }
+ubel_stratum_rd = { path = "../rd_parser" }
+wasm-bindgen    = "0.2"
+serde           = { version = "1", features = ["derive"] }
+serde_json      = "1"
+console_error_panic_hook = "0.1"
+
+# Smaller, faster-to-download .wasm — this crate is only ever built for
+# wasm32-unknown-unknown, never shipped as a native binary.
+[profile.release]
+opt-level     = "s"
+lto           = true
+panic         = "unwind"
+codegen-units = 1

@@ -4,6 +4,16 @@
 # hardware. Build/test it explicitly with:
 #   cargo build --manifest-path crates/parser/Cargo.toml
 # or via ubel-publish.yml's compile_parser: with-parser input.
+#
+# crates/wasm_playground is also deliberately NOT a member, for a
+# different reason: it cross-compiles to wasm32-unknown-unknown for the
+# browser playground and carries its own release profile tuned for .wasm
+# size (opt-level="s") rather than this workspace's opt-level=3 — profiles
+# are workspace-level, so a crate that needs different ones has to be its
+# own workspace root. Build it explicitly with:
+#   cargo build --manifest-path crates/wasm_playground/Cargo.toml \
+#     --target wasm32-unknown-unknown --release
+# or via the site-deploy workflow, which does exactly that.
 members  = ["crates/core", "crates/rd_parser"]
 resolver = "2"
 
