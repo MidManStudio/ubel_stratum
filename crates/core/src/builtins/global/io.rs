@@ -72,7 +72,7 @@ pub fn log(args: &[Value]) -> EvalResult {
     let out: Vec<String> = args.iter().map(|v| v.to_string()).collect();
     let line = format!("[log] {}\n", out.join(" "));
     // Same capture buffer as println/print (interleaved, not a separate
-    // stream — see take_captured_output); falls back to real stderr,
+    // stream; see take_captured_output); falls back to real stderr,
     // matching the original eprintln!-based behaviour, when not capturing.
     if !try_capture(&line) {
         eprint!("{line}");

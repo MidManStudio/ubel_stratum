@@ -1,0 +1,39 @@
+[book]
+title       = "Ubel Stratum"
+authors     = ["MidManStudio"]
+description = "A statically-typed systems and game-development language with a three-tier memory model (HIGH/MID/LOW) and Mid Engine as its native ECS scripting target."
+language    = "en"
+src         = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme         = "navy"
+preferred-dark-theme  = "navy"
+git-repository-url    = "https://github.com/MidManStudio/ubel_stratum"
+additional-css        = ["theme/ubel.css"]
+additional-js         = ["theme/ubel-nav.js"]
+mathjax-support       = false
+no-section-label      = false
+
+[output.html.fold]
+enable = true
+level  = 1
+
+[output.html.playground]
+editable     = false
+copyable     = true
+line-numbers = true
+runnable     = false
+
+[output.html.search]
+enable                = true
+limit-results         = 20
+teaser-word-count     = 30
+use-boolean-and       = true
+boost-title           = 2
+boost-hierarchy       = 1
+boost-paragraph       = 1
+expand                = true
+heading-split-level   = 2

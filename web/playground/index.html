@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ubel Stratum Playground</title>
+<link rel="stylesheet" href="/shared/ubel-theme.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/nord.min.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: var(--font-body);
+  }
+  header {
+    display: flex; align-items: center; gap: 1.25rem;
+    padding: 0.9rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 {
+    font-family: var(--font-display); font-size: 1.1rem; font-weight: 600;
+    margin: 0;
+  }
+  header nav { display: flex; gap: 1.1rem; font-size: 0.85rem; }
+  header nav a { color: var(--text-muted); text-decoration: none; }
+  header nav a:hover, header nav a.current { color: var(--tok); }
+  header .spacer { flex: 1; }
+  #run-btn {
+    background: var(--tok); color: #1B1815; border: none;
+    font-family: var(--font-body); font-weight: 600; font-size: 0.85rem;
+    padding: 0.5rem 1.1rem; border-radius: 5px; cursor: pointer;
+  }
+  #run-btn:disabled { opacity: 0.6; cursor: wait; }
+  #run-btn:hover:not(:disabled) { filter: brightness(1.1); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    height: calc(100% - 58px);
+  }
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+  }
+  .pane { display: flex; flex-direction: column; min-height: 0; }
+  .pane + .pane { border-left: 1px solid var(--border); }
+  @media (max-width: 860px) {
+    .pane + .pane { border-left: none; border-top: 1px solid var(--border); }
+  }
+  .pane-header {
+    padding: 0.5rem 1rem; font-size: 0.75rem; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--text-muted);
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  .stage-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--skip);
+  }
+  .stage-dot.ok   { background: var(--interp); }
+  .stage-dot.fail { background: var(--fail); }
+  .CodeMirror { height: 100% !important; font-family: var(--font-mono); font-size: 0.9rem; }
+
+  #output-pane { overflow-y: auto; padding: 1rem; font-family: var(--font-mono); font-size: 0.85rem; }
+  #output-pane pre { white-space: pre-wrap; word-break: break-word; margin: 0 0 1rem 0; }
+  .section-title {
+    font-family: var(--font-body); font-size: 0.75rem; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--text-muted); margin: 0 0 0.4rem 0;
+  }
+  .diagnostics { color: var(--fail); }
+  .program-output { color: var(--text); background: var(--panel-alt); padding: 0.75rem; border-radius: 4px; }
+  .placeholder { color: var(--text-muted); font-style: italic; }
+  .internal-error {
+    color: var(--fail); border: 1px solid var(--fail); border-radius: 4px;
+    padding: 0.75rem; background: rgba(194, 75, 63, 0.1);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Ubel Stratum</h1>
+  <nav>
+    <a href="/">Docs</a>
+    <a href="/playground/" class="current">Playground</a>
+    <a href="/results/">CI Results</a>
+  </nav>
+  <div class="spacer"></div>
+  <button id="run-btn" disabled>Loading…</button>
+</header>
+
+<main>
+  <div class="pane">
+    <div class="pane-header"><span class="stage-dot" id="edit-dot"></span> Source (.ubl)</div>
+    <textarea id="editor"></textarea>
+  </div>
+  <div class="pane">
+    <div class="pane-header"><span class="stage-dot" id="result-dot"></span> <span id="result-label">Pipeline output</span></div>
+    <div id="output-pane">
+      <p class="placeholder">Run to see tokenize &rarr; parse &rarr; sema &rarr; interpret results.</p>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+<script src="/shared/ubel-highlight.js"></script>
+<script type="module">
+  import init, { run_pipeline, init_panic_hook } from './ubel_stratum_wasm.js';
+
+  const DEFAULT_SOURCE = `fn main() {
+    println("Hello, Stratum!")
+}
+`;
+
+  const runBtn    = document.getElementById('run-btn');
+  const outputEl  = document.getElementById('output-pane');
+  const resultDot = document.getElementById('result-dot');
+  const resultLbl = document.getElementById('result-label');
+
+  // clike is a reasonable stand-in token mode for editing (brace matching,
+  // string/comment detection); the highlight colors themselves come from
+  // /shared/ubel-highlight.js re-applied to the read-only output panel,
+  // not from CodeMirror's own mode, which does not know Ubel's keywords.
+  const editor = CodeMirror(document.getElementById('editor').parentNode, {
+    value: DEFAULT_SOURCE,
+    mode: 'text/x-csrc',
+    theme: 'nord',
+    lineNumbers: true,
+    indentUnit: 4,
+    tabSize: 4,
+  });
+  document.getElementById('editor').remove();
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderResult(result) {
+    const stageOk = result.ok;
+    resultDot.className = 'stage-dot ' + (stageOk ? 'ok' : 'fail');
+    resultLbl.textContent = 'Stage: ' + result.stage + (stageOk ? ' (ok)' : ' (failed)');
+
+    let html = '';
+
+    if (result.diagnostics_text && result.diagnostics_text.trim().length > 0) {
+      html += '<p class="section-title">Diagnostics</p>';
+      html += '<pre class="diagnostics">' + escapeHtml(result.diagnostics_text) + '</pre>';
+    }
+
+    if (result.stage === 'interpret' && result.ran_main) {
+      html += '<p class="section-title">Program output</p>';
+      const out = result.program_output || '';
+      html += '<pre class="program-output">' + (out.length ? escapeHtml(out) : '<span class="placeholder">(no output)</span>') + '</pre>';
+      if (result.runtime_error) {
+        html += '<p class="section-title">Runtime error</p>';
+        html += '<pre class="diagnostics">' + escapeHtml(result.runtime_error) + '</pre>';
+      }
+    } else if (result.stage === 'interpret' && !result.ran_main) {
+      html += '<p class="placeholder">No fn main() found. Lex, parse, and sema all succeeded; nothing to run.</p>';
+    }
+
+    if (!html) html = '<p class="placeholder">No output.</p>';
+    outputEl.innerHTML = html;
+  }
+
+  async function run() {
+    runBtn.disabled = true;
+    runBtn.textContent = 'Running…';
+    try {
+      const json = run_pipeline(editor.getValue());
+      const result = JSON.parse(json);
+      renderResult(result);
+    } catch (e) {
+      // A thrown exception here means the wasm module itself trapped
+      // (a genuine compiler bug), not a language-level error in the
+      // typed program above, which run_pipeline always reports as
+      // diagnostics/runtime_error instead of throwing.
+      resultDot.className = 'stage-dot fail';
+      resultLbl.textContent = 'Internal error';
+      outputEl.innerHTML =
+        '<div class="internal-error">Something went wrong inside the playground itself, ' +
+        'not in the program above. This is likely a compiler bug; ' +
+        'consider reporting it with the source that triggered it.<br><br>' +
+        escapeHtml(String(e)) + '</div>';
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = 'Run';
+    }
+  }
+
+  init().then(() => {
+    init_panic_hook();
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run';
+    runBtn.addEventListener('click', run);
+  }).catch((e) => {
+    runBtn.textContent = 'Failed to load';
+    outputEl.innerHTML = '<div class="internal-error">Failed to load the wasm module: ' + escapeHtml(String(e)) + '</div>';
+  });
+</script>
+</body>
+</html>

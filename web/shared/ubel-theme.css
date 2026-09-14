@@ -1,0 +1,45 @@
+/* web/shared/ubel-theme.css
+ *
+ * Shared design tokens for everything under web/: the CI dashboard, the
+ * docs site, and the playground. Extracted from web/dashboard/index.html
+ * rather than duplicated by eye, so all three stay in sync. The dashboard
+ * itself is untouched and still carries its own copy inline; if these
+ * ever need to change, update both places or fold the dashboard over to
+ * this file too.
+ */
+
+:root {
+  --bg:          #1B1815;
+  --panel:       #211D19;
+  --panel-alt:   #2A2520;
+  --border:      #3A342C;
+  --text:        #EDE6DA;
+  --text-muted:  #9C9284;
+  --tok:         #C9A46A; /* tokenize: sandstone    */
+  --parse:       #6E8FA3; /* parse:     shale        */
+  --sema:        #B06B4E; /* sema:      fired clay   */
+  --interp:      #7E9270; /* interpret: lichen/verdigris */
+  --fail:        #C24B3F;
+  --skip:        #55504A;
+
+  /* Ubel source syntax highlighting, Nord-derived (nordtheme.com),
+     blue-dominant with red/yellow accents. Numbers reuse --tok above
+     rather than a 5th imported color, so it still reads as native to
+     this palette rather than a bolted-on import. */
+  --ubl-keyword: #81a1c1; /* Nord9  frost blue:  fn, let, if, return, ... */
+  --ubl-type:    #8fbcbb; /* Nord8  frost teal:  int, string, List, ...    */
+  --ubl-tier:    #bf616a; /* Nord11 aurora red:  tier/high/mid/low/arena/pool/gc/heap */
+  --ubl-string:  #ebcb8b; /* Nord13 aurora yellow */
+  --ubl-comment: #6b7a99; /* muted blue-gray */
+
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body:    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.ubl-keyword { color: var(--ubl-keyword); }
+.ubl-type    { color: var(--ubl-type); }
+.ubl-tier    { color: var(--ubl-tier); font-weight: 600; }
+.ubl-string  { color: var(--ubl-string); }
+.ubl-number  { color: var(--tok); }
+.ubl-comment { color: var(--ubl-comment); font-style: italic; }

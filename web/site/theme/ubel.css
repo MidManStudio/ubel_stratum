@@ -1,0 +1,82 @@
+/* web/site/theme/ubel.css
+ *
+ * Overrides mdBook's built-in "navy" theme rather than defining a fully
+ * custom theme name: mdBook's theme picker dropdown is hardcoded to its
+ * five built-in themes (see index.hbs upstream), so a theme named
+ * anything else wouldn't be selectable from that menu. Loaded after
+ * mdBook's own css/variables.css (mdBook always places additional-css
+ * last), so these overrides win on the existing --bg/--fg/etc. variables
+ * without needing !important anywhere.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('/shared/ubel-theme.css');
+
+.navy {
+    --bg:               #1B1815;
+    --fg:               #EDE6DA;
+    --sidebar-bg:       #211D19;
+    --sidebar-fg:       #EDE6DA;
+    --sidebar-non-existant: #55504A;
+    --sidebar-active:   #C9A46A;
+    --sidebar-spacer:   #3A342C;
+    --scrollbar:        #3A342C;
+    --icons:            #9C9284;
+    --icons-hover:      #EDE6DA;
+    --links:            #6E8FA3;
+    --inline-code-color: #C9A46A;
+    --theme-popup-bg:   #211D19;
+    --theme-popup-border: #3A342C;
+    --theme-hover:      #2A2520;
+    --quote-bg:         #211D19;
+    --quote-border:     #3A342C;
+    --table-border-color: #3A342C;
+    --table-header-bg:  #2A2520;
+    --table-alternate-bg: #211D19;
+    --searchbar-bg:     #2A2520;
+    --searchbar-fg:     #EDE6DA;
+    --searchbar-border-color: #3A342C;
+    --searchresults-li-bg: #211D19;
+    --search-mark-bg:   #B06B4E;
+}
+
+body {
+    font-family: var(--font-body);
+}
+
+h1, h2, h3, .menu-title {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+code, pre, .hljs {
+    font-family: var(--font-mono) !important;
+}
+
+pre > code.language-ubel {
+    background: var(--panel);
+}
+
+/* ── Injected top-nav links (Playground / CI Results / GitHub) ──────
+   Added at runtime by ubel-nav.js next to mdBook's own menu bar, so the
+   docs site, playground, and CI dashboard read as one site rather than
+   three unrelated pages; see that file for why this can't just be a
+   normal <a> in index.hbs without forking mdBook's theme entirely. */
+.ubel-nav-links {
+    display: flex;
+    align-items: center;
+    gap: 1.1rem;
+    margin-left: 0.75rem;
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+}
+.ubel-nav-links a {
+    color: var(--text-muted);
+    text-decoration: none;
+    white-space: nowrap;
+}
+.ubel-nav-links a:hover,
+.ubel-nav-links a.ubel-nav-current {
+    color: var(--tok);
+}

@@ -1,6 +1,6 @@
 [workspace]
-# Deliberately its own workspace root, not a member of the root Cargo.toml
-# — same reasoning as crates/parser (see the root manifest's own comment):
+# Deliberately its own workspace root, not a member of the root Cargo.toml,
+# same reasoning as crates/parser (see the root manifest's own comment):
 # this crate exists to be cross-compiled to wasm32-unknown-unknown for the
 # browser playground, never as part of the native compiler-dev build/test
 # loop. Keeping it out of `cargo build/test --workspace` means every
@@ -31,7 +31,7 @@ serde           = { version = "1", features = ["derive"] }
 serde_json      = "1"
 console_error_panic_hook = "0.1"
 
-# Smaller, faster-to-download .wasm — this crate is only ever built for
+# Smaller, faster-to-download .wasm; this crate is only ever built for
 # wasm32-unknown-unknown, never shipped as a native binary.
 [profile.release]
 opt-level     = "s"

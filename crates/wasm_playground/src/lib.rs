@@ -3,7 +3,7 @@
 //!
 //! Wraps the same tokenize -> parse -> sema -> interpret pipeline as
 //! `ubel_stratum_rd`'s `examples/diagnose.rs`, returning one JSON string
-//! instead of printing to a terminal — there is no real stdout in a
+//! instead of printing to a terminal: there is no real stdout in a
 //! browser. `run_pipeline` is the only export the playground page calls.
 //!
 //! Program output (`println`/`print`/`log`) is captured via
@@ -17,7 +17,7 @@ use ubel_stratum::error_management::{Diagnosable, Diagnostic};
 use wasm_bindgen::prelude::*;
 
 /// One diagnostic, flattened to plain JSON-friendly fields. Mirrors
-/// `error_management::Diagnostic` — see that type for field meanings.
+/// `error_management::Diagnostic`; see that type for field meanings.
 #[derive(Serialize)]
 struct DiagnosticDto {
     code:       String,
@@ -46,7 +46,7 @@ impl From<&Diagnostic> for DiagnosticDto {
 }
 
 /// The stage the pipeline stopped at. Later stages are only reached once
-/// every earlier one succeeds — see `run_pipeline`.
+/// every earlier one succeeds; see `run_pipeline`.
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Stage {
@@ -57,30 +57,30 @@ enum Stage {
 }
 
 /// Full result of one `run_pipeline` call. Serialized to JSON for the
-/// playground page to parse and render — see `web/playground`.
+/// playground page to parse and render; see `web/playground`.
 #[derive(Serialize)]
 struct PipelineResult {
     /// Furthest stage the pipeline reached.
     stage:          Stage,
     /// Whether that furthest stage itself succeeded. `false` means
     /// `diagnostics` explains why; `true` at stage `Interpret` means the
-    /// program actually ran to completion (or was skipped — see
+    /// program actually ran to completion (or was skipped, see
     /// `ran_main`, not this field, for that distinction).
     ok:             bool,
     token_count:    Option<usize>,
     item_count:     Option<usize>,
     /// `false` when sema succeeded but no `fn main(` was found, so the
-    /// interpreter was never invoked — same heuristic `diagnose.rs` uses.
+    /// interpreter was never invoked, same heuristic `diagnose.rs` uses.
     ran_main:       bool,
     diagnostics:    Vec<DiagnosticDto>,
     /// Rustc-style plain-text rendering of `diagnostics` against the
-    /// source, ready to drop into a `<pre>` — the same renderer the CLI
+    /// source, ready to drop into a `<pre>`, the same renderer the CLI
     /// tools use, so playground output matches `mdix`/`stratc` output.
     diagnostics_text: String,
     /// Captured `println`/`print`/`log` output from the interpreted
     /// program, if it ran. `None` if the interpreter was never reached.
     program_output: Option<String>,
-    /// Set when `run_program` returns `Err` — a language-level runtime
+    /// Set when `run_program` returns `Err`: a language-level runtime
     /// error (panic/failed assertion), not a compiler bug.
     runtime_error:  Option<String>,
 }
@@ -88,7 +88,7 @@ struct PipelineResult {
 /// Runs one `.ubl` source string through tokenize -> parse -> sema ->
 /// interpret and returns a JSON-encoded `PipelineResult` (see above).
 ///
-/// Never panics on malformed input by design — every stage's error path
+/// Never panics on malformed input by design: every stage's error path
 /// returns diagnostics instead of unwrapping. A genuine Rust panic (a
 /// compiler bug, not a language error) still propagates as a wasm trap;
 /// the playground page wraps this call in try/catch and shows a distinct
@@ -155,7 +155,7 @@ pub fn run_pipeline(source: &str) -> String {
     }
 
     // ── Stage 4: interpret ────────────────────────────────────────────
-    // Same "does it declare a main function" heuristic as diagnose.rs —
+    // Same "does it declare a main function" heuristic as diagnose.rs,
     // a file that only declares types/functions with no entry point is a
     // valid, successfully-checked program, just not one that runs.
     if !source.contains("fn main(") {

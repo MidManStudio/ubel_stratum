@@ -1,28 +1,39 @@
 // Full pipeline smoke test: tokenize -> rd_parser -> sema -> interpret.
 //
-// Usage: cargo run -p ubel_stratum_rd --example pipeline -- <dir-of-.ubl-files>
+// Usage:
+//   cargo run -p ubel_stratum_rd --example pipeline -- <dir-of-.ubl-files>
+//   cargo run -p ubel_stratum_rd --example pipeline -- <path/to/file.ubl>
 //
 // For each .ubl file, runs every stage and reports the FIRST stage that
 // fails (lex / parse / sema / interpret), so we know exactly how far the
-// pipeline gets on real source.
+// pipeline gets on real source. A file argument is processed regardless
+// of its extension (an explicit path is trusted); a directory argument
+// is still filtered to *.ubl, unchanged from before single-file support.
 
 use std::env;
 use std::fs;
+use std::path::PathBuf;
 use ubel_stratum::ast::arena::AstArena;
 
 fn main() {
     let dir = env::args().nth(1).unwrap_or_else(|| "tests/fixtures".to_string());
-    let mut entries: Vec<_> = fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {}", dir, e))
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|x| x == "ubl").unwrap_or(false))
-        .collect();
-    entries.sort_by_key(|e| e.path());
+    let meta = fs::metadata(&dir).unwrap_or_else(|e| panic!("cannot read {}: {}", dir, e));
+
+    let mut paths: Vec<PathBuf> = if meta.is_file() {
+        vec![PathBuf::from(&dir)]
+    } else {
+        fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", dir, e))
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "ubl").unwrap_or(false))
+            .collect()
+    };
+    paths.sort();
 
     let mut counts = [0usize; 5]; // lex, parse, sema, interpret, full-ok
 
-    for entry in entries {
-        let path = entry.path();
+    for path in paths {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let source = fs::read_to_string(&path).unwrap();
 
