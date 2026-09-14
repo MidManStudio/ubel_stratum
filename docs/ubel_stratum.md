@@ -114,112 +114,6 @@ checks gate.
   for sema to type-check; the combination is simply never grammatically
   valid to begin with.
 
-**Decisions (Open Decision #6, docs/MEMORY_MODEL.md §12, resolved):**
-- `collect_fn_sig`/`collect_method_sig` used to resolve each param's
-  type annotation (`ast_type_to_sema`) purely to build the function's
-  own aggregate `SemaType::Function` for call-site checking, and threw
-  the per-param result away otherwise. `seed_param` then resolved the
-  exact same AST node again, independently, later, to seed the param's
-  binding type for body-checking. New `seed_param_type` helper: both
-  `collect_fn_sig` and `collect_method_sig` now call it right after
-  resolving each param, recording that `TypeId` into
-  `SemaContext::binding_types` (keyed by the param's own span, a new
-  `binding_type` getter added alongside the existing `set_binding_type`)
-  and into `def_types` via the param's own `DefId`, exactly what
-  `seed_param` used to do itself. `seed_param` now checks
-  `binding_type` first and returns early if it's already set, falling
-  back to its old resolve-from-scratch behavior only for the params
-  that never went through signature collection at all (there currently
-  are none in practice, but this keeps the function correct rather than
-  assuming that always holds).
-- Confirmed empirically before touching anything, not assumed from the
-  doc note that first flagged this: the bug isn't only a duplicate
-  diagnostic. `collect_fn_sig` pushes the function's own generic scope
-  before resolving param types; `seed_param`'s independent second
-  resolution never had that scope pushed anywhere in its own call
-  chain. For a free function's own generic param (`fn identity<T>(x:
-  T)`), that meant the body-checking side silently treated `x` as an
-  unconstrained type instead of the real `Param(0)` placeholder: `let
-  y: int = x` type-checked with zero errors before this fix. Threading
-  the signature-collection result through fixes both problems at once,
-  since it removes the second, scope-less resolution entirely rather
-  than just deduplicating whatever diagnostic it happened to produce.
-- Checked the method case specifically before calling this done: inline
-  struct methods were never affected by the generic-scope half of the
-  bug, since `collect_struct_sig`/`infer_struct_bodies` already push the
-  struct's generic scope once, around both `collect_method_sig` and
-  `infer_method_body` together, so both phases already agreed. The fix
-  is a pure efficiency and diagnostic-count win there, not a behavior
-  change. `impl`/`extend`-block methods are a separate, already-
-  documented gap (GENERICS_RULES.md "Known gaps"): neither phase pushes
-  a struct's generic scope around them at all, so this fix doesn't
-  touch that case either way.
-
-**Tests:** `tests/fixtures/err_param_type_reported_once_isolated.ubl`
-and `_combined.ubl` (single-report, both the ownership-wrapper and the
-general named-type arity paths); `ok_param_type_single_resolution_
-isolated.ubl` and `_combined.ubl` (a generic param stays correctly and
-consistently typed across repeated calls with different concrete
-instantiations, both for a free function and an inline struct method).
-`err_unique_missing_type_argument.ubl`'s header comment updated to
-match: it used to document the double-report as expected, pre-existing
-behavior; it now expects a single report.
-
-### `sema/lifetime_check.rs`
-
-**What it does:** New pass, well-formedness checking for `[lifetime L]`
-/ `[lifetime L where L outlives M]` declarations on functions and
-`edge struct`s: LIFETIME-0xx (`UndeclaredLifetime`,
-`DuplicateLifetimeParam`, `OutlivesCycle`). Runs right after name
-resolution, before type inference, since it's purely structural and
-needs neither. See docs/MEMORY_MODEL.md §9 and
-docs/DIAGNOSTICS_RULES.md's `LIFETIME-0xx` entry for the full picture;
-this is the first of two roadmap slices (well-formedness now, real
-outlives/subset enforcement a separate, later, and much larger piece
-of work).
-
-**Decisions:**
-- Scope picked from three options presented to Abdulhamid (patch the
-  raw declaration text only, check declaration well-formedness plus
-  every `&name` used in that same declaration's own signature/fields,
-  or go straight to real region-inference-level checking): the middle
-  one, "well-formedness only," covering both function lifetimes and
-  edge-struct lifetimes together rather than sequencing them, per
-  direct instruction.
-- Deliberately does not walk method bodies or param/return types at
-  all. `MethodDecl` has no `lifetime_params` of its own, only an
-  enclosing struct can declare any (confirmed by reading the AST, not
-  assumed), so checking a method's own `&name` usage would need a
-  scope-inheritance story (does a method's `&L` refer to its enclosing
-  struct's declared `L`, and if so, which enclosing struct when a
-  method reaches this pass outside of `infer_struct_bodies`'s own
-  generic-scope push) that this pass doesn't build. Left as a real,
-  separate, documented follow-up rather than half-wired.
-- `check_type_lifetimes` recurses through the full type structure
-  (`List<&L T>`, tuple elements, a function type's own param/return,
-  ...), not just a type's top level, so a lifetime name buried inside
-  a generic argument still gets checked. Matched against
-  `TypeKind`'s full 18-variant surface directly rather than assuming
-  which ones could plausibly nest a `Reference`.
-- Found empirically, not assumed, while scoping this delivery (see
-  docs/MEMORY_MODEL.md §9's own new paragraph on this): marking a
-  struct `edge` with a matching `[lifetime L]` currently changes
-  nothing about how the existing arena-escape checker (§6) treats it.
-  This pass doesn't fix that connection either, `is_edge` still isn't
-  consulted by `check_assign_arena_escape` after this delivery, that
-  remains real, separate follow-up, but it's why the module doc above
-  is explicit that well-formedness checking alone doesn't make `edge
-  struct` functional for the case it exists for.
-
-**Tests:** `tests/fixtures/ok_lifetime_wellformed_isolated.ubl` and
-`_combined.ubl` (a function with a valid multi-lifetime outlives
-constraint, and an edge struct with a matching field, both actually
-run, not just type-check); `err_lifetime_undeclared_isolated.ubl` (an
-undeclared name in a `where` clause) and
-`err_lifetime_cycle_combined.ubl` (the trivial self-outlives case on
-an edge struct, next to otherwise-legitimate code, confirming no
-cascade).
-
 ### `interpreter/value.rs`
 
 **What it does:** Runtime `Value` representation and its core
@@ -331,78 +225,12 @@ method calls, struct/anon-object construction.
   present (the well-established convention this feature is modeled
   on, Rust's own `format!`, does the same). It always pads
   immediately before the digits, after any sign and prefix.
-- `eval_method_call` (MEMORY_MODEL.md §9's Open Decision #5, method-
-  dispatch half): peels off at most one `Unique`/`Shared`/`SyncShared`
-  wrapper before its own dispatch match, mirroring `resolve_receiver`
-  on the sema side (`builtins/instance.rs`). Checked directly before
-  writing this: cloning the unwrapped inner `Value` (the regular
-  `Clone`, not `deep_clone`) is O(1) and a mutating method still
-  mutates real shared storage regardless, since every collection and
-  `Value::Struct` already keeps its own mutable state behind its own
-  `Rc<RefCell<...>>`; the clone only shares that inner `Rc`, it never
-  duplicates the storage itself.
 
 **Tests:** the four new fixtures under `ok_format_spec_extended_*` and
 `ok_format_spec_numeric_base_*` / `err_format_spec_*` exercise all of
 this end to end. No unit tests for this function specifically, same
 precedent the original precision-only version of this feature already
 set (fixture-tested only).
-
-### `builtins/instance.rs`
-
-**What it does:** The canonical registry for every builtin instance
-method: which names exist per collection kind, their return shape and
-arity, which are HIGH-tier only, and `resolve_receiver`, which strips
-tier wrappers off a receiver type before matching it against a kind.
-
-**Decisions:**
-- (MEMORY_MODEL.md §9's Open Decision #5, method-dispatch half)
-  `resolve_receiver` now also peels off at most one `Unique`/`Shared`/
-  `SyncShared` wrapper first, before its existing tier-wrap match.
-  Kept as a separate step ahead of the `wrap`/`bare` match rather than
-  folded into it: `ReceiverWrap` exists specifically to remember which
-  *tier* wrap to reapply to an allocating method's result
-  (`method_return_type` in `type_infer.rs`); ownership doesn't need
-  that, nothing a builtin instance method returns needs `Unique`/
-  `Shared`/`SyncShared` re-applied, only whatever tier the receiver
-  already had.
-- New `is_builtin_instance_method_name`, a name-only check across all
-  nine `ReceiverKind`s' own `METHOD_NAMES`, added specifically for
-  `sema/move_facts.rs` to consult (see that module's own entry below);
-  it has no type information available to know which kind a given call
-  site's receiver actually is, so this is deliberately name-based, not
-  kind-specific.
-
-### `sema/move_facts.rs`
-
-**Decisions:**
-- (MEMORY_MODEL.md §9's Open Decision #5, method-dispatch half) Once
-  `resolve_receiver`/`eval_method_call` made
-  `Unique<List<int>>.push(5)` legal, the walker's previous blanket "a
-  method-call receiver is a move of its receiver" rule would have made
-  the type nearly unusable: every call after the first on the same
-  value would have been flagged as a use-after-move. New third opacity
-  rule in `MoveExprWalker::visit_expr`: a call whose callee is a known
-  builtin instance method name (`instance::is_builtin_instance_method_
-  name`) no longer visits its own receiver as a bare use, while still
-  walking the receiver normally when it is not a bare identifier (a
-  move could be buried deeper inside it) and always walking every arg.
-  Name-based, not type-based, same restraint `is_unique_new_call`
-  already uses elsewhere in this file. Confirmed empirically, not just
-  theorized, that the resulting name-collision gap is a real one, not
-  a rare edge case: a hand-built `Counter` struct with its own
-  `get(self)` method, wrapped in `Unique`, was silently exempted from
-  move-checking too, purely because `get` also happens to be a real
-  `List`/`Dictionary`/`Pool` method name. Left as is, real follow-up
-  once the language is more mature, direct instruction rather than
-  something to silently paper over now.
-
-### `ast/visitor.rs`
-
-- `walk_arg_kind` bumped from private to `pub(crate)` so
-  `sema/move_facts.rs` could call the exact same two-line arg-walking
-  logic `ast::visitor::walk_expr`'s own `Call` handling already uses,
-  rather than a second copy of it living in a different module.
 
 ### `lexer/logos_lexer.rs`
 
@@ -415,50 +243,6 @@ compiler sees.
   `At` (`@`) token. `#` was not a lexable character in this language
   at all before this delivery. Needed for the alternate-form flag in
   a format spec (docs/PRINT_FORMAT_RULES.md §4).
-- (this delivery) `handle_logos_token` and the old `tokenize()` outer
-  loop were merged into one new primitive, `next_token`, which
-  produces exactly one real token per call (or `None` at true end of
-  input) instead of dispatch logic that only ever ran from inside
-  `tokenize()`'s own loop. `tokenize()` is now just `next_token()`
-  called in a loop until exhausted, plus the trailing `Eof`. The
-  actual reason for the split: `lexer/string_parser.rs`'s
-  interpolation-hole scanner now drives this exact primitive directly
-  on a fresh `LogosLexer` instance, so a hole's closing brace is found
-  by tracking real tokens instead of a second, separate raw-byte scan.
-  One dispatch path, used both ways, instead of two that could drift
-  apart.
-- (this delivery) Added `take_lexical_errors`, a `pub(crate)`
-  passthrough to the lexer's own `ErrorManager`, so a caller driving
-  `next_token()` directly (rather than going through `tokenize()`'s
-  `Result`) can still learn whether anything failed.
-
-### `lexer/string_parser.rs`
-
-**What it does:** Parses interpolated (`$"..."`), verbatim (`@"..."`),
-and interpolated-verbatim (`$@"..."`) string literals: the outer
-text/hole alternation, escape sequences, and each interpolation hole's
-own token vector.
-
-**Decisions:**
-- (this delivery) `parse_interpolation_expr` (finds a hole's closing
-  `}`) no longer counts raw `{`/`}` bytes to find the boundary. It
-  drives a fresh `LogosLexer` over the rest of the file one token at a
-  time (via the new `next_token` primitive, see `lexer/logos_lexer.rs`
-  above) and tracks depth using genuine `LeftBrace`/`RightBrace`
-  TOKENS. Anything already living inside a nested string, char
-  literal, or comment is consumed atomically by the same dispatch used
-  everywhere else, including recursively for a nested `$"..."`, so it
-  can never be mistaken for a hole boundary the way a raw byte scan
-  would. See "Fixes and Problems" below for the bug this replaces.
-- (this delivery) A hole's own `Vec<Token>` still ends with a synthetic
-  `Eof`, matching what the old two-phase approach (calling `tokenize()`
-  on an isolated substring) produced. This isn't cosmetic:
-  `rd_parser::Cursor::peek_token` clamps its index access on the
-  explicit assumption that every token slice handed to it ends with
-  `Eof` (`tokens[pos.min(len - 1)]`), so a hole's tokens without one
-  would misbehave the moment a real `Parser` consumed them (see
-  `crates/rd_parser/src/parsers/parse_expr.rs`'s `parse_interp`), even
-  though nothing in this crate's own tests would catch it.
 
 ### `lexer/token.rs`
 
@@ -659,70 +443,6 @@ type checking (TYPE-1xx range).
   port, not a wiring job, so it was left alone rather than either fixed
   unasked or deleted outright.
 
-### `lexer/string_parser.rs`
-
-- `parse_interpolation_expr` found a hole's closing `}` by counting raw
-  `{`/`}` bytes with no awareness of strings, char literals, or
-  comments. This happened to come out right whenever whatever was
-  nested inside had internally balanced braces (a plain nested string,
-  even a nested `$"..."`), which is why the language appeared to
-  already "support" nested strings in holes. It broke specifically when
-  something nested contained a genuinely unbalanced brace character,
-  which is ordinary: a string like `"missing an { arg"`, a comment
-  mentioning a brace, a char literal `'{'`. Confirmed empirically with a
-  throwaway probe against the real lexer before choosing a fix, not
-  assumed from reading the code; the doc note this replaces
-  (docs/PRINT_FORMAT_RULES.md's old §8) had slightly mischaracterized
-  the trigger as "any nested string", not specifically an unbalanced
-  one. Three fix options were presented to Abdulhamid: patch the raw
-  scanner to be string/comment-aware by hand, drive the real lexer
-  incrementally, or bulk-tokenize-and-walk. The incremental,
-  token-driven option was chosen for architectural correctness (no
-  duplicated string/comment logic to drift out of sync later) over the
-  smaller diff either of the other two would have been. See
-  `lexer/logos_lexer.rs`'s `next_token` above for the primitive this is
-  built on.
-- Caught during this delivery's own fixture sweep, not before: the
-  first pass at the fix dropped each hole's trailing `Eof` token, since
-  the new `next_token` primitive deliberately never produces one (only
-  `tokenize()`'s own wrapper does). `rd_parser::Cursor` depends on that
-  `Eof` being present (see the Decisions note above); every relocated
-  `string_interpolation_test.rs` assertion that checked a hole's exact
-  token list failed with an extra-token mismatch until it was added
-  back explicitly.
-
-### `lexer/logos_lexer.rs`
-
-- `handle_error`'s span used `span_range.start`/`span_range.end`
-  directly instead of the `abs_start`-based computation the ordinary-
-  token path already used. `span_range` comes from
-  `self.logos_lex.span()`, which is relative to whichever slice
-  `self.logos_lex` currently wraps, not to the whole file, once at
-  least one string or comment earlier in the file has caused a rebase
-  (`self.logos_lex = LogosToken::lexer(&self.input[pos..])`). This is
-  the exact same bug already found and fixed for the normal-token path
-  (see that fix's own comment, still in the code); it had just never
-  been mirrored into the "unexpected character" error path. Found and
-  fixed while restructuring this function for the `next_token` split
-  above, not sought out separately.
-
-### `crates/rd_parser/examples/pipeline.rs`
-
-- The `[SEMA-FAIL]` reporting block explicitly enumerates
-  `take_name_errors`/`take_type_errors`/`take_tier_errors`/
-  `take_borrow_errors`/`take_move_errors` one by one, rather than
-  walking every error category generically. Adding a new category
-  (`LifetimeError`) meant this script, used by both local fixture
-  sweeps and `ci-check.yml`, silently printed `[SEMA-FAIL]` with no
-  detail at all for any file that failed only on a lifetime error,
-  found while empirically verifying `sema/lifetime_check.rs` against
-  real probes, where every one of them showed a blank error list. Added
-  the missing `take_lifetime_errors` loop, same shape as its siblings.
-  Same class of gap `DIAGNOSTICS_RULES.md` §9's own case study already
-  names as the thing that *can* still drift silently even with the
-  registry discipline: a new error class not being drained by every
-  place that walks `ErrorManager`'s output.
-
 ## Documentation convention: scope note
 
 `interpreter/value.rs`, `interpreter/eval/mod.rs`, `interpreter/eval/expr.rs`,
@@ -747,48 +467,3 @@ for a purely cosmetic gain. Same incremental principle the guidelines
 file itself states for the documentation split: real, separate future
 work if
 wanted, not assumed, ask first.
-
-A third, separate delivery this session (the nested-string-literal-
-inside-interpolation-hole fix, roadmap housekeeping item 3(c)) touched
-`lexer/string_parser.rs` and `lexer/logos_lexer.rs` again, plus
-`docs/PRINT_FORMAT_RULES.md` (removing its now-resolved §8 entry).
-`lexer/string_parser.rs` did not have a NOTICE header before this
-delivery; one was added, matching the convention `lexer/logos_lexer.rs`
-already used. Same discipline followed as the note above: no em dashes
-or first/second person in anything actually added or rewritten, not a
-retroactive sweep of either file's pre-existing comments.
-
-A fourth delivery this session (Open Decision #6, docs/MEMORY_MODEL.md
-§12, the last housekeeping item on the roadmap before design-only work
-on outlives scoping) touched `sema/type_infer.rs` and
-`sema/sema_context.rs`, plus `docs/MEMORY_MODEL.md` §12's own status
-row. Same discipline again: only the lines actually written this
-delivery were checked for em dashes and first/second person, not a
-sweep of `type_infer.rs`'s substantial pre-existing prose elsewhere in
-the same file.
-
-A fifth delivery this session (roadmap item 4, first slice: well-
-formedness checking for `[lifetime L]`/`[lifetime L where L outlives
-M]`, scoped as design-only in a prior session and picked up for real
-implementation after presenting depth options and getting "well-
-formedness only, both areas" back) added a new file,
-`sema/lifetime_check.rs`, a new error family (`error_management/
-errors/lifetime/mod.rs`, `LIFETIME-0xx`), touched `sema/mod.rs` and
-`error_management/error_manager.rs` to wire the new pass in, touched
-`crates/rd_parser/examples/pipeline.rs` for the reporting-gap fix
-above, and touched `docs/MEMORY_MODEL.md` §9 and
-`docs/DIAGNOSTICS_RULES.md`'s registry. Same discipline again: checked
-every line this delivery actually wrote, not a sweep of any of these
-files' substantial pre-existing content.
-
-A sixth delivery this session (MEMORY_MODEL.md §9's Open Decision #5,
-method-dispatch half: does `resolve_receiver` strip `Unique`/`Shared`/
-`SyncShared` to dispatch methods on the inner type) touched
-`builtins/instance.rs`, `interpreter/eval/expr.rs`,
-`sema/move_facts.rs`, `ast/visitor.rs` (one line, a visibility bump),
-and `docs/MEMORY_MODEL.md` §9's own Open Decision #5 entry plus its
-"one deliberate over-approximation" paragraph just above it, updated
-rather than left stale once the over-approximation it described no
-longer matched the code. Same discipline again: checked every line
-this delivery actually wrote or rewrote, not a sweep of any of these
-files' substantial pre-existing content.
