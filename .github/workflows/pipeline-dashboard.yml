@@ -1,8 +1,14 @@
-name: Pipeline Dashboard
+name: Deploy Site
 
 # Builds the full tokenize -> parse -> sema -> interpret diagnostic report
-# plus benchmarks for every fixture in tests/fixtures, and publishes the
-# result as a static site via GitHub Pages.
+# plus benchmarks for every fixture in tests/fixtures, the mdBook docs
+# site, and the wasm browser playground, then publishes all three plus
+# the CI dashboard as one combined static site on Cloudflare Pages.
+#
+# Was GitHub-Pages-only and dashboard-only (see git history); moved to
+# Cloudflare Pages because GitHub Pages had been unreliable, and expanded
+# because the dashboard, docs, and playground are meant to grow together
+# rather than be built as one big effort after the language is finished.
 #
 # Kept as its own workflow (not folded into ci-check.yml) because the
 # benchmark step is slow relative to a normal push check, and because this
@@ -24,15 +30,19 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pipeline-dashboard"
+  group: "deploy-site"
   cancel-in-progress: false
 
+env:
+  # Real Cloudflare Pages project name; create it once via the dashboard
+  # or let the "ensure project exists" step below create it on first run.
+  CLOUDFLARE_PAGES_PROJECT: ubel-stratum-docs
+  MDBOOK_VERSION: "0.5.4"
+
 jobs:
-  build-report:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -41,12 +51,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ubel-dashboard"
           cache-on-failure: true
 
+      # ── Existing fixture-sweep + dashboard report (unchanged) ────────
       - name: Build diagnose tool
         run: cargo build -p ubel_stratum_rd --example diagnose
 
@@ -56,14 +68,14 @@ jobs:
           for f in tests/fixtures/*.ubl; do
             name=$(basename "$f" .ubl)
             # timeout guard: a malformed fixture (e.g. more than one
-            # interpolated string literal in one file — known lexer issue,
+            # interpolated string literal in one file, known lexer issue,
             # see docs/MEMORY_MODEL.md) can hang the lexer indefinitely.
             # Without this, one bad fixture stalls the whole job instead
             # of just showing up as a FAIL in that fixture's own report.
             timeout 30s ./target/debug/examples/diagnose "$f" > "results/${name}.txt" 2>&1
             rc=$?
             if [ $rc -eq 124 ]; then
-              echo "status: TIMEOUT (30s) — see docs/MEMORY_MODEL.md, interpolated-string lexer hang" >> "results/${name}.txt"
+              echo "status: TIMEOUT (30s), see docs/MEMORY_MODEL.md, interpolated-string lexer hang" >> "results/${name}.txt"
             fi
           done
           ls -la results/
@@ -83,10 +95,10 @@ jobs:
             --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
       - name: Write job summary
-        # A Pages-independent view of the exact same report.json — GitHub
-        # renders this on the run's own Summary tab regardless of Pages
-        # status, so a Pages deploy failure (or lag; see the incident this
-        # was added after) doesn't mean pipeline results are unreachable.
+        # A Cloudflare-independent view of the exact same report.json;
+        # GitHub renders this on the run's own Summary tab regardless of
+        # whether the deploy step below succeeds, so a deploy failure (or
+        # lag) doesn't mean pipeline results are unreachable.
         if: always()
         run: python3 scripts/build_job_summary.py --report web/dashboard/report.json >> "$GITHUB_STEP_SUMMARY"
 
@@ -100,16 +112,81 @@ jobs:
             web/dashboard/report.json
           retention-days: 30
 
-      - uses: actions/upload-pages-artifact@v3
+      # ── Docs site (mdBook) ────────────────────────────────────────────
+      - name: Install mdBook
+        run: |
+          curl -sL -o /tmp/mdbook.tar.gz \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf /tmp/mdbook.tar.gz -C /tmp
+          chmod +x /tmp/mdbook
+          echo "/tmp" >> "$GITHUB_PATH"
+
+      - name: Build docs site
+        run: mdbook build web/site
+
+      # ── Playground (wasm) ─────────────────────────────────────────────
+      - name: Build wasm playground crate
+        run: |
+          cargo build --manifest-path crates/wasm_playground/Cargo.toml \
+            --target wasm32-unknown-unknown --release
+
+      - name: Determine matching wasm-bindgen-cli version
+        id: wbg
+        run: |
+          VERSION=$(cargo metadata --manifest-path crates/wasm_playground/Cargo.toml \
+            --format-version 1 | jq -r '.packages[] | select(.name=="wasm-bindgen") | .version')
+          echo "Resolved wasm-bindgen version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install matching wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version "${{ steps.wbg.outputs.version }}" --locked
+
+      - name: Generate wasm JS bindings
+        run: |
+          mkdir -p dist/playground
+          wasm-bindgen crates/wasm_playground/target/wasm32-unknown-unknown/release/ubel_stratum_wasm.wasm \
+            --out-dir dist/playground --out-name ubel_stratum_wasm --target web --no-typescript
+          cp web/playground/index.html dist/playground/index.html
+
+      # ── Assemble the combined site ────────────────────────────────────
+      - name: Assemble dist/
+        run: |
+          cp -r web/site/book/* dist/
+          mkdir -p dist/shared
+          cp -r web/shared/* dist/shared/
+          mkdir -p dist/results
+          cp -r web/dashboard/* dist/results/
+          find dist -maxdepth 2
+
+      - uses: actions/upload-artifact@v4
         with:
-          path: web/dashboard
+          name: site-dist
+          path: dist/
+          retention-days: 7
 
   deploy:
-    needs: build-report
+    needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-dist
+          path: dist/
+
+      - name: Ensure Cloudflare Pages project exists
+        # Harmless if it already does; only matters on the very first run.
+        uses: cloudflare/wrangler-action@v4
+        continue-on-error: true
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create ${{ env.CLOUDFLARE_PAGES_PROJECT }} --production-branch=master
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PAGES_PROJECT }} --branch=${{ github.ref_name }}
