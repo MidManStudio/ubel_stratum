@@ -993,6 +993,26 @@ fn eval_method_call(
     method_name: &str,
     args:        &[Value],
 ) -> EvalResult {
+    // Peel off at most one ownership-model wrapper before dispatching,
+    // mirroring `resolve_receiver` (`builtins/instance.rs`) on the sema
+    // side. Cloning the inner `Value` out is O(1) for every collection/
+    // struct variant here, since each already keeps its own mutable
+    // state behind its own `Rc<RefCell<...>>`; the clone just shares
+    // that same inner `Rc`, so a mutating method (`.push()` etc.) still
+    // mutates the one real storage location, whether reached through
+    // `Unique`, `Shared`, `SyncShared`, or no wrapper at all.
+    match &receiver {
+        Value::Unique(inner) => {
+            let inner_val = (**inner).clone();
+            return eval_method_call(interp, inner_val, method_name, args);
+        }
+        Value::Shared(rc) | Value::SyncShared(rc) => {
+            let inner_val = rc.borrow().clone();
+            return eval_method_call(interp, inner_val, method_name, args);
+        }
+        _ => {}
+    }
+
     match &receiver {
         // ── Built-in List methods ──────────────────────────────────
         Value::List(rc) => {
