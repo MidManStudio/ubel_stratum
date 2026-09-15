@@ -148,10 +148,24 @@ jobs:
             --out-dir dist/playground --out-name ubel_stratum_wasm --target web --no-typescript
           cp web/playground/index.html dist/playground/index.html
 
+      - name: Bundle test fixtures for the playground's fixture loader
+        # web/playground/index.html fetches ./fixtures/manifest.json and
+        # ./fixtures/<name>.ubl at runtime; both only exist once this step
+        # populates dist/playground/fixtures/, so local dev serving
+        # web/playground/index.html directly (outside dist/) will show
+        # "Fixtures unavailable" in the picker, which is expected and
+        # handled gracefully by that page rather than breaking it.
+        run: |
+          python3 scripts/build_fixture_manifest.py \
+            --fixtures-dir tests/fixtures \
+            --out-dir dist/playground/fixtures
+
       # ── Assemble the combined site ────────────────────────────────────
       - name: Assemble dist/
         run: |
-          cp -r web/site/book/* dist/
+          mkdir -p dist/docs
+          cp -r web/site/book/* dist/docs/
+          cp -r web/home/* dist/
           mkdir -p dist/shared
           cp -r web/shared/* dist/shared/
           mkdir -p dist/results
