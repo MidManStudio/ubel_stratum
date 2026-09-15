@@ -1,6 +1,10 @@
-# Ubel Stratum
+<p align="center">
+  <img src="web/shared/ubel-logo.svg" alt="Ubel Stratum" width="140">
+</p>
 
-**Multi-Tier Systems Language**
+<h1 align="center">Ubel Stratum</h1>
+
+<p align="center"><strong>Multi-Tier Systems Language</strong></p>
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-early%20development-orange.svg)]()

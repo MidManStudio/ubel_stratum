@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ubel Stratum</title>
+<meta name="description" content="Ubel Stratum — a statically-typed systems and game-development language with a three-tier memory model (HIGH/MID/LOW) and Mid Engine as its native ECS scripting target.">
+<link rel="icon" type="image/svg+xml" href="/shared/ubel-logo.svg">
+<link rel="stylesheet" href="/shared/ubel-theme.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: var(--font-body);
+  }
+  a { color: inherit; }
+
+  /* ── Top nav (shared shape with playground/dashboard headers) ────── */
+  header {
+    display: flex; align-items: center; gap: 1.25rem;
+    padding: 0.9rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header .brand { display: flex; align-items: center; gap: 0.6rem; }
+  header .brand img { width: 22px; height: 22px; display: block; }
+  header h1 {
+    font-family: var(--font-display); font-size: 1.1rem; font-weight: 600;
+    margin: 0;
+  }
+  header nav { display: flex; gap: 1.1rem; font-size: 0.85rem; margin-left: auto; }
+  header nav a { color: var(--text-muted); text-decoration: none; }
+  header nav a:hover, header nav a.current { color: var(--tok); }
+
+  @media (max-width: 640px) {
+    header { flex-wrap: wrap; row-gap: 0.6rem; padding: 0.75rem 1rem; }
+    header nav { margin-left: 0; flex: 1 1 100%; gap: 0.9rem; }
+  }
+
+  /* ── Hero ──────────────────────────────────────────────────────── */
+  .hero {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 4.5rem 1.5rem 3rem;
+    text-align: center;
+  }
+  .hero img.mark {
+    width: 128px; height: 128px;
+    margin-bottom: 1.5rem;
+  }
+  .hero h2 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 2.6rem;
+    letter-spacing: 0.01em;
+    margin: 0 0 0.75rem;
+  }
+  .hero .tagline {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 1.15rem;
+    color: var(--tok);
+    margin: 0 0 1.25rem;
+  }
+  .hero .lede {
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1.6;
+    max-width: 560px;
+    margin: 0 auto 1.75rem;
+  }
+  .badge-row {
+    display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;
+    margin-bottom: 2.25rem;
+  }
+  .badge {
+    font-family: var(--font-mono); font-size: 0.72rem;
+    color: var(--text-muted); background: var(--panel-alt);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.3rem 0.75rem;
+  }
+
+  .cta-row {
+    display: flex; gap: 0.9rem; justify-content: center; flex-wrap: wrap;
+  }
+  .cta {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    font-family: var(--font-body); font-weight: 600; font-size: 0.9rem;
+    text-decoration: none; border-radius: 6px;
+    padding: 0.7rem 1.3rem; border: 1px solid var(--border);
+  }
+  .cta.primary { background: var(--tok); color: #1B1815; border-color: var(--tok); }
+  .cta.primary:hover { filter: brightness(1.08); }
+  .cta.secondary { background: transparent; color: var(--text); }
+  .cta.secondary:hover { background: var(--panel-alt); }
+
+  @media (max-width: 640px) {
+    .hero { padding: 3rem 1.25rem 2.5rem; }
+    .hero img.mark { width: 96px; height: 96px; }
+    .hero h2 { font-size: 2rem; }
+    .cta-row { flex-direction: column; align-items: stretch; }
+    .cta { justify-content: center; }
+  }
+
+  /* ── Three-tier strip ──────────────────────────────────────────── */
+  .tiers {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 1.5rem 4rem;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+  }
+  .tier-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--tier-color);
+    border-radius: 8px;
+    padding: 1.25rem 1.4rem;
+  }
+  .tier-card .kind {
+    font-family: var(--font-mono); font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--tier-color); margin-bottom: 0.4rem;
+  }
+  .tier-card h3 {
+    font-family: var(--font-display); font-size: 1.15rem;
+    margin: 0 0 0.5rem; font-weight: 600;
+  }
+  .tier-card p {
+    color: var(--text-muted); font-size: 0.87rem; line-height: 1.55;
+    margin: 0;
+  }
+  .tier-card code {
+    font-family: var(--font-mono); font-size: 0.82em;
+    color: var(--text);
+  }
+
+  @media (max-width: 760px) {
+    .tiers { grid-template-columns: 1fr; }
+  }
+
+  footer {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 1.5rem 3rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    text-align: center;
+  }
+  footer a { color: var(--parse); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <img src="/shared/ubel-logo.svg" alt="">
+    <h1>Ubel Stratum</h1>
+  </div>
+  <nav>
+    <a href="/" class="current">Home</a>
+    <a href="/docs/">Docs</a>
+    <a href="/playground/">Playground</a>
+    <a href="/results/">CI Results</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <img class="mark" src="/shared/ubel-logo.svg" alt="Ubel Stratum logo">
+  <h2>Ubel Stratum</h2>
+  <p class="tagline">&ldquo;The right memory model for every function.&rdquo;</p>
+  <p class="lede">
+    A statically-typed systems and game-development language. HIGH, MID, and
+    LOW memory tiers live in the reference itself &mdash; <code class="ubl-type">GcRef</code>,
+    <code class="ubl-type">ArenaRef</code>, <code class="ubl-type">OwnedRef</code> &mdash; so one function
+    can garbage-collect, another can arena-allocate, and a third can hand-own
+    with a real borrow checker, all in the same program. Runs today as a
+    tree-walking interpreter; native code via LLVM is the end goal.
+  </p>
+  <div class="badge-row">
+    <span class="badge">early development</span>
+    <span class="badge">built with Rust</span>
+    <span class="badge">.ubl source files</span>
+    <span class="badge">MIT OR Apache-2.0</span>
+  </div>
+  <div class="cta-row">
+    <a class="cta primary" href="/playground/">Try the playground &rarr;</a>
+    <a class="cta secondary" href="/docs/">Read the docs</a>
+    <a class="cta secondary" href="https://github.com/MidManStudio/ubel_stratum">GitHub</a>
+  </div>
+</section>
+
+<div class="tiers">
+  <div class="tier-card" style="--tier-color: var(--parse);">
+    <div class="kind">High tier</div>
+    <h3>Garbage collected</h3>
+    <p>The default. <code>GcRef&lt;T&gt;</code> for everyday code where
+      correctness and iteration speed matter more than control.</p>
+  </div>
+  <div class="tier-card" style="--tier-color: var(--tok);">
+    <div class="kind">Mid tier</div>
+    <h3>Arena allocated</h3>
+    <p>Bulk allocation with an escape-checked boundary. <code>ArenaRef&lt;T&gt;</code>
+      for hot loops that shouldn't pay per-object GC overhead.</p>
+  </div>
+  <div class="tier-card" style="--tier-color: var(--sema);">
+    <div class="kind">Low tier</div>
+    <h3>Manual, borrow-checked</h3>
+    <p><code>OwnedRef&lt;T&gt;</code> with a real borrow checker &mdash;
+      moves, loans, and liveness enforced &mdash; for the code that needs
+      full control.</p>
+  </div>
+</div>
+
+<footer>
+  <a href="https://github.com/MidManStudio/ubel_stratum">github.com/MidManStudio/ubel_stratum</a>
+</footer>
+
+</body>
+</html>

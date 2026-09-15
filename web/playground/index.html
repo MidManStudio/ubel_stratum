@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ubel Stratum Playground</title>
+<link rel="icon" type="image/svg+xml" href="/shared/ubel-logo.svg">
 <link rel="stylesheet" href="/shared/ubel-theme.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/nord.min.css">
@@ -28,13 +29,36 @@
   header nav a { color: var(--text-muted); text-decoration: none; }
   header nav a:hover, header nav a.current { color: var(--tok); }
   header .spacer { flex: 1; }
+  #fixture-select {
+    background: var(--panel-alt); color: var(--text); border: 1px solid var(--border);
+    font-family: var(--font-body); font-size: 0.82rem;
+    padding: 0.45rem 0.6rem; border-radius: 5px; cursor: pointer;
+    max-width: 220px;
+  }
+  #fixture-select:disabled { opacity: 0.6; cursor: wait; }
   #run-btn {
     background: var(--tok); color: #1B1815; border: none;
     font-family: var(--font-body); font-weight: 600; font-size: 0.85rem;
     padding: 0.5rem 1.1rem; border-radius: 5px; cursor: pointer;
+    white-space: nowrap;
   }
   #run-btn:disabled { opacity: 0.6; cursor: wait; }
   #run-btn:hover:not(:disabled) { filter: brightness(1.1); }
+
+  /* ── Responsive: header row (title, nav, fixture picker, run button)
+     fits comfortably down to tablet width, but a phone in portrait
+     (the Galaxy A13's ~360-412px CSS width, e.g.) doesn't have room for
+     all four at once on one line. Let it wrap, with nav pushed onto its
+     own full row and the fixture picker/run button sharing the last one,
+     rather than relying on whatever the browser's default wrap order
+     happens to produce. */
+  @media (max-width: 640px) {
+    header { flex-wrap: wrap; row-gap: 0.6rem; padding: 0.75rem 1rem; }
+    header .spacer { display: none; }
+    header nav { order: 3; flex: 1 1 100%; gap: 0.9rem; }
+    #fixture-select { order: 4; flex: 1 1 auto; max-width: none; min-width: 0; }
+    #run-btn { order: 5; flex: 0 0 auto; }
+  }
 
   main {
     display: grid;
@@ -82,11 +106,15 @@
 <header>
   <h1>Ubel Stratum</h1>
   <nav>
-    <a href="/">Docs</a>
+    <a href="/">Home</a>
+    <a href="/docs/">Docs</a>
     <a href="/playground/" class="current">Playground</a>
     <a href="/results/">CI Results</a>
   </nav>
   <div class="spacer"></div>
+  <select id="fixture-select" disabled>
+    <option value="">Loading fixtures…</option>
+  </select>
   <button id="run-btn" disabled>Loading…</button>
 </header>
 
@@ -114,10 +142,11 @@
 }
 `;
 
-  const runBtn    = document.getElementById('run-btn');
-  const outputEl  = document.getElementById('output-pane');
-  const resultDot = document.getElementById('result-dot');
-  const resultLbl = document.getElementById('result-label');
+  const runBtn      = document.getElementById('run-btn');
+  const fixtureSel  = document.getElementById('fixture-select');
+  const outputEl    = document.getElementById('output-pane');
+  const resultDot   = document.getElementById('result-dot');
+  const resultLbl   = document.getElementById('result-label');
 
   // clike is a reasonable stand-in token mode for editing (brace matching,
   // string/comment detection); the highlight colors themselves come from
@@ -165,6 +194,77 @@
     outputEl.innerHTML = html;
   }
 
+  // ── Fixture loader ───────────────────────────────────────────────
+  // Bundled by the deploy workflow from tests/fixtures/*.ubl into
+  // ./fixtures/*.ubl plus a manifest.json listing the filenames (see
+  // .github/workflows/pipeline-dashboard.yml). Grouped by the ok_/err_
+  // naming convention the fixture suite already follows (see
+  // PARSER_RULES.md-adjacent project docs on the 4-fixtures-per-feature
+  // rule) rather than inventing a separate taxonomy just for the picker.
+  let wasmReady = false;
+  let fixturesReady = false;
+
+  function maybeEnableFixtureSelect() {
+    if (wasmReady && fixturesReady) fixtureSel.disabled = false;
+  }
+
+  function labelFor(filename) {
+    return filename
+      .replace(/\.ubl$/, '')
+      .replace(/^(ok|err)_/, '')
+      .replace(/_/g, ' ');
+  }
+
+  async function loadFixtureManifest() {
+    try {
+      const res = await fetch('./fixtures/manifest.json');
+      if (!res.ok) throw new Error('manifest fetch failed: ' + res.status);
+      const names = await res.json();
+
+      const okNames  = names.filter(n => n.startsWith('ok_')).sort();
+      const errNames = names.filter(n => n.startsWith('err_')).sort();
+      const other    = names.filter(n => !n.startsWith('ok_') && !n.startsWith('err_')).sort();
+
+      function group(label, list) {
+        if (!list.length) return '';
+        const opts = list.map(n => '<option value="' + n + '">' + labelFor(n) + '</option>').join('');
+        return '<optgroup label="' + label + '">' + opts + '</optgroup>';
+      }
+
+      fixtureSel.innerHTML =
+        '<option value="">Load a fixture…</option>' +
+        group('Passing (ok_)', okNames) +
+        group('Errors (err_)', errNames) +
+        group('Other', other);
+
+      fixturesReady = true;
+      maybeEnableFixtureSelect();
+    } catch (e) {
+      // Non-fatal: the playground works fine without the picker, this
+      // just means the manifest wasn't reachable (e.g. running
+      // web/playground/index.html outside the built dist/ tree, where
+      // ./fixtures/ was never assembled).
+      fixtureSel.innerHTML = '<option value="">Fixtures unavailable</option>';
+    }
+  }
+
+  fixtureSel.addEventListener('change', async () => {
+    const name = fixtureSel.value;
+    if (!name) return;
+    try {
+      const res = await fetch('./fixtures/' + name);
+      if (!res.ok) throw new Error('fixture fetch failed: ' + res.status);
+      const source = await res.text();
+      editor.setValue(source);
+      if (wasmReady) run();
+    } catch (e) {
+      outputEl.innerHTML = '<div class="internal-error">Could not load fixture "' +
+        escapeHtml(name) + '": ' + escapeHtml(String(e)) + '</div>';
+    }
+  });
+
+  loadFixtureManifest();
+
   async function run() {
     runBtn.disabled = true;
     runBtn.textContent = 'Running…';
@@ -195,6 +295,8 @@
     runBtn.disabled = false;
     runBtn.textContent = 'Run';
     runBtn.addEventListener('click', run);
+    wasmReady = true;
+    maybeEnableFixtureSelect();
   }).catch((e) => {
     runBtn.textContent = 'Failed to load';
     outputEl.innerHTML = '<div class="internal-error">Failed to load the wasm module: ' + escapeHtml(String(e)) + '</div>';

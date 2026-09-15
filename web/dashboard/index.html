@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ubel Stratum — Pipeline Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/shared/ubel-logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -46,6 +47,33 @@
   }
 
   a { color: var(--tok); }
+
+  /* ── Top nav: matches the shape of the playground's <header> and the
+     nav ubel-nav.js injects into the docs pages, so this reads as the
+     same site rather than a fourth unrelated page. This file still
+     carries its own copy of the shared variables (see
+     web/shared/ubel-theme.css's own header comment on why), so this
+     block is a plain, undecorated one rather than reusing a shared
+     class name that would silently break if the two ever drift. ────── */
+  .topnav {
+    display: flex; align-items: center; gap: 1.25rem;
+    padding: 0.9rem 2rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .topnav .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .topnav .brand img { width: 20px; height: 20px; display: block; }
+  .topnav h1 {
+    font-family: var(--font-display); font-size: 1rem; font-weight: 600;
+    margin: 0;
+  }
+  .topnav nav { display: flex; gap: 1.1rem; font-size: 0.85rem; margin-left: auto; }
+  .topnav nav a { color: var(--text-muted); text-decoration: none; }
+  .topnav nav a:hover, .topnav nav a.current { color: var(--tok); }
+  @media (max-width: 640px) {
+    .topnav { flex-wrap: wrap; row-gap: 0.6rem; padding: 0.75rem 1rem; }
+    .topnav nav { margin-left: 0; flex: 1 1 100%; gap: 0.9rem; }
+  }
 
   /* ── Hero: geological cross-section ─────────────────────────────── */
   .hero {
@@ -298,6 +326,15 @@
     .main { grid-template-columns: 1fr; }
     .stage-strip { grid-template-columns: repeat(2, 1fr); }
     .sidebar { max-height: 240px; }
+  }
+  @media (max-width: 480px) {
+    .hero { padding: 1.75rem 1.25rem 0; }
+    .hero h1 { font-size: 1.7rem; }
+    .hero-meta { text-align: left; }
+    .stage-strip { grid-template-columns: 1fr; padding: 0 1.25rem; }
+    .main { padding: 0 1.25rem; }
+    .bench-section { padding: 0 1.25rem 2rem; }
+    footer { padding: 0 1.25rem 2rem; }
   }
 </style>
 </head>

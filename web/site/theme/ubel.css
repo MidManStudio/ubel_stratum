@@ -80,3 +80,22 @@ pre > code.language-ubel {
 .ubel-nav-links a.ubel-nav-current {
     color: var(--tok);
 }
+
+/* ── Responsive ────────────────────────────────────────────────────
+   Verified against mdBook v0.5.4's real generated markup, not guessed:
+   #mdbook-menu-bar is `display:flex; flex-wrap:wrap` already, with
+   .menu-title as `flex:1` (grows/shrinks, ellipsis-truncates its own
+   text) between .left-buttons and this file's injected .ubel-nav-links,
+   followed by .right-buttons. Below 640px, forcing .ubel-nav-links onto
+   its own full-width line (rather than leaving the wrap point to chance)
+   keeps each of the three groups legible instead of an arbitrary link or
+   two getting stranded alone next to the icon buttons. */
+@media (max-width: 640px) {
+    .ubel-nav-links {
+        flex: 1 0 100%;
+        margin-left: 0;
+        justify-content: center;
+        gap: 0.9rem;
+        order: 3;
+    }
+}
