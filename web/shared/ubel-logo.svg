@@ -3,8 +3,8 @@
 <!-- Temporary placeholder mark, not a final brand asset. Original trace
      used arbitrary green/purple/red; recolored here by hue-family to the
      three accent colors already defined in web/shared/ubel-theme.css
-     (--tok sandstone, --parse shale, --sema fired clay) so it reads as
-     native to the site rather than a bolted-on placeholder. Lightness and
+     (tok sandstone, parse shale, sema fired clay) so it reads as native
+     to the site rather than a bolted-on placeholder. Lightness and
      saturation of each original path were preserved, only hue rotated,
      which is why the fills still carry the original artwork's tonal
      depth. Replace wholesale when a real logo exists; nothing else in
