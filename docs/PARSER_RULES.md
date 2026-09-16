@@ -647,6 +647,75 @@ index into a still-growing `Vec` mid-loop.
 
 ---
 
+### 5.8 `{` after a bare identifier — Struct Literal vs Block
+
+Found via exploratory testing (nested `while` loops doing a diagonal
+grid scan), root-caused and fixed directly against the parser source,
+not guessed at:
+
+```
+if x == y {
+    hit_count = hit_count + 1
+}
+```
+
+misparsed as `y { hit_count = hit_count + 1 }` — a struct literal named
+`y` with one field `hit_count` — because `is_struct_open`'s 2-token
+lookahead (`parse_expr.rs`) treats any `{ Ident Equal` opener as a
+struct literal, and a block whose first statement happens to be a plain
+assignment produces exactly that same 2-token shape. This is not a
+lookahead-tuning problem: `{ Ident Equal` is genuinely ambiguous between
+`Foo { field = value, ... }` and `Foo` followed by a block starting with
+`field = value`; no fixed amount of extra lookahead resolves it in
+general, since both parses are well-formed C-family-familiar syntax.
+
+Same restriction Rust reaches for in the same spot. `Parser` carries a
+`no_struct_lit: bool` (`parser.rs`), off by default. `enter_no_struct_lit`
+turns it on for exactly one expression — the condition/iterable/scrutinee
+immediately before an `if`/`elif`/`while`/`for`/`match` body, at both the
+statement-position parsers (`parse_stmt.rs`) and the expression-position
+ones (`parse_expr.rs`'s `parse_if_expr`/`parse_match_expr`) — and
+`leave_no_struct_lit` restores whatever it was before. The struct-literal
+postfix check in the Pratt loop (`parse_expr.rs`) just adds `&&
+!p.no_struct_lit` to its existing conditions; nothing about
+`is_struct_prefix`/`is_struct_open` themselves changed.
+
+**The restriction has to be turned back off inside real brackets, not
+just left on for the rest of the expression.** A first pass that set
+`no_struct_lit` for the whole condition and only cleared it after
+parsing broke the escape hatch — `if (Foo { x = 1 }).ready { ... }`,
+parenthesizing a genuine struct literal being exactly how a person
+opts back in when they do mean one there — because the flag is one
+plain field on `Parser`, not scoped per nesting level, so it stayed on
+for everything nested inside the condition, parens included. Caught by
+actually running the fixture that exercises the escape hatch, not by
+inspection: it failed to parse with an unclosed-`(` error. Fixed with a
+second helper, `clear_no_struct_lit`, called at every point the parser
+itself consumes an opening bracket with a mandatory matching close
+before returning — `(...)` (both grouped and tuple), call arguments,
+`[...]` index, and array-literal elements — since once inside a real
+bracket pair a following `{` can only mean a struct literal; there is no
+competing "this opens the block" reading left to be ambiguous with.
+`parse_dict`/`parse_anon_object` (both themselves `{`-delimited, but
+triggered as a *primary* expression rather than this postfix case) were
+not touched — a dict or anon-object literal used directly as an
+unparenthesized condition, itself containing a nested struct literal,
+is unlikely enough to not chase down in the same pass; noted here rather
+than silently left unconsidered.
+
+**Tests:** `tests/fixtures/ok_condition_struct_lit_ambiguity_isolated.ubl`
+(the four positions in isolation) and
+`tests/fixtures/ok_condition_struct_lit_ambiguity_combined.ubl` (the
+actual diagonal-grid scan that surfaced it, plus the parenthesized
+escape hatch). No `err_` pair: the fix removes a miscompile, it doesn't
+add a new intentional error path — attempting the ambiguous form now
+either parses correctly (the common case) or, unparenthesized and
+genuinely intended as a struct literal in a `bool`-typed condition,
+still fails type-checking the same way it always would have once
+parsed, same as any other type mismatch.
+
+---
+
 ## 6. LINQ Query Parsing — Removed
 
 There used to be a dedicated LINQ sub-parser here (`from x in expr where

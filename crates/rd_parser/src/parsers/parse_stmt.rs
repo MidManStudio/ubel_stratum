@@ -157,13 +157,19 @@ fn parse_if_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast
     let lo = p.span();
     p.cursor.advance(); // `if`
 
-    let condition = parse_expr::parse_expr(p)?;
+    let prev_nsl = p.enter_no_struct_lit();
+    let condition = parse_expr::parse_expr(p);
+    p.leave_no_struct_lit(prev_nsl);
+    let condition = condition?;
     let then_body = parse_if_branch_body(p)?;
 
     let mut elif_branches: Vec<ElifBranch<'ast>> = Vec::with_capacity(2);
     while p.cursor.eat(&TokenType::Elif) {
         let elif_lo = p.span();
-        let cond    = parse_expr::parse_expr(p)?;
+        let prev_nsl = p.enter_no_struct_lit();
+        let cond    = parse_expr::parse_expr(p);
+        p.leave_no_struct_lit(prev_nsl);
+        let cond    = cond?;
         let body    = parse_if_branch_body(p)?;
         let bspan   = match &body {
             IfBranchBody::Block(b) => b.span,
@@ -251,7 +257,10 @@ pub(crate) fn parse_match_arm_body<'ast, 'tok>(
 
 fn parse_match_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
     p.cursor.advance(); // `match`
-    let scrutinee = parse_expr::parse_expr(p)?;
+    let prev_nsl  = p.enter_no_struct_lit();
+    let scrutinee = parse_expr::parse_expr(p);
+    p.leave_no_struct_lit(prev_nsl);
+    let scrutinee = scrutinee?;
     let open      = p.span();
     if let Err(e) = p.cursor.expect(&TokenType::LeftBrace) {
         p.emit(crate::error::from_cursor(e, ParseContext::MatchArm));
@@ -298,7 +307,10 @@ fn parse_for_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'as
         p.emit(crate::error::from_cursor(e, ParseContext::Statement));
         return None;
     }
-    let iter = parse_expr::parse_expr(p)?;
+    let prev_nsl = p.enter_no_struct_lit();
+    let iter = parse_expr::parse_expr(p);
+    p.leave_no_struct_lit(prev_nsl);
+    let iter = iter?;
     let block = parse_block_inner(p)?;
     let body = p.alloc(block); // &'ast Block
     Some(StmtKind::For { binding, iter, body })
@@ -306,7 +318,10 @@ fn parse_for_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'as
 
 fn parse_while_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
     p.cursor.advance(); // `while`
-    let condition = parse_expr::parse_expr(p)?;
+    let prev_nsl = p.enter_no_struct_lit();
+    let condition = parse_expr::parse_expr(p);
+    p.leave_no_struct_lit(prev_nsl);
+    let condition = condition?;
     let block      = parse_block_inner(p)?;
     let body      = p.alloc(block);
     Some(StmtKind::While { condition, body })

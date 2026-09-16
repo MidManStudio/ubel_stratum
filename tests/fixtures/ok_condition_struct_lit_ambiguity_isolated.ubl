@@ -1,0 +1,61 @@
+// Regression fixture for the if/while/for/match condition vs struct-literal
+// ambiguity: a bare identifier condition immediately followed by a block
+// whose first statement is a plain assignment (`ident = expr`) used to be
+// misparsed as `Ident { ident = expr }`, a struct literal, because
+// is_struct_open's 2-token lookahead cannot tell the two apart from
+// `{ Ident Equal }` alone. Fixed by suppressing struct-literal parsing
+// while parsing the condition/iterable/scrutinee itself (parser.rs's
+// no_struct_lit), not by adding more lookahead. Isolated: exercises only
+// the narrow shape that broke, in each of the four positions that used to
+// share the bug (if, while, for, match).
+
+fn narrow_if(x: int, y: int) int {
+    let mut hit_count = 0
+    if x == y {
+        hit_count = hit_count + 1
+    }
+    return hit_count
+}
+
+fn narrow_while() int {
+    let mut i = 0
+    while i < 3 {
+        i = i + 1
+    }
+    return i
+}
+
+fn narrow_for(items: List<int>) int {
+    let mut total = 0
+    for item in items {
+        total = total + item
+    }
+    return total
+}
+
+fn narrow_match(flag: bool) int {
+    let mut result = 0
+    match flag {
+        true => {
+            result = result + 1
+        }
+        false => {
+            result = result + 2
+        }
+    }
+    return result
+}
+
+fn main() void {
+    let mut nums: List<int> = List.new()
+    nums.push(1)
+    nums.push(2)
+    nums.push(3)
+
+    let a = narrow_if(2, 2)
+    let b = narrow_while()
+    let c = narrow_for(nums)
+    let d = narrow_match(true)
+
+    println($"if: {a}, while: {b}, for: {c}, match: {d}")
+}

@@ -47,6 +47,10 @@ pub struct Parser<'ast, 'tok> {
     pub(crate) errors:     ErrorManager,
     pub(crate) context:    ParseContext,
     pub(crate) tier:       TierAnnotation,
+    /// When true, a bare `Ident { ... }` / `Ident.field { ... }` postfix is
+    /// never read as a struct literal — see `enter_no_struct_lit` for why
+    /// this exists and where it's set.
+    pub(crate) no_struct_lit: bool,
     pub(crate) memo:       FxHashMap<u64, MemoEntry>,
     /// Dynamic estimates derived from total token count.
     /// Use these instead of the static `cap::*` constants wherever possible.
@@ -62,6 +66,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             errors:    ErrorManager::new(source),
             context:   ParseContext::TopLevel,
             tier:      TierAnnotation::High,
+            no_struct_lit: false,
             memo:      FxHashMap::default(),
             estimates,
         }
@@ -110,6 +115,49 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     #[inline(always)]
     pub(crate) fn leave_tier(&mut self, tier: TierAnnotation) {
         self.tier = tier;
+    }
+
+    /// Suppress `Ident { ... }` / `Ident.field { ... }` struct-literal
+    /// parsing for the next expression only — the same ambiguity C-family
+    /// languages hit in `if`/`while`/`for`/`match` head position and Rust
+    /// resolves the same way: a bare condition/iterable/scrutinee ending in
+    /// an identifier can't tell a struct literal's `{ field = value }` from
+    /// that identifier's following block whose first statement happens to
+    /// be a plain assignment (`ident = value` is valid at the start of
+    /// either). `is_struct_open`'s 2-token lookahead (parse_expr.rs) can't
+    /// disambiguate that case no matter how it's tuned, since both parses
+    /// are genuinely well-formed from 2 tokens of lookahead alone — so
+    /// this suppresses the postfix outright in exactly the 6 call sites
+    /// where an unparenthesized condition/iterable/scrutinee precedes a
+    /// block, mirroring Rust's own restriction (write `(Foo { x = 1 })` if
+    /// a real struct literal is genuinely needed there). Caller must pair
+    /// this with `leave_no_struct_lit` immediately after the single
+    /// expression it guards — never around a whole statement, since the
+    /// body block that follows must NOT inherit the restriction.
+    #[inline(always)]
+    pub(crate) fn enter_no_struct_lit(&mut self) -> bool {
+        std::mem::replace(&mut self.no_struct_lit, true)
+    }
+
+    /// Companion to `enter_no_struct_lit`: clears the restriction while
+    /// parsing any expression bounded by an explicit closing delimiter
+    /// the parser itself will consume — `(...)`, call arguments, `[...]`,
+    /// array elements — since once inside a real bracket pair a following
+    /// `{` can only be a struct literal; there is no competing "this
+    /// opens the block" reading to be ambiguous with. Without this, a
+    /// restriction entered for an if/while/for/match head would otherwise
+    /// still be active for everything nested inside it, including a
+    /// parenthesized struct literal a person writes specifically to work
+    /// around the restriction (`if (Foo { x = 1 }).ready { ... }`), which
+    /// defeats the escape hatch the restriction is supposed to leave open.
+    #[inline(always)]
+    pub(crate) fn clear_no_struct_lit(&mut self) -> bool {
+        std::mem::replace(&mut self.no_struct_lit, false)
+    }
+
+    #[inline(always)]
+    pub(crate) fn leave_no_struct_lit(&mut self, prev: bool) {
+        self.no_struct_lit = prev;
     }
 
     #[inline(always)]

@@ -75,7 +75,7 @@ fn parse_bp<'ast, 'tok>(
         }
 
         // ── Struct literal: `TypeName { field = val }` ────────────────────────
-        if matches!(op, TokenType::LeftBrace) && is_struct_prefix(lhs) && is_struct_open(p) {
+        if matches!(op, TokenType::LeftBrace) && !p.no_struct_lit && is_struct_prefix(lhs) && is_struct_open(p) {
             lhs = parse_struct_lit(p, lhs, lo)?;
             continue;
         }
@@ -427,6 +427,15 @@ fn parse_paren_or_tuple<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Op
         let span = lo.merge(&p.span());
         return Some(p.alloc(Expr { kind: ExprKind::Tuple(&[]), span }));
     }
+    let prev_nsl = p.clear_no_struct_lit();
+    let result = parse_paren_or_tuple_inner(p, lo, open);
+    p.leave_no_struct_lit(prev_nsl);
+    result
+}
+
+fn parse_paren_or_tuple_inner<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>, lo: LSpan, open: LSpan,
+) -> Option<&'ast Expr<'ast>> {
     let first = parse_expr(p)?;
     if p.cursor.eat(&TokenType::RightParen) { return Some(first); } // grouped
     let mut elems: Vec<&'ast Expr<'ast>> = Vec::with_capacity(4);
@@ -445,10 +454,17 @@ fn parse_paren_or_tuple<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Op
 
 fn parse_array_lit<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'ast Expr<'ast>> {
     let open = p.span(); p.cursor.advance(); // `[`
+    let prev_nsl = p.clear_no_struct_lit();
     let mut elems: Vec<&'ast Expr<'ast>> = Vec::with_capacity(p.estimates.call_args);
+    let mut ok = true;
     while !p.cursor.is_at(&TokenType::RightBracket) && !p.cursor.is_eof() {
-        elems.push(parse_expr(p)?); p.eat_sep();
+        match parse_expr(p) {
+            Some(e) => { elems.push(e); p.eat_sep(); }
+            None => { ok = false; break; }
+        }
     }
+    p.leave_no_struct_lit(prev_nsl);
+    if !ok { return None; }
     if !p.cursor.eat(&TokenType::RightBracket) { p.emit(crate::error::unclosed('[', open, None, p.span())); }
     let span  = lo.merge(&p.span());
     let elems = p.arena.alloc_slice_copy(elems.as_slice());
@@ -459,12 +475,18 @@ fn parse_array_lit<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<
 
 fn parse_if_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'ast Expr<'ast>> {
     p.cursor.advance(); // `if`
-    let condition = parse_expr(p)?;
+    let prev_nsl  = p.enter_no_struct_lit();
+    let condition = parse_expr(p);
+    p.leave_no_struct_lit(prev_nsl);
+    let condition = condition?;
     let then_body = crate::parsers::parse_stmt::parse_if_branch_body(p)?;
     let mut elif_branches: Vec<ElifBranch<'ast>> = Vec::with_capacity(2);
     while p.cursor.eat(&TokenType::Elif) {
         let blo  = p.span();
-        let cond = parse_expr(p)?;
+        let prev_nsl = p.enter_no_struct_lit();
+        let cond = parse_expr(p);
+        p.leave_no_struct_lit(prev_nsl);
+        let cond = cond?;
         let body = crate::parsers::parse_stmt::parse_if_branch_body(p)?;
         let bspan = match &body {
             IfBranchBody::Block(b) => b.span,
@@ -486,7 +508,10 @@ fn parse_if_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'
 fn parse_match_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'ast Expr<'ast>> {
     let prev = p.enter(ParseContext::MatchArm);
     p.cursor.advance(); // `match`
-    let scrutinee = parse_expr(p)?;
+    let prev_nsl  = p.enter_no_struct_lit();
+    let scrutinee = parse_expr(p);
+    p.leave_no_struct_lit(prev_nsl);
+    let scrutinee = match scrutinee { Some(s) => s, None => { p.leave(prev); return None; } };
     let open = p.span();
     if let Err(e) = p.cursor.expect(&TokenType::LeftBrace) { p.emit(crate::error::from_cursor(e, ParseContext::MatchArm)); p.leave(prev); return None; }
     let mut arms: Vec<MatchArm<'ast>> = Vec::with_capacity(p.estimates.match_arms);
@@ -843,10 +868,17 @@ fn parse_field_name<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<(&'ast str
 fn parse_call<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, callee: &'ast Expr<'ast>, open_sp: LSpan, lo: LSpan) -> Option<&'ast Expr<'ast>> {
     // `(` already consumed by caller OR we need to consume it here
     let open = if p.cursor.is_at(&TokenType::LeftParen) { p.cursor.advance().span } else { open_sp };
+    let prev_nsl = p.clear_no_struct_lit();
     let mut args: Vec<Arg<'ast>> = Vec::with_capacity(p.estimates.call_args);
+    let mut ok = true;
     while !p.cursor.is_at(&TokenType::RightParen) && !p.cursor.is_eof() {
-        args.push(parse_arg(p)?); p.eat_sep();
+        match parse_arg(p) {
+            Some(a) => { args.push(a); p.eat_sep(); }
+            None => { ok = false; break; }
+        }
     }
+    p.leave_no_struct_lit(prev_nsl);
+    if !ok { return None; }
     if !p.cursor.eat(&TokenType::RightParen) { p.emit(crate::error::unclosed('(', open, None, p.span())); }
     let span = lo.merge(&p.span());
     let args = p.arena.alloc_slice_copy(args.as_slice());
@@ -867,7 +899,10 @@ fn parse_arg<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Arg<'ast>> {
 }
 
 fn parse_index<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, target: &'ast Expr<'ast>, open_sp: LSpan, lo: LSpan) -> Option<&'ast Expr<'ast>> {
-    let index = parse_expr(p)?;
+    let prev_nsl = p.clear_no_struct_lit();
+    let index = parse_expr(p);
+    p.leave_no_struct_lit(prev_nsl);
+    let index = index?;
     if !p.cursor.eat(&TokenType::RightBracket) { p.emit(crate::error::unclosed('[', open_sp, None, p.span())); }
     let span = lo.merge(&p.span());
     Some(p.alloc(Expr { kind: ExprKind::Index { target, index }, span }))

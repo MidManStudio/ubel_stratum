@@ -79,3 +79,168 @@ its default build). Its own dev-dependencies (criterion) need a newer
 toolchain than this project's rustc 1.75 floor for mid-arena's own
 tests/benches; that is about building mid-arena's own test suite, not
 about using it as a plain dependency.
+
+## Traits / interface system
+
+Raised as "did we ever actually discuss traits?" — checked the real
+answer against the source rather than guess. Short version: **no, not
+as a design decision.** What exists is parser/AST/name-resolution
+scaffolding that was clearly built alongside some other declaration work
+(struct/enum/generics, most likely — `TraitDecl`/`ImplBlock` sit right
+next to those in `parse_decl.rs`), never the subject of its own design
+session, never fixture-tested, and not wired to anything functional:
+
+- `trait`/`impl X for Y` parse — `TraitDecl`, default methods,
+  required-signature methods, all real AST nodes.
+- Name resolution and type inference walk into trait bodies and collect
+  method signatures.
+- But `resolve_impl` (`name_resolution.rs`) says so in its own comment:
+  *"impl blocks don't introduce a name... we record method definitions
+  without a specific parent DefId."* Methods inside `impl Foo for Bar`
+  are never linked to `Bar`. Not dispatchable.
+- `GENERICS_RULES.md` confirms trait bounds on generics (`T: Comparable`)
+  are parsed, stored, never enforced.
+- Zero fixtures exercise any of it.
+
+### Reference-language survey
+
+Asked which of the languages already in the mix (Rust, Go, C#, plus Zig
+and Odin as the two that get cited for the "hand-rolled, low-machinery"
+side of Ubel Stratum's own taste) have something trait-like, in case
+there's real prior art worth taking from rather than defaulting to
+Rust's own trait design:
+
+- **Rust** — the obvious starting point, and largely what the existing
+  scaffolding already gestures at. Nominal (must be declared, not
+  inferred structurally), static dispatch by default via monomorphization
+  (`impl Trait` / generic bounds), dynamic dispatch opt-in via `dyn
+  Trait` (a real vtable, needs a pointer wrapper — `Box`/`&`/`Rc`).
+  Associated types, supertraits, blanket impls, an orphan rule (can't
+  impl a foreign trait for a foreign type). Rust's own biggest ergonomics
+  complaint, and the one a second conversation explored ways to route
+  around: `impl<T: TraitA> TraitB for T` blanket-impl boilerplate to give
+  a trait a default based on another trait.
+- **Go** — structural, not nominal. A type satisfies an interface just by
+  having the right methods, no `impl` declaration anywhere, checked at
+  the call site not the declaration site. Interfaces can embed other
+  interfaces. `any` (`interface{}`) is the universal empty interface.
+  Genuinely different philosophy from Rust's explicit-opt-in model, not
+  just sugar over the same thing — worth naming as a real fork in the
+  road, not just "the other mainstream option."
+- **C#** — nominal like Rust (`class Foo : IBar`), but with default
+  interface methods (C# 8+, closer to Swift's protocol extensions than
+  Rust's blanket impls) and *explicit interface implementation* — `void
+  IRenderable.Draw()` — for resolving a name collision when a type
+  implements two interfaces that both declare `Draw()`, disambiguated
+  right at the implementation, not at every call site. A second
+  conversation independently proposed the same mechanic for Ubel
+  (`fn Renderable.draw(self)` / `fn UIElement.draw(self)`) without
+  knowing it's a direct lift from real C# syntax — it is, and it is a
+  genuinely clean answer to that specific collision, not an invented one.
+- **Zig** — deliberately has *no* trait/interface keyword. Static
+  duck-typing via `anytype` params resolved at comptime (`fn
+  update(entity: anytype) { entity.tick(); }`, fails at the specific
+  call site inside the generic instantiation if the method's missing,
+  not up front). Dynamic dispatch, when genuinely needed, is hand-rolled:
+  a type-erased data pointer (`*anyopaque`) plus a struct of function
+  pointers — `std.mem.Allocator` is exactly this pattern, not a language
+  feature.
+- **Odin** — also no interface keyword. Leans on an *implicit context*
+  parameter instead (every function gets a hidden `context` struct
+  carrying the active allocator/logger; swap behavior by reassigning
+  `context.allocator` in a block, not by threading a trait object down
+  every call), plus explicit union types + type switches, plus
+  parametric (generic) procedures where duck-typing fits.
+
+Zig and Odin's shared answer — "no dedicated feature, hand-roll a vtable
+struct or thread it through context when you actually need one" — is
+philosophically the closest fit to how this project already treats
+LALRPOP, SMT solvers, and other heavy machinery: avoid the feature until
+a concrete need proves it's worth the weight. Worth naming as a real
+option, not dismissing it just because Rust/C# are the more familiar
+starting points — "should Ubel have `trait` at all, or should the
+answer be a documented duck-typing + hand-rolled-vtable *pattern*
+instead, the way `Pool<T>`/`with arena` are patterns rather than
+compiler magic" is a legitimate first question for whatever design
+session this becomes, not a foregone conclusion.
+
+### A second conversation's synthesis — evaluated, not adopted wholesale
+
+A separate chat (outside this one, no direct codebase access) explored
+a synthesis worth recording, since parts of it hold up under checking
+against the real source and parts don't:
+
+- **Required fields in a trait** (Scala's `trait Spatial { val pos:
+  Vec2 }` — no getter/setter boilerplate, the field itself is the
+  contract). Plausible on its face; not checked against how Ubel
+  Stratum's own struct field storage/layout actually works, so still
+  genuinely open, not verified either way.
+- **C#-style explicit interface implementation** for name collisions —
+  see above, this one's a real, proven mechanic, not just plausible.
+- **Tier-gated trait methods** (`@tier(mid) fn tick(mut self)` inside a
+  trait, enforced on every implementor) — checked this one directly:
+  `tier_check.rs`'s `check_expr` already does real cross-tier call
+  validation (`check_callee_tier`, the same machinery behind the
+  `await`-only-in-HIGH-tier rule) as its core job today. Extending that
+  to validate a trait method's body against its own declared tier is a
+  natural extension of a pattern that already exists, not a stretch —
+  the most concretely buildable piece of the whole proposal.
+- **`Shared<dyn Trait>` for HIGH-tier dynamic dispatch, `FfiSpan<dyn
+  Trait>` for MID/LOW** — `Shared<T>` is real. `FfiSpan` is also a real,
+  named concept, but checked directly against `DATASTRUCTURES.md`:
+  *`FfiSpan`'s own architecture is still listed as genuinely open* —
+  own type vs. validated construction, not yet decided. Building
+  dyn-trait dispatch semantics on a construct that isn't itself settled
+  is premature; this part of the proposal is speculative, not
+  ready-to-build, however clean it sounds.
+- **C++20-concept-style lightweight bound predicates** (`where T:
+  Moveable and not HighTierOnly`) — not checked against anything, pure
+  syntax suggestion, no current Ubel Stratum equivalent to compare
+  against either way.
+
+None of this is a design decision — it's material for whatever session
+actually scopes traits, flagged so the good parts (explicit
+implementation, tier-gating) don't have to be re-derived from scratch,
+and the shakier parts (required fields, `FfiSpan<dyn Trait>`) don't get
+assumed settled just because they were written down confidently
+somewhere.
+
+## Loop power-ups
+
+Also raised during the same exploratory testing that found the
+condition/struct-literal ambiguity (§5.8 in `PARSER_RULES.md`). Checked
+each one directly against the source rather than assume from the
+feature name alone — two are real gaps, two are partially there
+already:
+
+- **Labeled loops** (`break 'outer` / `continue 'outer`) — genuinely not
+  present. No lexer token, no AST field, nothing. A real gap for
+  anything doing a broad-phase/grid/archetype search with early exit
+  from a nested loop, which is exactly the kind of code this project's
+  own fixtures already lean toward (see the diagonal-grid scan above).
+- **Range-based `for`** (`for i in 0..100`, no backing list allocated) —
+  half true. `0..100` already parses fine as its own expression
+  (`BinOp::Range`/`RangeIncl`, real binding-power table entries) — but
+  it is not wired up as something a `for`-loop knows how to iterate;
+  no fixture does this, and nothing in the interpreter's iteration
+  logic mentions `Range`. Probably the cheapest of the four to close,
+  since the expression-level piece already exists; what's missing is
+  purely the iterator-protocol side.
+- **Loop expressions** (`let x = loop { ... break 42 }`, the loop
+  itself evaluating to the `break` value) — not present.
+  `StmtKind::Loop` exists (bare `loop { }` already parses) and `break
+  <value>` itself parses and is even type-checked (`type_infer.rs`
+  infers the break value's expression type) — but `StmtKind::Loop` is a
+  *statement*, there is no `ExprKind::Loop`, and the break statement's
+  own type is hardcoded to `void` regardless of its value's type. The
+  value is computed and immediately discarded; nothing plumbs it back
+  out as the loop's result.
+- **Completion clauses** (Python/Zig-style `while cond { } else { }`,
+  runs only if the loop finished without a `break`) — not present, no
+  trace of it anywhere in the grammar or AST.
+
+Same status as traits: recorded so it doesn't need re-deriving, not
+scoped or prioritized. Range-based `for` is the standout "probably
+worth doing first" candidate purely because the hard part (the
+expression itself) is already done; the other three are each their own
+real design-and-build effort.

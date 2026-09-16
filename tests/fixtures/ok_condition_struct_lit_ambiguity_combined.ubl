@@ -1,0 +1,64 @@
+// Real-world combined case for the same fix as the isolated fixture: this
+// is (close to) the actual 3x3 diagonal-grid scan that surfaced the bug
+// during exploratory testing, nested while loops whose innermost `if`
+// condition ends in a bare identifier and whose body opens with a plain
+// assignment. Also exercises the escape hatch: a genuine struct literal
+// is still legal directly in condition position as long as it is
+// parenthesized, same as Rust's own answer to this ambiguity.
+
+struct Flags {
+    active: bool,
+    armed: bool
+}
+
+@tier(mid)
+fn scan_diagonal_hits() int {
+    let mut hit_count = 0
+    let mut y = 0
+
+    while y < 3 {
+        let mut x = 0
+        while x < 3 {
+            if x == y {
+                hit_count = hit_count + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+
+    return hit_count
+}
+
+fn sum_active_flags(rows: List<int>) int {
+    let mut total = 0
+    for row in rows {
+        total = total + row
+    }
+    return total
+}
+
+fn check_gate_open() bool {
+    // The escape hatch: a real struct literal directly in condition
+    // position, parenthesized, still works after the fix. Without the
+    // parens this line alone would be ambiguous with the block that
+    // follows for exactly the reason the isolated fixture documents.
+    if (Flags { active = true, armed = false }).active {
+        return true
+    }
+    return false
+}
+
+fn main() void {
+    let hits = scan_diagonal_hits()
+
+    let mut rows: List<int> = List.new()
+    rows.push(1)
+    rows.push(2)
+    rows.push(3)
+    let row_total = sum_active_flags(rows)
+
+    let gate = check_gate_open()
+
+    println($"diagonal hits: {hits}, row total: {row_total}, gate open: {gate}")
+}

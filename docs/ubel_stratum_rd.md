@@ -31,6 +31,33 @@ methods, parameters, structs, enums, traits, impls.
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
 `tests/fixtures/ok_callback_registry_combined.ubl`.
 
+### `parser.rs`, `parsers/parse_expr.rs`, `parsers/parse_stmt.rs`
+
+**What it does:** `parser.rs` is the `Parser` struct and its shared
+`enter`/`leave`-style state-swap helpers; `parse_expr.rs` is the Pratt
+expression parser; `parse_stmt.rs` is statement parsing (`if`/`while`/
+`for`/`match`/etc.) at the statement-position half of the grammar
+(expression-position `if`/`match` live in `parse_expr.rs` instead, see
+`PARSER_RULES.md` §4 for why the grammar has both).
+
+**Decisions:**
+- `Parser` gained a `no_struct_lit: bool` field plus paired
+  `enter_no_struct_lit`/`clear_no_struct_lit`/`leave_no_struct_lit`
+  helpers, mirroring the existing `tier`/`enter_tier`/`leave_tier`
+  pattern exactly. See `PARSER_RULES.md` §5.8 for the full disambiguation
+  writeup — the short version: a bare identifier condition followed by a
+  block whose first statement is a plain assignment was indistinguishable
+  from a struct literal from 2 tokens of lookahead, and no amount of
+  additional lookahead can fix that in general, so the fix suppresses
+  struct-literal parsing entirely for the condition/iterable/scrutinee of
+  `if`/`elif`/`while`/`for`/`match` (6 call sites total, statement- and
+  expression-position both), clearing it again inside any real bracket
+  pair (`(...)`, call args, `[...]`) so a parenthesized struct literal
+  still works as the escape hatch.
+
+**Tests:** `tests/fixtures/ok_condition_struct_lit_ambiguity_isolated.ubl`,
+`tests/fixtures/ok_condition_struct_lit_ambiguity_combined.ubl`.
+
 ## CI and Workflows
 
 - `.github/workflows/ci-check.yml`, "Ubel Stratum, Fast Compile Check":
@@ -57,3 +84,27 @@ methods, parameters, structs, enums, traits, impls.
   message listed `'_'` as an expected token right next to the
   `Underscore` token it had actually received. Fixed by checking
   `TokenType::Underscore` directly in both places instead.
+
+### `parser.rs`, `parsers/parse_expr.rs`, `parsers/parse_stmt.rs`
+
+- A bare identifier used as an `if`/`while`/`for`/`match`
+  condition/iterable/scrutinee, immediately followed by a block whose
+  first statement was a plain assignment, misparsed as a struct literal
+  — `if x == y { hit_count = hit_count + 1 }` read as `y { hit_count =
+  hit_count + 1 }`, one field named `hit_count`. Found via exploratory
+  testing (a nested-loop diagonal grid scan), root-caused directly
+  against `is_struct_open`'s 2-token lookahead rather than guessed at:
+  `{ Ident Equal` is genuinely ambiguous between a struct literal's first
+  field and a block's first statement, not a lookahead-depth problem.
+  Fixed the way Rust resolves the same ambiguity — suppress struct-literal
+  parsing for the condition/iterable/scrutinee itself (a new
+  `no_struct_lit` restriction on `Parser`), not by adding more lookahead.
+  A first attempt broke the parenthesized escape hatch
+  (`if (Foo { x = 1 }).ready { ... }`) by leaving the restriction on for
+  everything nested inside the condition, parens included — caught by
+  actually running the fixture that exercises it, which failed with an
+  unclosed-`(` error, not by inspection. Fixed by clearing the
+  restriction again inside any bracket pair the parser itself must
+  match a close for (`(...)`, call args, `[...]`), where the ambiguity
+  cannot occur regardless. See `PARSER_RULES.md` §5.8 for the full
+  writeup.
