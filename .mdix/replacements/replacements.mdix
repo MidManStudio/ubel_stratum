@@ -14,24 +14,10 @@
 @DATA(
   target_root = "."
 
-  // overrides:: keys match on EITHER the archive-relative path OR the
-  // bare basename, and a basename match wins over normal nested-path
-  // placement (checked first, before the nested-path check). That means
-  // one basename-keyed override for "Cargo.toml" would silently hijack
-  // every OTHER Cargo.toml in the same bundle too (crates/parser,
-  // crates/wasm_playground, any future crate) instead of just the root
-  // one it's meant for. Confirmed by dry-run against a real ambiguity
-  // case (root Cargo.toml has 3 same-named siblings under crates/*).
-  // Every Cargo.toml a bundle touches needs its own exact rel_path entry
-  // so each one only ever matches itself. Add a new line here, don't
-  // replace these, whenever a future bundle adds another crate whose
-  // Cargo.toml needs touching alongside the root one.
-  // Same hazard, same fix, for index.html: web/home/, web/playground/,
-  // and web/dashboard/ each have their own index.html. Added together
-  // with the landing-page delivery that first put more than one
-  // index.html in the same bundle at once.
+  
   overrides::
     target("Cargo.toml", "Cargo.toml")
+target("README.md", "README.md")
     target("crates/parser/Cargo.toml", "crates/parser/Cargo.toml")
     target("crates/wasm_playground/Cargo.toml", "crates/wasm_playground/Cargo.toml")
     target("web/home/index.html", "web/home/index.html")
