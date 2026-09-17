@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/shared/ubel-logo.svg" alt="Ubel Stratum" width="140">
+  <img src="web/shared/ubel-logo.png" alt="Ubel Stratum" width="140">
 </p>
 
 <h1 align="center">Ubel Stratum</h1>

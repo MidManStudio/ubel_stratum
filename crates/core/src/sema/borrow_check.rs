@@ -22,7 +22,7 @@
 //! 2. **Carrier liveness** — the reference-typed local the loan is bound
 //!    to (`Loan::bound_place`) will actually be read again later on some
 //!    path (backward liveness, standard live-variable dataflow — see
-//!    `compute_live_after`).
+//!    `compute_liveness`).
 //!
 //! This is the literal reason `let p = &mut n; let last = *p; n = 5;`
 //! (where `p`'s last use is `*p`, strictly before `n = 5`) is accepted:
@@ -76,7 +76,7 @@ use crate::ast::declarations::FunctionDecl;
 use crate::ast::root::{Item, Program};
 use crate::lexer::Span;
 use crate::sema::cfg::{self, BasicBlock, BlockId, Cfg, Terminator};
-use crate::sema::facts::{self, Facts, Loan, Place, Point};
+use crate::sema::facts::{self, Facts, Loan, LoanId, Place, Point};
 
 /// One real, liveness-confirmed borrow violation, ready to become a
 /// `BorrowError`.
@@ -133,7 +133,7 @@ pub fn check<'ast>(cfg: &Cfg<'ast>, facts: &Facts<'ast>) -> Vec<Violation> {
 
         let live_after = liveness_cache
             .entry(loan.bound_place)
-            .or_insert_with(|| compute_live_after(cfg, loan.bound_place));
+            .or_insert_with(|| compute_liveness(cfg, loan.bound_place).1);
 
         for &point in candidates {
             let is_live = reaches.contains(&point) && live_after.get(&point).copied().unwrap_or(false);
@@ -154,6 +154,75 @@ pub fn check<'ast>(cfg: &Cfg<'ast>, facts: &Facts<'ast>) -> Vec<Violation> {
     }
 
     violations
+}
+
+/// **Phase E1** (`docs/OUTLIVES_RULES.md`) — every loan's own natural
+/// region: the CFG points where it is both forward-reachable from its
+/// issue point (`compute_reaches_before`) and its bound place is live
+/// (`compute_liveness`, the *before* side — see that function's own
+/// doc comment for why not the *after* side `check` itself uses).
+/// Same two functions `check` already calls (one of them under a new
+/// name, same body), used the same way; the only difference is this
+/// keeps the
+/// intersection as an explicit `HashSet` per loan instead of testing
+/// points one at a time against a specific candidate list and
+/// discarding the rest.
+///
+/// Deliberately **not** restricted to `check`'s own subset (mutable,
+/// bound, with at least one invalidation candidate) — `check` narrows
+/// to that subset because only a mutable loan can conflict with
+/// anything, so there's no reason to compute reaching/liveness for a
+/// shared loan that can never produce a `Violation` here. Phase E2
+/// needs a region for *any* loan that might flow across a function or
+/// struct boundary, and the large majority of `&L T` parameters/fields
+/// in real code are shared, not `&mut` — restricting this function the
+/// same way `check` does would make it useless for its actual purpose.
+/// So this has its own loop over every loan in `facts.loans`, not a
+/// refactor of `check`'s loop: same building blocks, a different
+/// (broader) subset of loans, and no candidate list to test against
+/// since a signature boundary isn't a specific invalidating statement,
+/// it's "does this remain valid for as long as the declared lifetime
+/// requires" — the whole region matters, not particular points in it.
+///
+/// A loan with `bound_place == Place::Unknown` (consumed inline — a
+/// call argument, a return expression) is skipped, same as `check`:
+/// nothing downstream can be holding a reference to it by name, so it
+/// has no meaningful region beyond its own issue point. Real,
+/// documented under-approximation, not unsoundness — same stance as
+/// everywhere else in this checker (see this module's own doc comment).
+/// A loan whose computed region comes out empty (dead before its
+/// carrier is ever live — e.g. the carrier is immediately overwritten
+/// without being read) is left out of the returned map entirely rather
+/// than inserted as an empty set, so `.get(loan_id).is_some()` alone
+/// tells a caller whether the loan has any region at all.
+pub fn compute_loan_regions<'ast>(
+    cfg: &Cfg<'ast>,
+    facts: &Facts<'ast>,
+) -> HashMap<LoanId, HashSet<Point>> {
+    let mut regions: HashMap<LoanId, HashSet<Point>> = HashMap::new();
+    let mut liveness_cache: HashMap<Place<'ast>, HashMap<Point, bool>> = HashMap::new();
+
+    for loan in &facts.loans {
+        if matches!(loan.bound_place, Place::Unknown) { continue; }
+
+        let reaches = compute_reaches_before(cfg, loan, facts);
+        if reaches.is_empty() { continue; }
+
+        let live_before = liveness_cache
+            .entry(loan.bound_place)
+            .or_insert_with(|| compute_liveness(cfg, loan.bound_place).0);
+
+        let region: HashSet<Point> = reaches
+            .into_iter()
+            .filter(|p| live_before.get(p).copied().unwrap_or(false))
+            .collect();
+
+        if !region.is_empty() {
+            regions.insert(loan.id, region);
+        }
+    }
+
+    regions
 }
 
 // ── Point-level CFG graph helpers ───────────────────────────────────────
@@ -264,15 +333,29 @@ fn compute_reaches_before<'ast>(
 // ── Liveness (backward, per tracked place) ──────────────────────────────
 
 /// Standard backward live-variable dataflow for one place, computed at
-/// CFG-point granularity via `succ_points`. `live_after[p]` is true iff
-/// `place` may be read again at or after whatever immediately follows
-/// `p`, with no redefinition of `place` in between.
+/// CFG-point granularity via `succ_points`. Returns `(live_before,
+/// live_after)`. `live_after[p]` is true iff `place` may be read again
+/// at or after whatever immediately follows `p` — i.e. strictly after
+/// `p`'s own statement runs, which is what a *conflict* check wants
+/// (`check`, below): "will the carrier still be read after this
+/// invalidating point". `live_before[p]` is true iff `place` is read at
+/// `p` itself or is live-after `p` — which is what a loan's own region
+/// wants (`compute_loan_regions`): "is this point still within the
+/// window where the carrier is genuinely going to be used, counting its
+/// own read". The two are genuinely different questions, not the same
+/// value under two names — conflating them was an actual bug caught
+/// while building `compute_loan_regions` (see that function's own
+/// commit history / `docs/OUTLIVES_RULES.md`): intersecting `reaches`
+/// with `live_after` instead of `live_before` silently produced an
+/// empty region for every loan whose own last use was the final read in
+/// its live range, since `live_after` is false at exactly that point by
+/// definition.
 ///
 /// Plain fixed-point iteration over every point until nothing changes —
 /// not a smarter worklist — deliberately: LOW-tier function bodies are
 /// small, and this is far easier to read and trust than an optimized
 /// version would be. Revisit only if profiling ever says otherwise.
-fn compute_live_after<'ast>(cfg: &Cfg<'ast>, place: Place<'ast>) -> HashMap<Point, bool> {
+fn compute_liveness<'ast>(cfg: &Cfg<'ast>, place: Place<'ast>) -> (HashMap<Point, bool>, HashMap<Point, bool>) {
     let points = all_points(cfg);
     let mut live_before: HashMap<Point, bool> = points.iter().map(|p| (*p, false)).collect();
     let mut live_after: HashMap<Point, bool> = points.iter().map(|p| (*p, false)).collect();
@@ -293,7 +376,7 @@ fn compute_live_after<'ast>(cfg: &Cfg<'ast>, place: Place<'ast>) -> HashMap<Poin
         }
     }
 
-    live_after
+    (live_before, live_after)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -520,5 +603,103 @@ mod tests {
         let violations = violations_for(decl);
 
         assert_eq!(violations.len(), 1, "the conflicting read of n in the `if` branch, with p still live after the join, is a real violation");
+    }
+
+    // ── compute_loan_regions (Phase E1, docs/OUTLIVES_RULES.md) ──────────
+
+    fn regions_for<'a>(decl: &'a FunctionDecl<'a>) -> HashMap<LoanId, HashSet<Point>> {
+        let cfg = cfg::build(decl);
+        let facts = facts::collect(&cfg);
+        compute_loan_regions(&cfg, &facts)
+    }
+
+    #[test]
+    fn used_loan_gets_a_nonempty_region() {
+        // let p = &mut n; let y = *p; return y;
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let p = ident(&arena, "p");
+        let stmts = [
+            let_stmt(&arena, "p", borrow(&arena, true, n1)),
+            let_stmt(&arena, "y", deref(&arena, p)),
+            return_stmt(ident(&arena, "y")),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let regions = regions_for(decl);
+
+        assert_eq!(regions.len(), 1, "the one loan in this function is read later, so it must have a region");
+        let region = regions.values().next().unwrap();
+        assert!(!region.is_empty());
+    }
+
+    #[test]
+    fn shared_loan_gets_a_region_even_though_check_would_skip_it() {
+        // let p = &n; let y = *p; return y; — a SHARED borrow. `check()`
+        // finds zero violations here (nothing to conflict with a shared
+        // loan), but `compute_loan_regions` must still produce a region
+        // for it: Phase E2 needs regions for shared loans crossing a
+        // signature boundary just as much as mutable ones — the large
+        // majority of `&L T` parameters in real code are shared, not
+        // `&mut`. This is the test that would fail if this function were
+        // ever "simplified" into reusing `check`'s own mutable-only loop.
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let p = ident(&arena, "p");
+        let stmts = [
+            let_stmt(&arena, "p", borrow(&arena, false, n1)),
+            let_stmt(&arena, "y", deref(&arena, p)),
+            return_stmt(ident(&arena, "y")),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+
+        assert!(violations_for(decl).is_empty(), "sanity check: check() itself finds nothing here");
+
+        let regions = regions_for(decl);
+        assert_eq!(regions.len(), 1, "the shared loan still needs a region even though it can never conflict");
+        assert!(!regions.values().next().unwrap().is_empty());
+    }
+
+    #[test]
+    fn loan_never_read_again_has_no_region() {
+        // let p = &mut n; n = 5; return 0; — p is bound but never read
+        // again anywhere; its region is empty, so it must not appear in
+        // the returned map at all (see this function's own doc comment
+        // on why empty means absent, not present-and-empty).
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let stmts = [
+            let_stmt(&arena, "p", borrow(&arena, true, n1)),
+            reassign_stmt(&arena, "n", lit_int(&arena, 5)),
+            return_stmt(lit_int(&arena, 0)),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let regions = regions_for(decl);
+
+        assert!(regions.is_empty(), "a loan that's never read again has no region and must be absent from the map");
+    }
+
+    #[test]
+    fn inline_consumed_loan_has_no_region() {
+        // consume(&n); let y = n; return y; — Place::Unknown bound_place,
+        // same as `borrow_consumed_inline_is_never_flagged` above.
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let n2 = ident(&arena, "n");
+        let callee = ident(&arena, "consume");
+        let args: &[crate::ast::expressions::Arg] = arena.alloc_slice_copy(&[
+            crate::ast::expressions::Arg {
+                kind: crate::ast::expressions::ArgKind::Positional(borrow(&arena, true, n1)), span: Z,
+            },
+        ]);
+        let call = arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: Z });
+        let stmts = [
+            Stmt { kind: StmtKind::Expr(call), span: Z },
+            let_stmt(&arena, "y", n2),
+            return_stmt(ident(&arena, "y")),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let regions = regions_for(decl);
+
+        assert!(regions.is_empty(), "a loan with no traceable carrier has no region either");
     }
 }

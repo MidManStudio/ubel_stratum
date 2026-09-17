@@ -65,8 +65,8 @@
       .forEach(function (el) { el.remove(); });
     var link = document.createElement('link');
     link.rel = 'icon';
-    link.type = 'image/svg+xml';
-    link.href = '/shared/ubel-logo.svg';
+    link.type = 'image/png';
+    link.href = '/shared/favicon.png';
     document.head.appendChild(link);
   }
 
