@@ -18,8 +18,13 @@ Phase 2 being marked done covers full generics for structs and enums,
 enum discriminants and payloads, arena and pool escape checking, and
 generational handles through `Pool<T>`/`Handle<T>`. It does not mean
 every corner of semantic analysis is finished: LOW-tier borrow checking
-specifically has its syntax and structural typing in place along with a
-control-flow-graph builder, but no loan or liveness enforcement yet. See
+has real, CFG-based loan and liveness enforcement in place (genuinely
+non-lexical — a borrow's last actual use determines when it stops
+conflicting, not the enclosing block) and move checking alongside it,
+but that checking is intra-function only. Declared lifetime parameters
+(`[lifetime L]`) parse and are checked for internal well-formedness, but
+nothing yet verifies that a reference crossing a function call or
+`edge struct` field actually respects the declared relationship — see
 [The Tier Model](./tier-model.md#what-is-enforced-today) for the exact
 line between what parses and type-checks versus what is actually
 verified safe.
@@ -34,14 +39,20 @@ verified safe.
   cycles, for both function signatures and `edge struct` fields
 - Method dispatch through `Unique<T>`/`Shared<T>`/`SyncShared<T>`
   ownership wrappers
+- A parser ambiguity fix: a bare identifier condition immediately
+  followed by a block whose first statement was a plain assignment
+  (`if x == y { hit_count = hit_count + 1 }`) could misparse as a
+  struct literal; `if`/`while`/`for`/`match` heads no longer read a
+  struct literal unless it is parenthesized
 
 ## Active work
 
 - Connecting `edge struct`'s `is_edge` marker to the arena-escape
   checker, its documented purpose today has no effect on that checker
-- Real outlives and loan-tracking enforcement for the LOW-tier borrow
-  checker, a substantially larger piece of work than the well-formedness
-  checking already in place
+- Outlives/subset enforcement across a function or `edge struct`
+  boundary — the internal groundwork (materializing what a loan's own
+  valid range actually is) has landed; the checks that use it at an
+  actual call site or struct construction have not yet
 
 ## Known gaps, tracked rather than hidden
 

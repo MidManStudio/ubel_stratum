@@ -138,13 +138,19 @@ which backend eventually executes the program.
 
 Two things are still in progress rather than complete:
 
-**LOW-tier borrow checking.** The syntax and structural-type layer for
-references (`&`, `ref`, `&mut`, `ref mut`, `*`, `deref`) exists, along
-with the first piece of the borrow checker itself, a control-flow graph
-builder. Real loan and liveness enforcement, the part that actually
-rejects a use-after-move or a conflicting borrow, is not built yet. The
-target is NLL-style liveness precision rather than a coarser lexical-scope
-approximation.
+**Outlives / subset enforcement across a boundary.** LOW-tier borrow
+checking itself is real: a control-flow graph is built per function,
+and loan and liveness checking on top of it genuinely rejects a
+conflicting borrow with NLL-style precision — a reference's *last
+actual use* determines when it stops conflicting, not the block it was
+declared in — with move checking (use-after-move, loop-carried moves,
+reinitialization) alongside it. What that checking does *not* yet cover
+is a reference crossing a function-call or `edge struct` boundary:
+declared lifetime parameters (`[lifetime L]`) are checked for internal
+well-formedness, but nothing yet verifies a caller's argument or a
+struct's field actually satisfies the declared relationship once it
+leaves the function body that created it. That piece is scoped (see the
+repository's `docs/OUTLIVES_RULES.md`) and landing in phases.
 
 **The interpreter's memory model.** The tree-walking interpreter runs
 every tier on the same reference-counted representation. `with arena`

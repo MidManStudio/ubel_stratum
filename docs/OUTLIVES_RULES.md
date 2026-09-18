@@ -243,8 +243,24 @@ later.
 
 ## 9. Order of landing (not one PR)
 
-1. Phase E1 (pure refactor, zero behavior change, easiest to verify in
-   isolation — existing `borrow_check` tests must still pass unchanged).
+1. ✅ **Landed.** Phase E1 — `compute_loan_regions` in `borrow_check.rs`.
+   Turned out not to be quite the "pure refactor" this originally said:
+   intersecting `reaches` with the existing `live_after` map produced an
+   empty region for every loan, caught by the new tests actually failing
+   rather than by re-reading the diff. `live_after[p]` means "read
+   strictly after `p`" (correct for `check`'s own conflict question),
+   not "read at or after `p`" (what a loan's own region needs, counting
+   its own final use). Fixed by widening the liveness function —
+   renamed `compute_live_after` to `compute_liveness`, now returning
+   `(live_before, live_after)` — `check` takes `.1` (unchanged
+   behavior, all existing tests pass as-is), `compute_loan_regions`
+   takes `.0`. 4 new unit tests, including one that would fail if this
+   function were ever "simplified" into reusing `check`'s own
+   mutable-only loan loop (shared loans need regions too — most `&L T`
+   parameters in real code are shared, not `&mut`). No `.ubl` fixtures
+   for this step: nothing about which programs are accepted or rejected
+   changed, so there is nothing at the language level for a fixture to
+   exercise yet — that starts at step 2.
 2. Phase E2 + E4 for the plain-function-call-boundary case only, no
    `outlives`-between-multiple-lifetimes yet (single declared lifetime
    per signature). Smallest real slice that produces a working
