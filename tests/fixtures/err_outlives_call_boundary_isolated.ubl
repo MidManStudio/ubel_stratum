@@ -1,0 +1,28 @@
+// tests/fixtures/err_outlives_call_boundary_isolated.ubl
+// Phase E2 + E4 (docs/OUTLIVES_RULES.md): `n` is reassigned between `p`'s
+// own borrow and the call to `take(p)`, killing p's underlying loan
+// before it reaches the call boundary. `p` is a SHARED loan, so
+// borrow_check.rs's own conflict checker (BORROW-001, mutable-only)
+// does not fire here at all -- this is specifically the gap Phase E2
+// closes that borrow_check.rs's own module doc already documents as
+// out of its scope.
+//
+// Expected: sema FAIL (CallBoundaryTooShort, LIFETIME-004).
+
+@tier(low)
+fn take [lifetime L] (v: &L int) &L int {
+    return v
+}
+
+@tier(low)
+fn call_after_kill() int {
+    let mut n = 42
+    let p = &n
+    n = 7
+    let result = take(p)
+    return *result
+}
+
+fn main() void {
+    let value = call_after_kill()
+}

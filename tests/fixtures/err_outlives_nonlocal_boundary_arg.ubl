@@ -1,0 +1,28 @@
+// tests/fixtures/err_outlives_nonlocal_boundary_arg.ubl
+// Phase E2 + E4 (docs/OUTLIVES_RULES.md), the conservative-reject case:
+// `p` is bound to `original` via a plain `let` (not a fresh borrow, and
+// `p` is not itself one of `relay`'s own parameter names), so it has no
+// traceable loan at all. v1 can't prove it's fine and doesn't allow it
+// -- even though this particular case is actually safe, since
+// `original` lives for relay's whole body. A real, documented v1
+// limitation, not a soundness bug: see sema/outlives_check.rs's own
+// module doc, case 4.
+//
+// Expected: sema FAIL (NonLocalBoundaryArgument, LIFETIME-006).
+
+@tier(low)
+fn take [lifetime L] (v: &L int) &L int {
+    return v
+}
+
+@tier(low)
+fn relay [lifetime L] (original: &L int) int {
+    let p = original
+    let result = take(p)
+    return *result
+}
+
+fn main() void {
+    let n = 9
+    let value = relay(&n)
+}

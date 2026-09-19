@@ -115,7 +115,12 @@ pub enum Place<'ast> {
     Unknown,
 }
 
-fn expr_as_place<'ast>(expr: &'ast Expr<'ast>) -> Place<'ast> {
+/// `pub(crate)`, not private: `sema::outlives_check` (Phase E2,
+/// `docs/OUTLIVES_RULES.md`) reuses this unchanged to resolve a call's
+/// actual argument expression back to a `Place` — same rule, same
+/// meaning of `Unknown` (a fresh inline expression, nothing this
+/// module's own loans track).
+pub(crate) fn expr_as_place<'ast>(expr: &'ast Expr<'ast>) -> Place<'ast> {
     match &expr.kind {
         ExprKind::Ident(name) => Place::Local(name),
         _ => Place::Unknown,

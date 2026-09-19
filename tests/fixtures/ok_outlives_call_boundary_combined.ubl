@@ -1,0 +1,40 @@
+// tests/fixtures/ok_outlives_call_boundary_combined.ubl
+// Real-world/combined: Phase E2 + E4's three "valid" argument shapes
+// together -- forwarding the caller's own reference parameter, a fresh
+// inline borrow, and a still-live loan -- sitting next to an
+// already-shipped feature (match) rather than in isolation.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(low)
+fn describe [lifetime L] (v: &L int) string {
+    match *v {
+        _ => { return $"value is {*v}" }
+    }
+}
+
+@tier(low)
+fn forward [lifetime L] (v: &L int) string {
+    // Case 2: forwarding the caller's own reference parameter.
+    return describe(v)
+}
+
+@tier(low)
+fn fresh_and_live() bool {
+    let n = 100
+
+    // Case 1: a fresh inline borrow.
+    let first = describe(&n)
+
+    // Case 3: a still-live loan.
+    let handle = &n
+    let second = describe(handle)
+
+    return first == second
+}
+
+fn main() void {
+    let n = 7
+    assert(forward(&n) == "value is 7", "forwarding the caller's own reference parameter is valid")
+    assert(fresh_and_live(), "a fresh inline borrow and a still-live loan are both valid at the call boundary")
+}

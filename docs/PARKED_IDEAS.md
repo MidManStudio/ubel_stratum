@@ -205,6 +205,29 @@ and the shakier parts (required fields, `FfiSpan<dyn Trait>`) don't get
 assumed settled just because they were written down confidently
 somewhere.
 
+## Vale generational references — pre-checking as a future `Pool<T>` optimization
+
+Read directly (not secondhand) against `Pool<T>`/`Handle<T>`'s actual
+implementation (`pool_methods.rs`, `MEMORY_MODEL.md` §10):
+[Vale's Memory Safety Strategy: Generational References and Regions](https://verdagon.dev/blog/generational-references).
+Full comparison now lives in `MEMORY_MODEL.md` §10 itself (the
+generation-tables structural match, and the `wrapping_add` overflow
+decision) since it's a finding about already-shipped code, not a parked
+idea. One piece of the article is genuinely a *future* idea, not a
+finding about today's code, so it's parked here instead:
+
+Vale's "pre-checking" optimization — when the compiler can prove data
+won't change for a scope (their `pure`/regions), it validates a
+generational reference once up front instead of on every access within
+that scope, turning N runtime checks into 1. `Handle<T>.get()` has no
+equivalent today; it checks on every single call, always. This is a
+real, concrete optimization angle for a hot loop that calls `.get()` on
+the same handle repeatedly — the entity-allocator use case
+`MEMORY_MODEL.md` §12 Open Decision #4 already flags as the reason to
+get `Pool<T>` right for Mid Engine. Not worth building until profiling
+of an actual entity-allocator workload says it's worth it; noted here so
+it isn't rediscovered from scratch later.
+
 ## Loop power-ups
 
 Also raised during the same exploratory testing that found the

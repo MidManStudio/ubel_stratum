@@ -282,13 +282,15 @@ of `a`, the safe direction while method dispatch through a `Unique`
 wrapper is itself still an open question elsewhere (`MEMORY_MODEL.md`
 §9).
 
-### LIFETIME-0xx: lifetime declaration well-formedness, `errors/lifetime/mod.rs`
+### LIFETIME-0xx: lifetime declaration well-formedness + outlives enforcement, `errors/lifetime/mod.rs`
 
 | Code | Variant |
 |---|---|
 | LIFETIME-001 | UndeclaredLifetime |
 | LIFETIME-002 | DuplicateLifetimeParam |
 | LIFETIME-003 | OutlivesCycle |
+| LIFETIME-004 | CallBoundaryTooShort |
+| LIFETIME-006 | NonLocalBoundaryArgument |
 
 New family, not folded into `BORROW-0xx`/`MOVE-0xx` even though all
 three eventually serve the same LOW-tier memory-safety story
@@ -398,6 +400,8 @@ larger effort, not started.
 - `LIFETIME-001` `UndeclaredLifetime`: *Error*. "undeclared lifetime `name`", from `sema/lifetime_check.rs`. Fires for a name used in a `where X outlives Y` clause, or written as `&name T`/`ref name T` anywhere inside a function's own param/return types or an `edge struct`'s own field types, that isn't one of the names that same declaration's `[lifetime ...]` list actually declares. Suggestion: add `lifetime name` to the declaration, or use a name it already declares.
 - `LIFETIME-002` `DuplicateLifetimeParam`: *Error*. "lifetime `name` declared more than once". Secondary span points at the first declaration. Suggestion: remove one of the two entries, or rename one of them.
 - `LIFETIME-003` `OutlivesCycle`: *Error*. "lifetime `name` cannot outlive itself" for the trivial one-element case (`L outlives L`); "outlives constraints form a cycle among `L`, `M`, ..." for a longer cycle found via a plain DFS over the declaration's own (always tiny) constraint graph. Suggestion: outlives relationships must form a strict ordering, with no lifetime directly or indirectly outliving itself.
+- `LIFETIME-004` `CallBoundaryTooShort`: *Error*, from `sema/outlives_check.rs` (Phase E2 + E4, `docs/OUTLIVES_RULES.md`). "argument doesn't live long enough for declared lifetime `L`". Fires at a call to a function with exactly one `[lifetime L]` param, where the actual argument at a `&L T` position resolves to a local bound to a loan (`let p = &x`), and that loan's own computed region (Phase E1) doesn't reach the call's point — the loan was already killed (e.g. by a reassignment of the borrowed-from place) before it got here. Secondary span points at the loan itself. Suggestion: move the call before the loan's last use, or restructure so the loan lives at least as long as the call site.
+- `LIFETIME-006` `NonLocalBoundaryArgument`: *Error*, same pass. "can't verify this argument satisfies declared lifetime `L`". The conservative-reject case: the argument resolves to a local, but that local is neither one of the caller's own parameters nor bound to any known loan (typically because it came from another call's return value — a call result is never itself registered as a loan). v1 can't prove it's fine, so it doesn't allow it, even in cases that are actually safe. Suggestion: bind it to a local first so its lifetime can be traced, or pass a fresh borrow directly. `LIFETIME-005` is reserved for Phase E3 (multi-lifetime `outlives` propagation), not yet built — see `docs/OUTLIVES_RULES.md` §9.
 
 ---
 

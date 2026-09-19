@@ -873,7 +873,29 @@ Three methods, on `Pool<T>` itself (not on `Handle<T>`, which is an opaque
   generation if the handle still matches; a stale or invalid handle is a
   silent no-op — fails safe, doesn't panic, matching `Optional`'s existing
   "checked failure, not memory corruption" philosophy elsewhere in the
-  language.
+  language. The bump is `wrapping_add(1)`, a conscious decision, not an
+  oversight: Vale's own generational-references design explicitly retires
+  a slot for good at its generation ceiling rather than ever wrapping it
+  (see the comparison below), and a wrap in principle reopens the exact
+  ABA hole generations exist to close. Accepted as unreachable in
+  practice at `u64` — 2^64 release cycles on one single slot — rather
+  than implemented, since `Handle<T>` never skips its check the way
+  Vale's `pure`/regions can (there is no linear-style/region equivalent
+  scoped to `Pool<T>`), so a plain incrementing counter is already the
+  strictly safer choice on top of being the simpler one. If this is ever
+  worth closing for real, the fix is one line: stop returning an index
+  from `free_pop`/never re-push it once its generation hits `u64::MAX`.
+  Compared directly against [Vale's generational references](https://verdagon.dev/blog/generational-references):
+  `Handle { index, generation }` + `PoolData { blocks, generations,
+  free_list }` is structurally Vale's own "generation tables" appendix
+  option (a table indexed by slot, not a generation colocated with a raw
+  pointer) rather than Vale's actual default (colocated, random rather
+  than incrementing, specifically so objects can live on the stack,
+  embedded inline, or inside custom allocators, and so memory can be
+  released back to the OS) — confirmation `Pool<T>` landed on the right
+  shape for what it actually is (a fixed-capacity, block-chained slot
+  array where nothing moves and nothing needs the OS-release story), not
+  a gap to close.
 - **`.get(handle: Handle<T>)`** → `Optional<T>`. Reads the slot if the
   generation matches, else `null`. Was named `at` — `get`/`set` were
   reserved lexer tokens for a property-accessor feature that turned out

@@ -25,6 +25,13 @@
 //!      point and turns real violations into diagnostics; see
 //!      move_check.rs's module doc for exactly what "reaches" means,
 //!      including the loop-back-edge case)
+//!   7. outlives_check   → Phase E2 + E4 (`docs/OUTLIVES_RULES.md`):
+//!      function-call boundary only, single declared lifetime per
+//!      callee signature — the `edge struct` construction boundary and
+//!      multi-lifetime `outlives` propagation are later slices, not
+//!      built yet. Reuses Phase E1's `borrow_check::compute_loan_regions`
+//!      directly; see outlives_check.rs's own module doc for exactly
+//!      what counts as a violation in the no-propagation-yet case.
 //!
 //! Each pass appends errors to a shared ErrorManager and the orchestrator
 //! stops after any phase that produced errors.
@@ -38,6 +45,7 @@ pub mod type_infer;
 pub mod tier_check;
 pub mod borrow_check;
 pub mod move_check;
+pub mod outlives_check;
 
 #[cfg(test)]
 mod tests;
@@ -51,7 +59,7 @@ pub use type_table::{TypeId, TypeTable, SemaType, ArenaId};
 
 use crate::ast::arena::AstArena;
 use crate::ast::root::Program;
-use crate::error_management::{ErrorManager, errors::{BorrowError, MoveError}};
+use crate::error_management::{ErrorManager, errors::{BorrowError, MoveError, LifetimeError}};
 
 /// Run all semantic analysis passes on `program`.
 /// Returns a populated `SemaContext` on success, `Err(ErrorManager)` on failure.
@@ -106,6 +114,25 @@ pub fn analyse<'ast>(
             moved_span: violation.moved_span,
             used_span: violation.used_span,
         });
+    }
+    if errors.has_errors() {
+        return Err(errors);
+    }
+
+    // ── Pass 7: Outlives boundary checking (Phase E2 + E4) ─────────
+    for violation in outlives_check::check_program(program) {
+        match violation {
+            outlives_check::Violation::CallBoundaryTooShort { lifetime, loan_span, call_span } => {
+                errors.add_lifetime_error(LifetimeError::CallBoundaryTooShort {
+                    lifetime, loan_span, call_span,
+                });
+            }
+            outlives_check::Violation::NonLocalBoundaryArgument { lifetime, call_span } => {
+                errors.add_lifetime_error(LifetimeError::NonLocalBoundaryArgument {
+                    lifetime, call_span,
+                });
+            }
+        }
     }
     if errors.has_errors() {
         return Err(errors);

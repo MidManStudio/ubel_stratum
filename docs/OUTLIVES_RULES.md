@@ -261,15 +261,52 @@ later.
    for this step: nothing about which programs are accepted or rejected
    changed, so there is nothing at the language level for a fixture to
    exercise yet — that starts at step 2.
-2. Phase E2 + E4 for the plain-function-call-boundary case only, no
-   `outlives`-between-multiple-lifetimes yet (single declared lifetime
-   per signature). Smallest real slice that produces a working
-   `LIFETIME-004`.
+2. ✅ **Landed.** Phase E2 + E4 for the plain-function-call-boundary case,
+   single declared lifetime per signature — `sema/outlives_check.rs`,
+   wired into `sema::analyse` as Pass 7. `LIFETIME-004`/`LIFETIME-006`.
+   Turned out §3's "generate a constraint: this call site requires L's
+   bound region to be a superset of the loan's actual region" phrasing
+   presupposes Phase E3's propagation machinery, which doesn't exist
+   yet — a real gap in this doc, not something the implementation could
+   follow literally. Resolved concretely instead: an argument at a
+   `&L T` position is valid if it's a fresh inline borrow (`g(&x)`,
+   always safe — nothing existed to invalidate before this exact
+   point), or if it's one of the *caller's own* parameters (valid for
+   the caller's whole body by construction, and the single most common
+   real use of a lifetime-parameterized function — an early draft
+   would have conservatively rejected this and made the feature nearly
+   useless on its first real workload), or if it's a local bound to a
+   loan whose Phase E1 region (`compute_loan_regions`) covers the
+   call's own point. Anything else traceable to a local but matching
+   none of those (typically a call result assigned to a `let`, since a
+   call result is never itself registered as a loan) is the
+   conservative-reject case, `LIFETIME-006`. `facts::expr_as_place` had
+   to be widened from private to `pub(crate)` — this doc's §1 said it
+   was "already exported," which wasn't true of the code as it stood.
+   7 new unit tests (including one proving a shared, non-mutable loan
+   gets caught here even though `borrow_check::check`'s own mutable-
+   only scope would never flag it — the actual case this phase exists
+   for) plus 4 new `.ubl` fixtures
+   (`ok_/err_outlives_call_boundary_isolated`,
+   `ok_outlives_call_boundary_combined`,
+   `err_outlives_nonlocal_boundary_arg`) — one more than §7's
+   two-per-phase floor, since this phase alone reaches two distinct
+   error codes, each deserving its own isolated coverage. Verified via
+   `cargo test --workspace` (all passing) and a full fixture-sweep run
+   (`cargo run -p ubel_stratum_rd --example pipeline -- tests/fixtures`)
+   confirming zero regressions on every existing lifetime/reference/
+   borrow fixture, not just the new ones.
 3. Phase E2 for the `edge struct` construction case + §8's connection to
    the arena-escape checker.
 4. Phase E3 (multi-lifetime `outlives` propagation) + `LIFETIME-005`.
-5. `LIFETIME-006` (non-local boundary argument rejection) — can land
-   whenever; genuinely independent of 2-4.
+5. ~~`LIFETIME-006` (non-local boundary argument rejection) — can land
+   whenever; genuinely independent of 2-4.~~ Landed as part of step 2
+   above instead of separately: the conservative-reject case fell out
+   of the same argument-resolution logic step 2 needed anyway (an
+   argument that resolves to neither a fresh borrow, a caller
+   parameter, nor a known loan has to go *somewhere*, and silently
+   accepting it would have been an actual soundness gap, not a
+   deferrable one).
 
 ## 10. Open questions this scoping pass did *not* resolve
 

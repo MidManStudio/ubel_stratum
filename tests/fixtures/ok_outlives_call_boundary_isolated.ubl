@@ -1,0 +1,25 @@
+// tests/fixtures/ok_outlives_call_boundary_isolated.ubl
+// Phase E2 + E4 (docs/OUTLIVES_RULES.md), function-call boundary, single
+// declared lifetime per signature: `p`'s own loan (`&n`) is still live
+// -- n hasn't been reassigned, and p is read right here -- at the point
+// it's passed to `take`, so this must NOT fire LIFETIME-004.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(low)
+fn take [lifetime L] (v: &L int) &L int {
+    return v
+}
+
+@tier(low)
+fn call_while_live() int {
+    let n = 42
+    let p = &n
+    let result = take(p)
+    return *result
+}
+
+fn main() void {
+    let value = call_while_live()
+    assert(value == 42, "argument's own loan is still live when it reaches the call boundary")
+}
