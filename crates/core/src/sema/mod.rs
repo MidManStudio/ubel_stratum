@@ -122,13 +122,13 @@ pub fn analyse<'ast>(
     // ── Pass 7: Outlives boundary checking (Phase E2 + E4) ─────────
     for violation in outlives_check::check_program(program) {
         match violation {
-            outlives_check::Violation::CallBoundaryTooShort { lifetime, loan_span, call_span } => {
-                errors.add_lifetime_error(LifetimeError::CallBoundaryTooShort {
+            outlives_check::Violation::BoundaryTooShort { lifetime, loan_span, call_span } => {
+                errors.add_lifetime_error(LifetimeError::BoundaryTooShort {
                     lifetime, loan_span, call_span,
                 });
             }
-            outlives_check::Violation::NonLocalBoundaryArgument { lifetime, call_span } => {
-                errors.add_lifetime_error(LifetimeError::NonLocalBoundaryArgument {
+            outlives_check::Violation::NonLocalBoundaryValue { lifetime, call_span } => {
+                errors.add_lifetime_error(LifetimeError::NonLocalBoundaryValue {
                     lifetime, call_span,
                 });
             }

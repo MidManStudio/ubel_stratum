@@ -47,7 +47,7 @@ pub enum LifetimeError {
     /// own computed region (Phase E1, `borrow_check::compute_loan_regions`)
     /// doesn't reach this call's point — the loan is already dead by the
     /// time it gets passed here.
-    CallBoundaryTooShort {
+    BoundaryTooShort {
         lifetime: String,
         loan_span: Span,
         call_span: Span,
@@ -57,7 +57,7 @@ pub enum LifetimeError {
     /// (e.g. it came from another call's return value), so v1 can't
     /// prove it's fine and doesn't allow it. See `sema/outlives_check.rs`'s
     /// module doc for exactly which shapes land here.
-    NonLocalBoundaryArgument {
+    NonLocalBoundaryValue {
         lifetime: String,
         call_span: Span,
     },
@@ -69,8 +69,8 @@ impl LifetimeError {
             LifetimeError::UndeclaredLifetime { span, .. } => *span,
             LifetimeError::DuplicateLifetimeParam { dup_span, .. } => *dup_span,
             LifetimeError::OutlivesCycle { span, .. } => *span,
-            LifetimeError::CallBoundaryTooShort { call_span, .. } => *call_span,
-            LifetimeError::NonLocalBoundaryArgument { call_span, .. } => *call_span,
+            LifetimeError::BoundaryTooShort { call_span, .. } => *call_span,
+            LifetimeError::NonLocalBoundaryValue { call_span, .. } => *call_span,
         }
     }
 
@@ -86,12 +86,12 @@ impl LifetimeError {
                 "outlives constraints form a cycle among {}",
                 names.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(", ")
             ),
-            LifetimeError::CallBoundaryTooShort { lifetime, .. } => format!(
-                "argument doesn't live long enough for declared lifetime `{}`",
+            LifetimeError::BoundaryTooShort { lifetime, .. } => format!(
+                "value doesn't live long enough for declared lifetime `{}`",
                 lifetime
             ),
-            LifetimeError::NonLocalBoundaryArgument { lifetime, .. } => format!(
-                "can't verify this argument satisfies declared lifetime `{}`",
+            LifetimeError::NonLocalBoundaryValue { lifetime, .. } => format!(
+                "can't verify this value satisfies declared lifetime `{}`",
                 lifetime
             ),
         }
@@ -109,10 +109,10 @@ impl LifetimeError {
             )),
             LifetimeError::OutlivesCycle { .. } =>
                 Some("outlives relationships must form a strict ordering, with no lifetime (directly or indirectly) outliving itself".to_string()),
-            LifetimeError::CallBoundaryTooShort { .. } =>
-                Some("move this call before the loan's last use, or restructure so the loan lives at least as long as this call site".to_string()),
-            LifetimeError::NonLocalBoundaryArgument { .. } =>
-                Some("bind this to a local first (e.g. `let tmp = ...; g(tmp)`) so its lifetime can be traced, or pass a fresh borrow directly".to_string()),
+            LifetimeError::BoundaryTooShort { .. } =>
+                Some("move this call/construction before the loan's last use, or restructure so the loan lives at least as long as this site".to_string()),
+            LifetimeError::NonLocalBoundaryValue { .. } =>
+                Some("bind this to a local first (e.g. `let tmp = ...; g(tmp)`) so its lifetime can be traced, or pass/store a fresh borrow directly".to_string()),
         }
     }
 }
@@ -132,8 +132,8 @@ impl crate::error_management::render::Diagnosable for LifetimeError {
             LifetimeError::UndeclaredLifetime { .. }     => "LIFETIME-001",
             LifetimeError::DuplicateLifetimeParam { .. } => "LIFETIME-002",
             LifetimeError::OutlivesCycle { .. }           => "LIFETIME-003",
-            LifetimeError::CallBoundaryTooShort { .. }    => "LIFETIME-004",
-            LifetimeError::NonLocalBoundaryArgument { .. } => "LIFETIME-006",
+            LifetimeError::BoundaryTooShort { .. }    => "LIFETIME-004",
+            LifetimeError::NonLocalBoundaryValue { .. } => "LIFETIME-006",
         }
     }
     fn span(&self) -> Span { self.span() }
@@ -144,7 +144,7 @@ impl crate::error_management::render::Diagnosable for LifetimeError {
         match self {
             LifetimeError::DuplicateLifetimeParam { first_span, .. } =>
                 vec![(*first_span, "first declared here".to_string())],
-            LifetimeError::CallBoundaryTooShort { loan_span, .. } =>
+            LifetimeError::BoundaryTooShort { loan_span, .. } =>
                 vec![(*loan_span, "borrow occurs here".to_string())],
             _ => Vec::new(),
         }

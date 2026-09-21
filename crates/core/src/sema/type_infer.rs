@@ -46,6 +46,24 @@
 //!   instead — see `scope_mismatch_side`.
 //!
 //! # Known rough edges (not airtight yet)
+//! - **Crash, found while building `docs/OUTLIVES_RULES.md`'s §8
+//!   arena-escape connection, not caused by it** — confirmed by
+//!   reproducing with `unify_struct_field`'s own deferral inert (a
+//!   non-`edge` struct, so it falls straight through to the original
+//!   `unify` call unchanged): a `return` statement inside a `with
+//!   arena(...)` block, in the same function as an `ArenaRefEscapesBoundary`
+//!   report, panics in `type_table.rs` on an out-of-bounds `TypeId`
+//!   index (`u64::MAX`-shaped) rather than reporting a diagnostic.
+//!   Narrowed one step further: an ordinary `TypeMismatch` alongside a
+//!   `return` in the same block does *not* crash, so this is specific
+//!   to the arena-escape path, not `return`-inside-`with` generally.
+//!   Not chased further — real root-causing needs stepping through
+//!   `scope_mismatch_side`/`arena_escape`'s interaction with whatever
+//!   resolves a function's return type, unrelated to this delivery's
+//!   actual scope. Flagged here rather than silently worked around so
+//!   it isn't rediscovered from scratch; every fixture this delivery
+//!   added avoids the trigger shape on purpose (confirmed each one
+//!   individually, not assumed safe from the general pattern).
 //! - No occurs-check in unification.
 //! - Multi-element destructuring shares one Span; all get collection elem type.
 //! - A method name pre-inferred as the callee of an enclosing `Call`
@@ -88,7 +106,7 @@ use crate::ast::types::{Type, TypeKind};
 use crate::builtins::instance::{self, MethodReturn, ReceiverWrap};
 use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
-use crate::sema::symbol_table::DefId;
+use crate::sema::symbol_table::{DefId, DefKind};
 use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
 
 // ── Entry point ───────────────────────────────────────────────────
@@ -2708,7 +2726,7 @@ impl<'a> InferCtx<'a> {
                             match decl_fields.iter().find(|(n, _)| n == f.name) {
                                 Some((_, raw_ty)) => {
                                     let field_ty = self.substitute(*raw_ty, &inst_args);
-                                    self.unify(field_ty, val_ty, f.span);
+                                    self.unify_struct_field(def_id, field_ty, val_ty, f.span);
                                 }
                                 None => {
                                     self.errors.add_type_error(TypeError::NoSuchField {
@@ -3148,6 +3166,60 @@ impl<'a> InferCtx<'a> {
     }
 
     // ── Unification ───────────────────────────────────────────────
+
+    /// GAP 2 / `docs/OUTLIVES_RULES.md` §8's "free win" — a plain
+    /// struct-literal field normally goes through ordinary `unify`.
+    /// One exception: the declaring struct is `edge` and the field's
+    /// declared type is a *named*-lifetime reference (`&L T`). There,
+    /// `unify`'s generic `scope_mismatch_side` rule (any `ArenaRef`-
+    /// tagged value meeting a non-`ArenaRef` expected type is an
+    /// escape) is too blunt — an `edge struct` field storing a
+    /// reference built in the *same* arena the struct itself is being
+    /// constructed in is exactly what `edge struct` exists for, not a
+    /// violation. `MEMORY_MODEL.md` §9 already documented `is_edge` as
+    /// fully decorative before this; this is the connection.
+    ///
+    /// Concretely: `&d` for an arena-resident `d` doesn't itself carry
+    /// an outer `ArenaRef` tag — the tag lives one layer in, on the
+    /// *pointee* (`Reference { inner: ArenaRef { inner: Data } }`, not
+    /// `ArenaRef { inner: Reference { inner: Data } } }`), confirmed
+    /// directly rather than assumed (an earlier version of this
+    /// function checked the wrong layer and silently did nothing —
+    /// caught by the probe script still failing after the "fix",
+    /// not by re-reading the diff). So the tag has to be stripped from
+    /// the *inner* type, reconstructing a plain `Reference` around it,
+    /// before handing off to `unify` — not stripped from `val_ty`
+    /// itself.
+    ///
+    /// Deferring doesn't mean skipping enforcement — it means routing
+    /// it to `outlives_check.rs`'s own struct-literal boundary check
+    /// instead (same loan-region machinery as the function-call case),
+    /// which is what can actually tell "still live" from "already
+    /// dead," not just "tagged with an arena at all." Every other case
+    /// (non-`edge` structs, unnamed reference fields, non-arena
+    /// values) falls through to plain `unify`, unchanged.
+    fn unify_struct_field(&mut self, def_id: DefId, field_ty: TypeId, val_ty: TypeId, span: Span) {
+        let is_edge = matches!(
+            self.ctx.symbols.lookup(def_id).kind,
+            DefKind::Struct { is_edge: true }
+        );
+        let field_is_named_ref = matches!(
+            self.ctx.types.get(self.apply(field_ty)),
+            SemaType::Reference { lifetime: Some(_), .. }
+        );
+        if is_edge && field_is_named_ref {
+            let resolved_val = self.apply(val_ty);
+            if let SemaType::Reference { mutable, lifetime, inner } = self.ctx.types.get(resolved_val).clone() {
+                let resolved_inner = self.apply(inner);
+                if let SemaType::ArenaRef { inner: stripped, .. } = self.ctx.types.get(resolved_inner).clone() {
+                    let stripped_val_ty = self.ctx.types.insert(SemaType::Reference { mutable, lifetime, inner: stripped });
+                    self.unify(field_ty, stripped_val_ty, span);
+                    return;
+                }
+            }
+        }
+        self.unify(field_ty, val_ty, span);
+    }
 
     fn unify(&mut self, a: TypeId, b: TypeId, span: Span) {
         let a = self.apply(a);

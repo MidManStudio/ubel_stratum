@@ -1,0 +1,34 @@
+// tests/fixtures/err_outlives_edge_struct_field_combined.ubl
+// Same real-world scenario as ok_outlives_edge_struct_field_combined.ubl
+// -- edge struct construction inside `with arena(...)` -- but `d` is
+// reassigned before it's stored into `Cache`, killing the loan before
+// construction. `unify_struct_field`'s deferral means this is no
+// longer rejected by the blunt arena-tag check; it has to be caught by
+// outlives_check.rs's own loan-region check instead, same as the
+// isolated (non-arena) case, proving the deferral isn't a silent hole
+// for the one scenario it exists for.
+//
+// Expected: sema FAIL (BoundaryTooShort, LIFETIME-004).
+
+struct Data {
+    value: int
+}
+
+edge struct Cache [lifetime L] {
+    item: &L Data
+}
+
+@tier(mid)
+fn build() int {
+    with arena(1KB) {
+        let mut d = Data { value = 5 }
+        let p = &d
+        d = Data { value = 9 }
+        let c = Cache { item = p }
+        return c.item.value
+    }
+}
+
+fn main() void {
+    let value = build()
+}

@@ -1,0 +1,34 @@
+// tests/fixtures/ok_outlives_edge_struct_field_combined.ubl
+// Real-world/combined: docs/OUTLIVES_RULES.md §8's actual motivating
+// scenario -- an edge struct constructed inside a `with arena(...)`
+// block, storing a reference field into data built in that SAME arena.
+// Before this delivery, `type_infer.rs`'s arena-escape checker rejected
+// this unconditionally (is_edge was fully decorative, confirmed
+// empirically before building anything -- see MEMORY_MODEL.md §9).
+// Now `unify_struct_field` defers to this exact check instead of
+// blanket-rejecting, and the loan (`&d`) is still live at construction
+// time, so this must be accepted.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Data {
+    value: int
+}
+
+edge struct Cache [lifetime L] {
+    item: &L Data
+}
+
+@tier(mid)
+fn build() int {
+    with arena(1KB) {
+        let d = Data { value = 5 }
+        let c = Cache { item = &d }
+        return c.item.value
+    }
+}
+
+fn main() void {
+    assert(build() == 5,
+        "an edge struct field referencing data built in the same arena is valid, not an arena escape")
+}

@@ -1,0 +1,25 @@
+// tests/fixtures/err_outlives_edge_struct_field_isolated.ubl
+// Phase E2 + E4 (docs/OUTLIVES_RULES.md): `n` is reassigned between
+// `p`'s own borrow and its use as `Cache`'s reference field, killing
+// p's underlying loan before it reaches the construction boundary.
+// Same shared-loan gap class as err_outlives_call_boundary_isolated.ubl,
+// for the struct-literal shape instead of the call shape.
+//
+// Expected: sema FAIL (BoundaryTooShort, LIFETIME-004).
+
+edge struct Cache [lifetime L] {
+    item: &L int
+}
+
+@tier(low)
+fn build_after_kill() int {
+    let mut n = 42
+    let p = &n
+    n = 7
+    let c = Cache { item = p }
+    return *c.item
+}
+
+fn main() void {
+    let value = build_after_kill()
+}

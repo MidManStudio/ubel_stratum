@@ -296,8 +296,63 @@ later.
    (`cargo run -p ubel_stratum_rd --example pipeline -- tests/fixtures`)
    confirming zero regressions on every existing lifetime/reference/
    borrow fixture, not just the new ones.
-3. Phase E2 for the `edge struct` construction case + §8's connection to
-   the arena-escape checker.
+3. ✅ **Landed.** Phase E2 for the struct-literal construction case
+   (`outlives_check.rs::check_struct_lit`) + §8's connection to the
+   arena-escape checker (`type_infer.rs::unify_struct_field`). Turned
+   out broader and trickier than "wire `is_edge` into the existing
+   check" in three separate, real ways, each caught by actually running
+   code rather than by reasoning about the diff:
+   - **`is_edge` doesn't gate the check itself.** Empirically, a struct
+     *without* `edge` can declare `[lifetime L]` and a `&L T` field just
+     as validly (`StructDecl.lifetime_params`'s own doc comment claims
+     otherwise — "empty for structs that don't hold arena references" —
+     which isn't true of the parser as it stands). So `check_struct_lit`
+     applies to any single-lifetime struct, matching `check_call`'s own
+     scope; only the arena-tag *deferral* in `type_infer.rs` is
+     `is_edge`-gated, since that's specifically about not blanket-
+     rejecting a same-arena reference, a question that only makes sense
+     for `edge` structs in the first place.
+   - **The arena tag sits one layer deeper than assumed.** `&d` for an
+     arena-resident `d` doesn't carry an outer `ArenaRef` tag itself —
+     it's `Reference { inner: ArenaRef { inner: Data } }`, not
+     `ArenaRef { inner: Reference { inner: Data } } }`. A first version
+     of `unify_struct_field` checked the wrong layer and silently did
+     nothing; caught because the probe script still failed after the
+     "fix," not by re-reading the change.
+   - **`@tier(low)`-only would have made the fix unreachable for its
+     own motivating case.** `edge struct` construction inside `with
+     arena(...)` is necessarily MID-tier code — arenas don't exist in
+     LOW tier — so restricting `outlives_check` to `@tier(low)` callers
+     (matching `borrow_check`/`move_check`'s own convention) would leave
+     the new arena-tag deferral completely unchecked for the one
+     scenario it exists for: a real regression relative to the blunt
+     rejection it replaces, not a deferral to something that actually
+     runs. Widened to `@tier(low) || @tier(mid)` — confirmed safe by
+     reading `cfg::build`/`facts::collect`/`compute_loan_regions`
+     directly: none of them gate on tier internally, the LOW-tier-only
+     convention elsewhere is each checker's own `check_program` choosing
+     to restrict itself, not a limitation of the shared machinery.
+     `@tier(high)` deliberately still excluded (never been borrow-
+     checked at all; a bigger step than this finding justifies).
+   Also renamed `CallBoundaryTooShort`/`NonLocalBoundaryArgument` to
+   `BoundaryTooShort`/`NonLocalBoundaryValue` — the original names
+   became misleading the moment a struct-literal field could trip them
+   too, not just a call argument.
+   Along the way, found (not caused by any of the above — reproduced
+   with the deferral inert, on a plain non-`edge` struct) a real,
+   separate crash: `return` inside a `with arena(...)` block alongside
+   an `ArenaRefEscapesBoundary` report panics in `type_table.rs` on an
+   out-of-bounds `TypeId`. Documented in `type_infer.rs`'s own "Known
+   rough edges," not fixed — real root-causing is unrelated to this
+   delivery's scope; every new fixture here was individually confirmed
+   to avoid the trigger shape rather than assumed safe.
+   6 new unit tests (loan-still-live / loan-dead / caller-param-
+   forwarding / untraceable / non-`edge`-still-checked / enum-variant-
+   path-skipped) plus 4 new `.ubl` fixtures — an isolated pair (no
+   arena, `edge struct` but plain LOW tier) and a combined pair (the
+   real §8 scenario: MID tier, `with arena(...)`, live vs. dead loan).
+   Verified the same way as step 2: `cargo test --workspace` and a full
+   fixture sweep, zero regressions.
 4. Phase E3 (multi-lifetime `outlives` propagation) + `LIFETIME-005`.
 5. ~~`LIFETIME-006` (non-local boundary argument rejection) — can land
    whenever; genuinely independent of 2-4.~~ Landed as part of step 2
