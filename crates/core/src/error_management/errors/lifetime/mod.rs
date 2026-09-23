@@ -61,6 +61,19 @@ pub enum LifetimeError {
         lifetime: String,
         call_span: Span,
     },
+    /// Phase E3 (`docs/OUTLIVES_RULES.md`): a declared `longer outlives
+    /// shorter` constraint doesn't actually hold between what's bound to
+    /// each lifetime at this specific boundary site. See
+    /// `sema/outlives_check.rs::check_outlives_constraint`'s own doc
+    /// comment for exactly what's compared and the caller-parameter
+    /// special case.
+    OutlivesConstraintViolated {
+        longer: String,
+        shorter: String,
+        longer_span: Span,
+        shorter_span: Span,
+        constraint_span: Span,
+    },
 }
 
 impl LifetimeError {
@@ -71,6 +84,7 @@ impl LifetimeError {
             LifetimeError::OutlivesCycle { span, .. } => *span,
             LifetimeError::BoundaryTooShort { call_span, .. } => *call_span,
             LifetimeError::NonLocalBoundaryValue { call_span, .. } => *call_span,
+            LifetimeError::OutlivesConstraintViolated { constraint_span, .. } => *constraint_span,
         }
     }
 
@@ -94,6 +108,10 @@ impl LifetimeError {
                 "can't verify this value satisfies declared lifetime `{}`",
                 lifetime
             ),
+            LifetimeError::OutlivesConstraintViolated { longer, shorter, .. } => format!(
+                "`{}` doesn't actually outlive `{}` at this site",
+                longer, shorter
+            ),
         }
     }
 
@@ -113,6 +131,10 @@ impl LifetimeError {
                 Some("move this call/construction before the loan's last use, or restructure so the loan lives at least as long as this site".to_string()),
             LifetimeError::NonLocalBoundaryValue { .. } =>
                 Some("bind this to a local first (e.g. `let tmp = ...; g(tmp)`) so its lifetime can be traced, or pass/store a fresh borrow directly".to_string()),
+            LifetimeError::OutlivesConstraintViolated { longer, shorter, .. } => Some(format!(
+                "whatever's bound to `{}` at this site must live at least as long as whatever's bound to `{}` — pick arguments where that actually holds, or drop the `{} outlives {}` requirement if it isn't needed",
+                longer, shorter, longer, shorter
+            )),
         }
     }
 }
@@ -134,6 +156,7 @@ impl crate::error_management::render::Diagnosable for LifetimeError {
             LifetimeError::OutlivesCycle { .. }           => "LIFETIME-003",
             LifetimeError::BoundaryTooShort { .. }    => "LIFETIME-004",
             LifetimeError::NonLocalBoundaryValue { .. } => "LIFETIME-006",
+            LifetimeError::OutlivesConstraintViolated { .. } => "LIFETIME-005",
         }
     }
     fn span(&self) -> Span { self.span() }
@@ -146,6 +169,10 @@ impl crate::error_management::render::Diagnosable for LifetimeError {
                 vec![(*first_span, "first declared here".to_string())],
             LifetimeError::BoundaryTooShort { loan_span, .. } =>
                 vec![(*loan_span, "borrow occurs here".to_string())],
+            LifetimeError::OutlivesConstraintViolated { longer, shorter, longer_span, shorter_span, .. } => vec![
+                (*longer_span, format!("`{}` bound here", longer)),
+                (*shorter_span, format!("`{}` bound here", shorter)),
+            ],
             _ => Vec::new(),
         }
     }

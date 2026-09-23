@@ -353,7 +353,57 @@ later.
    real §8 scenario: MID tier, `with arena(...)`, live vs. dead loan).
    Verified the same way as step 2: `cargo test --workspace` and a full
    fixture sweep, zero regressions.
-4. Phase E3 (multi-lifetime `outlives` propagation) + `LIFETIME-005`.
+4. ✅ **Landed.** Phase E3, multi-lifetime `outlives` propagation +
+   `LIFETIME-005` — `outlives_check.rs::check_outlives_constraint`. §3's
+   "region(longer) ⊇ region(shorter)" is real but isn't itself an
+   algorithm; resolved concretely (a real design-bearing decision, not
+   spelled out by the doc — flagged so it can be corrected):
+   - The single-lifetime restriction from step 2 is gone entirely —
+     `check_call`/`check_struct_lit` now collect *every* declared
+     lifetime a site actually uses, run each one's own E2 check
+     independently (unchanged in substance), then separately cross-
+     check every declared `longer outlives shorter` constraint where
+     *both* names are actually used at that site.
+   - A fresh inline borrow's natural comparable region is the singleton
+     `{this point}` — nothing else in the body can reference something
+     that doesn't have a name yet, so it's trivially the smallest
+     possible region. A live loan's comparable region is the same
+     union-of-covering-regions Phase E2 already computes. Both compare
+     by literal `HashSet` subset check.
+   - The one asymmetry, worked through carefully rather than guessed:
+     if `longer`'s side is one of the *caller's own* forwarded
+     parameters, the constraint holds unconditionally regardless of
+     `shorter` — a parameter is valid for the caller's entire body by
+     construction, necessarily a superset of anything else traceable
+     within it (not a guess, follows directly from what "being a
+     parameter" already means). The reverse (`shorter` is a forwarded
+     parameter, `longer` isn't) doesn't hold the same way, since nothing
+     computed within the body is provably a superset of "valid for the
+     whole function" — conservatively rejected, same stance as
+     `LIFETIME-006`. This one rule alone covers the common "forward both
+     of the caller's own params into another `outlives`-constrained
+     call" pattern without needing a separate cross-function-boundary
+     check — confirmed by a dedicated test
+     (`outlives_constraint_forwarding_both_callers_own_params_is_accepted`)
+     rather than assumed to fall out of the single-parameter rule.
+   - Skips the cross-check entirely (rather than reporting a second,
+     redundant diagnostic) when either side already has its own E2
+     violation — the root cause is already reported.
+   8 new unit tests (constraint holds / violated between two
+   independently-valid loans / violated when one side already has its
+   own E2 violation and the cross-check correctly defers to that /
+   fresh-vs-established / both forwarding directions / both sides
+   forwarded) plus one pre-existing test rewritten (the old
+   "multi-lifetime is out of scope" assumption no longer holds — only
+   the *cross-lifetime* comparison was ever out of scope, not
+   multi-lifetime signatures generally) plus 2 new `.ubl` fixtures.
+   Verified the same way as every step in this document: `cargo test
+   --workspace` and a full fixture sweep, zero regressions — including
+   re-confirming the two pre-existing multi-lifetime fixtures
+   (`ok_lifetime_wellformed_isolated`/`_combined`, which predate this
+   entire document and only exercised `lifetime_check.rs`'s
+   well-formedness pass) still pass now that real enforcement runs
+   against them too, not just structural validation.
 5. ~~`LIFETIME-006` (non-local boundary argument rejection) — can land
    whenever; genuinely independent of 2-4.~~ Landed as part of step 2
    above instead of separately: the conservative-reject case fell out

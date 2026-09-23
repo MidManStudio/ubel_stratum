@@ -1,61 +1,89 @@
 // crates/core/src/sema/outlives_check.rs
-//! Phase E2 + E4 (`docs/OUTLIVES_RULES.md`) — boundary constraint
-//! generation and checking, for both boundary shapes §3 names: a call
-//! to a function with `[lifetime L]` params, and a struct literal for
-//! a struct with `[lifetime L]` (an `edge struct` or otherwise — see
-//! `check_struct_lit`'s own doc comment for why this isn't restricted
-//! to `edge` specifically). Single declared lifetime per declaration
-//! either way. Multi-lifetime `outlives` propagation (Phase E3) is a
-//! later slice per §9's own landing order — not built here.
+//! Phase E2 + E3 + E4 (`docs/OUTLIVES_RULES.md`) — boundary constraint
+//! generation, multi-lifetime propagation, and checking, for both
+//! boundary shapes §3 names: a call to a function with `[lifetime ...]`
+//! params, and a struct literal for a struct with `[lifetime ...]` (an
+//! `edge struct` or otherwise — see `check_struct_lit`'s own doc
+//! comment for why this isn't restricted to `edge` specifically). Any
+//! number of declared lifetimes per declaration, including declared
+//! `outlives` relationships between them.
 //!
 //! ## What this actually checks, worked out concretely
 //!
-//! §3 of the design doc frames Phase E2 as "generate a constraint: this
-//! call site requires L's bound region to be a superset of the loan's
-//! actual region" — but that phrasing presupposes Phase E3's
-//! constraint-propagation machinery, which per §9 lands *after* this
-//! step. Resolved here, concretely, for the no-propagation-yet case
-//! (this is a real design-bearing decision made while implementing,
-//! not something the doc spelled out — flagged so it can be corrected
-//! if it doesn't match intent):
+//! §2's own vocabulary: a named lifetime parameter doesn't have one
+//! fixed region, it has a *requirement* — "whatever gets bound to `L`
+//! at a given site must be a superset of what that site's actual usage
+//! needs." §3 frames Phase E3 as "for every declared `longer outlives
+//! shorter`, add region(`longer`) ⊇ region(`shorter`)" — real, but not
+//! by itself an algorithm; resolved here concretely (a real
+//! design-bearing decision made while implementing, not something the
+//! doc spelled out — flagged so it can be corrected if it doesn't match
+//! intent):
 //!
-//! At a call `g(p)` where `g` has exactly one `[lifetime L]` and the
-//! matched parameter type is `&L T`, the actual argument `p` falls into
-//! one of four cases:
+//! Every argument/field-value at a `&L T` boundary position resolves,
+//! independently of any other lifetime, to one of four states
+//! (`Resolved`, below) — this *is* Phase E2, unchanged in substance
+//! from the single-lifetime slice, just no longer restricted to
+//! signatures with exactly one declared lifetime:
 //!
 //! 1. **A fresh inline borrow** (`g(&x)`) — `facts::expr_as_place`
 //!    returns `Place::Unknown` for a bare `Borrow` node (it isn't an
-//!    `Ident`). Always valid, freshly created at this exact point,
-//!    nothing to check. Skipped, same as everywhere else in this
-//!    checker family `Place::Unknown` means "no traceable carrier."
+//!    `Ident`). Always valid on its own, freshly created at this exact
+//!    point. For E3's cross-lifetime comparisons below, its natural
+//!    region is the singleton `{this point}` — nothing else in the
+//!    body can reference something that doesn't have a name yet.
 //! 2. **One of the *caller's own* parameters** (`fn caller [lifetime L]
 //!    (p: &L Item) { g(p) }`) — valid for the caller's entire body by
-//!    construction (that's what being a parameter means), and also the
-//!    single most common real use of a lifetime-parameterized function,
-//!    so treating it as a v1 rejection would make the feature nearly
-//!    useless on its first real workload. Checked by name against the
+//!    construction, and the single most common real use of a
+//!    lifetime-parameterized function. Checked by name against the
 //!    enclosing `FunctionDecl`'s own `params`, not by any loan lookup —
 //!    a parameter binding was never a `Borrow` expression, so it never
-//!    gets a `facts::Loan` entry at all.
+//!    gets a `facts::Loan` entry at all. Has no *computed* region (this
+//!    pass never derives "the caller's whole body" as an actual
+//!    `HashSet<Point>`), which matters for E3 below.
 //! 3. **A local bound to a loan within this function body** (`let p =
-//!    &x; ...; g(p)`) — the real case this phase exists for. Look up
-//!    every loan whose `bound_place == Place::Local(p)` and its region
-//!    from `borrow_check::compute_loan_regions` (Phase E1); if none of
-//!    their regions contains the call's own `Point`, the argument's
-//!    carrier is already dead by the time it reaches this call —
-//!    `LIFETIME-004`. (More than one loan can share a bound-place name
-//!    across reassignment; checking "does *any* of them cover this
-//!    point" rather than just the first/last is what makes that safe —
-//!    an earlier loan's region correctly stops covering the rebind
-//!    point, since `compute_reaches_before` already treats
-//!    `place_defined_at` as a kill for the *older* loan.)
+//!    &x; ...; g(p)`) — look up every loan whose `bound_place ==
+//!    Place::Local(p)` and its region from
+//!    `borrow_check::compute_loan_regions` (Phase E1); take the union
+//!    of whichever of those loans' regions actually contain the site's
+//!    own `Point` (more than one loan can share a bound-place name
+//!    across reassignment; an earlier loan's region correctly stops
+//!    covering the rebind point, since `compute_reaches_before` already
+//!    treats `place_defined_at` as a kill for the *older* loan — taking
+//!    the union rather than just the first/last match is what makes
+//!    checking "any of them" safe). Empty union → the carrier is
+//!    already dead by the time it reaches this site — `LIFETIME-004`.
+//!    Non-empty → valid, and that union *is* the comparable region E3
+//!    needs.
 //! 4. **Anything else traceable to a `Place::Local` but matching
 //!    neither a parameter nor a known loan** (e.g. `let p =
 //!    other_call_returning_a_reference(); g(p)` — a call result typed
-//!    `&T` is never itself registered as a `facts::Loan`, since
-//!    `facts.rs`'s loans only ever come from literal `Borrow` nodes) —
-//!    v1 can't prove it's fine, so it's conservatively rejected (§4's
-//!    stated v1 stance) — `LIFETIME-006`.
+//!    `&T` is never itself registered as a `facts::Loan`) — v1 can't
+//!    prove it's fine, so it's conservatively rejected (§4's stated v1
+//!    stance) — `LIFETIME-006`.
+//!
+//! **Phase E3**, on top of that: for every `LifetimeConstraint {
+//! longer, shorter }` the callee declares where *both* names are
+//! actually used by some param/field at this site (an unused declared
+//! lifetime has nothing to compare), after each side's own Phase E2
+//! check has independently passed (skip the cross-check entirely if
+//! either side already has an E2 violation — no point piling a second
+//! diagnostic on the same root cause):
+//! - Case 1 (fresh) and case 3 (loan) both carry a real, comparable
+//!   region (the singleton or the loan union above) — compare with a
+//!   literal `HashSet` subset check: `shorter`'s region ⊆ `longer`'s.
+//! - If `longer` resolves to a caller parameter (case 2), the
+//!   constraint is accepted unconditionally, regardless of what
+//!   `shorter` resolves to — a forwarded parameter is valid for this
+//!   *entire* function body by construction, which is necessarily a
+//!   superset of anything else this pass can trace within that same
+//!   body. Not a guess: it follows directly from what "being a
+//!   parameter" already means, the same fact case 2 above relies on.
+//! - If `shorter` resolves to a caller parameter but `longer` doesn't,
+//!   the reverse doesn't hold the same way — nothing computed within
+//!   this body is provably a superset of "valid for the caller's whole
+//!   body," so this is conservatively rejected, same "can't prove it,
+//!   don't allow it" stance as case 4 / `LIFETIME-006`. `LIFETIME-005`.
 //!
 //! Positional arguments only for this slice — `ArgKind::Named` at a
 //! lifetime-bearing parameter position isn't matched. A real, narrow,
@@ -105,24 +133,134 @@ use crate::sema::facts::{self, Facts, LoanId, Place, Point};
 /// `ErrorManager`.
 #[derive(Debug, Clone)]
 pub enum Violation {
-    /// LIFETIME-004 — case 3 above: a traced loan exists, but its
-    /// region doesn't reach this call's point.
+    /// LIFETIME-004 — a traced loan exists, but its region doesn't
+    /// reach this site's point.
     BoundaryTooShort {
         lifetime: String,
         loan_span: Span,
         call_span: Span,
     },
-    /// LIFETIME-006 — case 4 above: no traceable parameter or loan at
-    /// all, conservative reject.
+    /// LIFETIME-006 — no traceable parameter or loan at all,
+    /// conservative reject.
     NonLocalBoundaryValue {
         lifetime: String,
         call_span: Span,
     },
+    /// LIFETIME-005 — Phase E3: a declared `longer outlives shorter`
+    /// doesn't actually hold between what's bound to each at this site.
+    OutlivesConstraintViolated {
+        longer: String,
+        shorter: String,
+        longer_span: Span,
+        shorter_span: Span,
+        constraint_span: Span,
+    },
 }
 
-/// Runs Phase E2 + E4 for every `@tier(low)` free function in
-/// `program`. Doesn't touch `ErrorManager` itself, same reasoning as
-/// `borrow_check::check_program` — see that function's own doc note.
+/// How one argument/field-value at a `&L T` boundary position resolves
+/// — this module's own doc comment, cases 1-4. `Concrete` covers both
+/// case 1 (fresh borrow, the point itself as a singleton) and case 3
+/// (a live loan, its own union region) uniformly, since Phase E3 treats
+/// them identically from here on: both are real, comparable regions.
+enum Resolved {
+    Concrete(HashSet<Point>),
+    CallerParam,
+    Dead { loan_span: Span },
+    Untraced,
+}
+
+fn resolve_boundary_value<'ast>(
+    value_expr: &'ast Expr<'ast>,
+    point: Point,
+    caller_param_names: &HashSet<&'ast str>,
+    facts: &Facts<'ast>,
+    regions: &HashMap<LoanId, HashSet<Point>>,
+) -> Resolved {
+    let place = facts::expr_as_place(value_expr);
+    let Place::Local(name) = place else {
+        let mut singleton = HashSet::new();
+        singleton.insert(point);
+        return Resolved::Concrete(singleton);
+    };
+
+    if caller_param_names.contains(name) { return Resolved::CallerParam; }
+
+    let bound_loans: Vec<_> = facts.loans.iter()
+        .filter(|loan| matches!(loan.bound_place, Place::Local(n) if n == name))
+        .collect();
+
+    if bound_loans.is_empty() { return Resolved::Untraced; }
+
+    let covering: HashSet<Point> = bound_loans.iter()
+        .filter_map(|loan| regions.get(&loan.id))
+        .filter(|region| region.contains(&point))
+        .flat_map(|region| region.iter().copied())
+        .collect();
+
+    if covering.is_empty() {
+        let loan_span = bound_loans.last().expect("checked non-empty above").span;
+        return Resolved::Dead { loan_span };
+    }
+    Resolved::Concrete(covering)
+}
+
+/// Phase E2's own per-argument decision (this module's own doc
+/// comment, cases 1-4) — emits nothing for `Concrete`/`CallerParam`
+/// (both valid on their own), `BoundaryTooShort`/`NonLocalBoundaryValue`
+/// for `Dead`/`Untraced`.
+fn emit_e2_violation(resolved: &Resolved, lifetime_name: &str, value_span: Span, violations: &mut Vec<Violation>) {
+    match resolved {
+        Resolved::Concrete(_) | Resolved::CallerParam => {}
+        Resolved::Dead { loan_span } => violations.push(Violation::BoundaryTooShort {
+            lifetime: lifetime_name.to_string(), loan_span: *loan_span, call_span: value_span,
+        }),
+        Resolved::Untraced => violations.push(Violation::NonLocalBoundaryValue {
+            lifetime: lifetime_name.to_string(), call_span: value_span,
+        }),
+    }
+}
+
+/// Phase E3's cross-lifetime check (this module's own doc comment) for
+/// one declared `longer outlives shorter` constraint, given both sides'
+/// already-resolved values. Skips silently if either side already has
+/// its own E2 violation — that's already reported, and the cross-check
+/// couldn't say anything trustworthy about it anyway.
+#[allow(clippy::too_many_arguments)]
+fn check_outlives_constraint(
+    longer_name: &str, shorter_name: &str, constraint_span: Span,
+    longer: &Resolved, shorter: &Resolved,
+    longer_span: Span, shorter_span: Span,
+    violations: &mut Vec<Violation>,
+) {
+    if matches!(longer, Resolved::Dead { .. } | Resolved::Untraced) { return; }
+    if matches!(shorter, Resolved::Dead { .. } | Resolved::Untraced) { return; }
+
+    let violated = match (longer, shorter) {
+        // A forwarded caller parameter is valid for this whole
+        // function's body by construction — necessarily a superset of
+        // anything else traceable within it, regardless of what
+        // `shorter` resolves to.
+        (Resolved::CallerParam, _) => false,
+        // The reverse isn't provable the same way — conservative
+        // reject.
+        (_, Resolved::CallerParam) => true,
+        (Resolved::Concrete(lr), Resolved::Concrete(sr)) => !sr.is_subset(lr),
+        (Resolved::Dead { .. } | Resolved::Untraced, _) | (_, Resolved::Dead { .. } | Resolved::Untraced) =>
+            unreachable!("filtered above"),
+    };
+
+    if violated {
+        violations.push(Violation::OutlivesConstraintViolated {
+            longer: longer_name.to_string(), shorter: shorter_name.to_string(),
+            longer_span, shorter_span, constraint_span,
+        });
+    }
+}
+
+/// Runs Phase E2 + E3 + E4 for every `@tier(low)`/`@tier(mid)` free
+/// function in `program`. Doesn't touch `ErrorManager` itself, same
+/// reasoning as `borrow_check::check_program` — see that function's own
+/// doc note.
 pub fn check_program<'ast>(program: &Program<'ast>) -> Vec<Violation> {
     let mut fn_table: HashMap<&'ast str, &'ast FunctionDecl<'ast>> = HashMap::new();
     let mut struct_table: HashMap<&'ast str, &'ast StructDecl<'ast>> = HashMap::new();
@@ -185,47 +323,40 @@ fn check_function<'ast>(
     violations
 }
 
-/// The shared four-case decision (this module's own doc comment) for
-/// one expression that's expected to satisfy a `&L T` boundary
-/// position — a call argument or a struct-literal field value alike.
-/// `site_span` is what a violation points at: the argument expression
-/// itself for a call, the field-init expression for a struct literal.
-fn check_boundary_value<'ast>(
-    value_expr: &'ast Expr<'ast>,
-    lifetime_name: &'ast str,
+/// Shared orchestration for one boundary site (a call or a struct
+/// literal): given every `(lifetime_name, value_expr)` pair the site
+/// actually uses — one per declared lifetime that appears in some
+/// param/field's `&L T` type — resolves and E2-checks each
+/// independently, then runs Phase E3's cross-check for every declared
+/// constraint where *both* names appear in the map (an unused declared
+/// lifetime has nothing to compare against).
+fn check_boundary_site<'ast>(
+    declared: &'ast [crate::ast::common::LifetimeParam<'ast>],
+    pairs: &[(&'ast str, &'ast Expr<'ast>)],
     point: Point,
     caller_param_names: &HashSet<&'ast str>,
     facts: &Facts<'ast>,
     regions: &HashMap<LoanId, HashSet<Point>>,
     violations: &mut Vec<Violation>,
 ) {
-    let place = facts::expr_as_place(value_expr);
-    let Place::Local(name) = place else { return }; // fresh inline borrow — always valid
-
-    if caller_param_names.contains(name) { return; } // forwarding caller's own param — always valid
-
-    let bound_loans: Vec<_> = facts.loans.iter()
-        .filter(|loan| matches!(loan.bound_place, Place::Local(n) if n == name))
+    let resolved: HashMap<&'ast str, Resolved> = pairs.iter()
+        .map(|(name, expr)| (*name, resolve_boundary_value(expr, point, caller_param_names, facts, regions)))
         .collect();
 
-    if bound_loans.is_empty() {
-        violations.push(Violation::NonLocalBoundaryValue {
-            lifetime: lifetime_name.to_string(),
-            call_span: value_expr.span,
-        });
-        return;
+    for (name, expr) in pairs {
+        if let Some(r) = resolved.get(name) {
+            emit_e2_violation(r, name, expr.span, violations);
+        }
     }
 
-    let reaches = bound_loans.iter()
-        .any(|loan| regions.get(&loan.id).is_some_and(|region| region.contains(&point)));
-
-    if !reaches {
-        let loan_span = bound_loans.last().expect("checked non-empty above").span;
-        violations.push(Violation::BoundaryTooShort {
-            lifetime: lifetime_name.to_string(),
-            loan_span,
-            call_span: value_expr.span,
-        });
+    for p in declared {
+        let Some(c) = &p.constraint else { continue };
+        let (Some(longer), Some(shorter)) = (resolved.get(c.longer), resolved.get(c.shorter)) else { continue };
+        let longer_span = pairs.iter().find(|(n, _)| *n == c.longer).map(|(_, e)| e.span).unwrap_or(c.span);
+        let shorter_span = pairs.iter().find(|(n, _)| *n == c.shorter).map(|(_, e)| e.span).unwrap_or(c.span);
+        check_outlives_constraint(
+            c.longer, c.shorter, c.span, longer, shorter, longer_span, shorter_span, violations,
+        );
     }
 }
 
@@ -241,16 +372,13 @@ fn check_call<'ast>(
     let ExprKind::Call { callee, args } = &call_expr.kind else { return };
     let ExprKind::Ident(callee_name) = callee.kind else { return };
     let Some(&g) = fn_table.get(callee_name) else { return };
+    if g.lifetime_params.is_empty() { return; }
 
-    // Single declared lifetime per signature only — E3 (multi-lifetime
-    // `outlives` propagation) is a later slice, not this one.
-    if g.lifetime_params.len() != 1 { return; }
-    let lifetime_name = g.lifetime_params[0].name;
-
+    let mut pairs: Vec<(&'ast str, &'ast Expr<'ast>)> = Vec::new();
     for (param, arg) in g.params.iter().zip(args.iter()) {
         let ParamKind::Named { ty: Some(ty), .. } = param.kind else { continue };
         let TypeKind::Reference { lifetime: Some(l), .. } = ty.kind else { continue };
-        if l != lifetime_name { continue; }
+        if !g.lifetime_params.iter().any(|p| p.name == l) { continue; }
 
         let arg_expr = match &arg.kind {
             ArgKind::Positional(e) => *e,
@@ -258,11 +386,10 @@ fn check_call<'ast>(
             // in this slice — see this module's own doc comment.
             ArgKind::Named { .. } => continue,
         };
-
-        check_boundary_value(
-            arg_expr, lifetime_name, point, caller_param_names, facts, regions, violations,
-        );
+        pairs.push((l, arg_expr));
     }
+
+    check_boundary_site(g.lifetime_params, &pairs, point, caller_param_names, facts, regions, violations);
 }
 
 /// The struct-literal-construction boundary shape (this module's own
@@ -287,24 +414,21 @@ fn check_struct_lit<'ast>(
     let ExprKind::StructLit { path, fields } = &lit_expr.kind else { return };
     if path.len() != 1 { return; }
     let Some(&s) = struct_table.get(path[0]) else { return };
+    if s.lifetime_params.is_empty() { return; }
 
-    // Single declared lifetime per declaration only — same restriction
-    // as check_call, same reason (E3 not built yet).
-    if s.lifetime_params.len() != 1 { return; }
-    let lifetime_name = s.lifetime_params[0].name;
-
+    let mut pairs: Vec<(&'ast str, &'ast Expr<'ast>)> = Vec::new();
     for member in s.members.iter() {
         let StructMember::Field(field_decl) = member else { continue };
         let TypeKind::Reference { lifetime: Some(l), .. } = field_decl.ty.kind else { continue };
-        if l != lifetime_name { continue; }
+        if !s.lifetime_params.iter().any(|p| p.name == l) { continue; }
 
         let Some(field_init) = fields.iter().find(|f| f.name == field_decl.name) else { continue };
-
-        check_boundary_value(
-            field_init.value, lifetime_name, point, caller_param_names, facts, regions, violations,
-        );
+        pairs.push((l, field_init.value));
     }
+
+    check_boundary_site(s.lifetime_params, &pairs, point, caller_param_names, facts, regions, violations);
 }
+
 
 // ── Boundary-site finder ─────────────────────────────────────────────
 //
@@ -597,10 +721,14 @@ mod tests {
     }
 
     #[test]
-    fn multi_lifetime_callee_is_skipped_for_this_slice() {
-        // fn take [lifetime L, lifetime M] (a: &L int, b: &M int) void
-        // — multi-lifetime signatures are Phase E3's job, not this
-        // slice's; confirms this pass doesn't guess at them early.
+    fn multi_lifetime_callee_without_a_constraint_still_checks_each_lifetime_independently() {
+        // fn take2 [lifetime L, lifetime M] (a: &L int) void — no
+        // declared constraint between L and M means there's nothing for
+        // Phase E3 to cross-check, but Phase E2's own per-lifetime check
+        // still applies to L regardless of how many lifetimes the
+        // signature declares. (Superseded the old assumption that a
+        // multi-lifetime signature was out of scope entirely — it
+        // wasn't, only the *cross-lifetime* comparison was.)
         let arena = AstArena::new();
         let n1 = ident(&arena, "n");
         let p = ident(&arena, "p");
@@ -624,7 +752,212 @@ mod tests {
         let program = program_with(&arena, &[Item::Function(caller), Item::Function(take2)]);
 
         let violations = check_program(&program);
-        assert!(violations.is_empty(), "a two-lifetime signature is out of scope for this slice, even with an otherwise-dead loan passed to it");
+        assert_eq!(violations.len(), 1, "L's own dead loan is still a real violation, regardless of the unrelated, unconstrained M");
+        assert!(matches!(violations[0], Violation::BoundaryTooShort { .. }));
+    }
+
+    // ── Phase E3: cross-lifetime `outlives` constraints ─────────────
+
+    fn two_lifetime_fn<'a>(arena: &'a AstArena, name: &'a str, longer: &'a str, shorter: &'a str) -> FunctionDecl<'a> {
+        // fn name [lifetime longer, lifetime shorter where longer
+        // outlives shorter] (a: &longer int, b: &shorter int) void
+        let param_a = Param { kind: ParamKind::Named { mutable: false, name: arena.alloc_str("a"), ty: Some(ref_type(arena, longer)), default: None }, span: Z };
+        let param_b = Param { kind: ParamKind::Named { mutable: false, name: arena.alloc_str("b"), ty: Some(ref_type(arena, shorter)), default: None }, span: Z };
+        FunctionDecl {
+            tier: TierAnnotation::Low, attributes: &[], visibility: Visibility::default(),
+            is_async: false, name: arena.alloc_str(name),
+            lifetime_params: arena.alloc_slice_copy(&[
+                LifetimeParam { name: longer, constraint: None, span: Z },
+                LifetimeParam {
+                    name: shorter,
+                    constraint: Some(crate::ast::common::LifetimeConstraint { longer, shorter, span: Z }),
+                    span: Z,
+                },
+            ]),
+            generic_params: &[], params: arena.alloc_slice_copy(&[param_a, param_b]), return_type: None,
+            body: Block { stmts: &[], span: Z }, span: Z,
+        }
+    }
+
+    #[test]
+    fn outlives_constraint_holds_when_longer_loan_region_covers_shorter() {
+        // let n = 5; let m = 9;
+        // let longer_ref = &n; let shorter_ref = &m;
+        // pair(longer_ref, shorter_ref) -- both loans still live, and
+        // (trivially, same scope) longer's region covers shorter's.
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let m1 = ident(&arena, "m");
+        let longer_ref = ident(&arena, "longer_ref");
+        let shorter_ref = ident(&arena, "shorter_ref");
+        let stmts = [
+            let_stmt(&arena, "n", lit_int(&arena, 5)),
+            let_stmt(&arena, "m", lit_int(&arena, 9)),
+            let_stmt(&arena, "longer_ref", borrow(&arena, false, n1)),
+            let_stmt(&arena, "shorter_ref", borrow(&arena, false, m1)),
+            call_stmt(&arena, "pair", &[longer_ref, shorter_ref]),
+        ];
+        let caller = caller_fn(&arena, &[], &stmts);
+        let pair = two_lifetime_fn(&arena, "pair", "L", "M");
+        let program = program_with(&arena, &[Item::Function(caller), Item::Function(pair)]);
+
+        let violations = check_program(&program);
+        assert!(violations.is_empty(), "both loans reach the call together; L outlives M trivially holds here");
+    }
+
+    #[test]
+    fn outlives_constraint_violated_when_shorter_loan_outlasts_longer() {
+        // longer_ref's own carrier (n) is reassigned before the call,
+        // but shorter_ref's isn't — so even setting aside L's own E2
+        // check (which independently also fires here), the *relative*
+        // ordering the signature promises (L outlives M) doesn't hold:
+        // shorter_ref's region isn't a subset of longer_ref's dead one.
+        // This test targets a case where the *relative* check is the
+        // interesting one: longer_ref killed, shorter_ref still alive.
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let m1 = ident(&arena, "m");
+        let longer_ref = ident(&arena, "longer_ref");
+        let shorter_ref = ident(&arena, "shorter_ref");
+        let stmts = [
+            let_stmt(&arena, "n", lit_int(&arena, 5)),
+            let_stmt(&arena, "m", lit_int(&arena, 9)),
+            let_stmt(&arena, "longer_ref", borrow(&arena, false, n1)),
+            reassign_stmt(&arena, "n", lit_int(&arena, 1)),
+            let_stmt(&arena, "shorter_ref", borrow(&arena, false, m1)),
+            call_stmt(&arena, "pair", &[longer_ref, shorter_ref]),
+        ];
+        let caller = caller_fn(&arena, &[], &stmts);
+        let pair = two_lifetime_fn(&arena, "pair", "L", "M");
+        let program = program_with(&arena, &[Item::Function(caller), Item::Function(pair)]);
+
+        let violations = check_program(&program);
+        // longer_ref's own E2 check fires (BoundaryTooShort, its loan
+        // is dead) — and because it's already flagged, the E3
+        // cross-check for this pair is skipped rather than piling a
+        // second diagnostic on the same root cause.
+        assert_eq!(violations.len(), 1);
+        assert!(matches!(violations[0], Violation::BoundaryTooShort { .. }));
+    }
+
+    #[test]
+    fn outlives_constraint_violated_between_two_independently_valid_loans() {
+        // Both loans are individually live at the call (neither trips
+        // its own E2 check on its own) -- exercising the actual
+        // cross-lifetime comparison, not either side's own E2 check.
+        // shorter_ref is issued *before* longer_ref, so shorter_ref's
+        // own region reaches back to a point (its own issuance) that
+        // longer_ref's region can never include (a loan's region never
+        // extends before its own issue point) -- shorter_ref's region
+        // isn't a subset of longer_ref's, even though both reach the
+        // call individually.
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let n2 = ident(&arena, "n");
+        let shorter_ref = ident(&arena, "shorter_ref");
+        let longer_ref = ident(&arena, "longer_ref");
+        let stmts = [
+            let_stmt(&arena, "n", lit_int(&arena, 5)),
+            let_stmt(&arena, "shorter_ref", borrow(&arena, false, n1)),
+            let_stmt(&arena, "longer_ref", borrow(&arena, false, n2)),
+            call_stmt(&arena, "pair", &[longer_ref, shorter_ref]),
+        ];
+        let caller = caller_fn(&arena, &[], &stmts);
+        let pair = two_lifetime_fn(&arena, "pair", "L", "M");
+        let program = program_with(&arena, &[Item::Function(caller), Item::Function(pair)]);
+
+        let violations = check_program(&program);
+        assert_eq!(violations.len(), 1, "shorter_ref's own region reaches back before longer_ref even exists, so it can't be a subset of longer_ref's");
+        assert!(matches!(violations[0], Violation::OutlivesConstraintViolated { .. }));
+    }
+
+    #[test]
+    fn outlives_constraint_holds_for_a_fresh_borrow_against_an_established_loan() {
+        // The second argument is a *fresh* inline borrow (case 1), so
+        // its region is the singleton {this point} -- always a subset
+        // of an established loan's broader region that already covers
+        // this same point. Confirms the accept path covers "fresh vs.
+        // an established longer loan" too, not just "two loans of the
+        // same shape."
+        let arena = AstArena::new();
+        let n1 = ident(&arena, "n");
+        let longer_ref = ident(&arena, "longer_ref");
+        let stmts = [
+            let_stmt(&arena, "n", lit_int(&arena, 5)),
+            let_stmt(&arena, "longer_ref", borrow(&arena, false, n1)),
+            call_stmt(&arena, "pair", &[longer_ref, borrow(&arena, false, ident(&arena, "n"))]),
+        ];
+        let caller = caller_fn(&arena, &[], &stmts);
+        let pair = two_lifetime_fn(&arena, "pair", "L", "M");
+        let program = program_with(&arena, &[Item::Function(caller), Item::Function(pair)]);
+
+        let violations = check_program(&program);
+        assert!(violations.is_empty(), "a fresh borrow's singleton region is trivially a subset of any region that already covers this point");
+    }
+
+    #[test]
+    fn outlives_constraint_forwarding_callers_own_longer_param_is_accepted() {
+        // fn caller [lifetime L, lifetime M] (l_param: &L int) void
+        // { pair(l_param, &n) } -- l_param is bound to `longer`;
+        // forwarding it is accepted unconditionally, regardless of
+        // what `shorter` resolves to (this module's own doc comment).
+        let arena = AstArena::new();
+        let l_param = ident(&arena, "l_param");
+        let n1 = ident(&arena, "n");
+        let stmts = [
+            let_stmt(&arena, "n", lit_int(&arena, 5)),
+            call_stmt(&arena, "pair", &[l_param, borrow(&arena, false, n1)]),
+        ];
+        let param = Param { kind: ParamKind::Named { mutable: false, name: arena.alloc_str("l_param"), ty: Some(ref_type(&arena, "L")), default: None }, span: Z };
+        let caller = caller_fn(&arena, &[param], &stmts);
+        let pair = two_lifetime_fn(&arena, "pair", "L", "M");
+        let program = program_with(&arena, &[Item::Function(caller), Item::Function(pair)]);
+
+        let violations = check_program(&program);
+        assert!(violations.is_empty(), "forwarding the caller's own parameter into the `longer` position is always valid, regardless of `shorter`");
+    }
+
+    #[test]
+    fn outlives_constraint_forwarding_callers_own_shorter_param_is_rejected() {
+        // The reverse of the above: the caller's own parameter is bound
+        // to `shorter`. Nothing computed within this body is provably a
+        // superset of "valid for the caller's entire body," so this is
+        // conservatively rejected even though a fresh borrow is used
+        // for `longer`.
+        let arena = AstArena::new();
+        let m_param = ident(&arena, "m_param");
+        let n1 = ident(&arena, "n");
+        let stmts = [
+            let_stmt(&arena, "n", lit_int(&arena, 5)),
+            call_stmt(&arena, "pair", &[borrow(&arena, false, n1), m_param]),
+        ];
+        let param = Param { kind: ParamKind::Named { mutable: false, name: arena.alloc_str("m_param"), ty: Some(ref_type(&arena, "M")), default: None }, span: Z };
+        let caller = caller_fn(&arena, &[param], &stmts);
+        let pair = two_lifetime_fn(&arena, "pair", "L", "M");
+        let program = program_with(&arena, &[Item::Function(caller), Item::Function(pair)]);
+
+        let violations = check_program(&program);
+        assert_eq!(violations.len(), 1);
+        assert!(matches!(violations[0], Violation::OutlivesConstraintViolated { .. }));
+    }
+
+    #[test]
+    fn outlives_constraint_forwarding_both_callers_own_params_is_accepted() {
+        // Both sides forwarded from the caller's own params -- covered
+        // by the same "longer is CallerParam" rule as the single-param
+        // case, not a separate cross-function-boundary check.
+        let arena = AstArena::new();
+        let l_param = ident(&arena, "l_param");
+        let m_param = ident(&arena, "m_param");
+        let stmts = [call_stmt(&arena, "pair", &[l_param, m_param])];
+        let param_l = Param { kind: ParamKind::Named { mutable: false, name: arena.alloc_str("l_param"), ty: Some(ref_type(&arena, "L")), default: None }, span: Z };
+        let param_m = Param { kind: ParamKind::Named { mutable: false, name: arena.alloc_str("m_param"), ty: Some(ref_type(&arena, "M")), default: None }, span: Z };
+        let caller = caller_fn(&arena, &[param_l, param_m], &stmts);
+        let pair = two_lifetime_fn(&arena, "pair", "L", "M");
+        let program = program_with(&arena, &[Item::Function(caller), Item::Function(pair)]);
+
+        let violations = check_program(&program);
+        assert!(violations.is_empty(), "forwarding both of the caller's own params is the common real pattern this rule exists to keep usable");
     }
 
     // ── Struct-literal boundary shape ───────────────────────────────

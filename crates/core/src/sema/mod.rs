@@ -119,7 +119,7 @@ pub fn analyse<'ast>(
         return Err(errors);
     }
 
-    // ── Pass 7: Outlives boundary checking (Phase E2 + E4) ─────────
+    // ── Pass 7: Outlives boundary checking (Phase E2 + E3 + E4) ────
     for violation in outlives_check::check_program(program) {
         match violation {
             outlives_check::Violation::BoundaryTooShort { lifetime, loan_span, call_span } => {
@@ -130,6 +130,13 @@ pub fn analyse<'ast>(
             outlives_check::Violation::NonLocalBoundaryValue { lifetime, call_span } => {
                 errors.add_lifetime_error(LifetimeError::NonLocalBoundaryValue {
                     lifetime, call_span,
+                });
+            }
+            outlives_check::Violation::OutlivesConstraintViolated {
+                longer, shorter, longer_span, shorter_span, constraint_span,
+            } => {
+                errors.add_lifetime_error(LifetimeError::OutlivesConstraintViolated {
+                    longer, shorter, longer_span, shorter_span, constraint_span,
                 });
             }
         }

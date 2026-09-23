@@ -1,0 +1,26 @@
+// tests/fixtures/err_outlives_constraint_propagation_isolated.ubl
+// Phase E3: both loans individually reach the call (neither trips its
+// own Phase E2 check on its own), but `shorter_ref` is issued *before*
+// `longer_ref` here -- its region reaches back to a point `longer_ref`'s
+// region can never include (a loan's region never extends before its
+// own issue point), so `L outlives M` doesn't actually hold at this
+// call site even though the signature declares it.
+//
+// Expected: sema FAIL (OutlivesConstraintViolated, LIFETIME-005).
+
+@tier(low)
+fn pair [lifetime L, lifetime M where L outlives M] (a: &L int, b: &M int) int {
+    return *a + *b
+}
+
+@tier(low)
+fn combine() int {
+    let n = 5
+    let shorter_ref = &n
+    let longer_ref = &n
+    return pair(longer_ref, shorter_ref)
+}
+
+fn main() void {
+    let value = combine()
+}

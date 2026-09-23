@@ -1,0 +1,28 @@
+// tests/fixtures/ok_outlives_constraint_propagation_isolated.ubl
+// Phase E3 (docs/OUTLIVES_RULES.md): a declared `L outlives M`
+// constraint, checked against two genuinely independent loans rather
+// than piggybacking on either side's own Phase E2 check. `longer_ref`
+// is issued before `shorter_ref`, so its region (forward-reachable from
+// its own, earlier issue point) already covers every point
+// `shorter_ref`'s region does -- the relative ordering the signature
+// promises actually holds.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(low)
+fn pair [lifetime L, lifetime M where L outlives M] (a: &L int, b: &M int) int {
+    return *a + *b
+}
+
+@tier(low)
+fn combine() int {
+    let n = 5
+    let m = 9
+    let longer_ref = &n
+    let shorter_ref = &m
+    return pair(longer_ref, shorter_ref)
+}
+
+fn main() void {
+    assert(combine() == 14, "L's region, issued earlier, already covers everything M's later, shorter region does")
+}
