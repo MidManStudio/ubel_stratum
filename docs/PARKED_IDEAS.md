@@ -98,9 +98,50 @@ session, never fixture-tested, and not wired to anything functional:
   *"impl blocks don't introduce a name... we record method definitions
   without a specific parent DefId."* Methods inside `impl Foo for Bar`
   are never linked to `Bar`. Not dispatchable.
+- Confirmed directly, not just from the comment: a **plain inherent
+  `impl Foo { }` block (no trait, no `for` clause) has the identical
+  gap** — `impl Foo { fn get_x(self) int { return self.x } }` then
+  `f.get_x()` fails `TYPE-104 NoSuchMethod` (and `TYPE-103
+  NoSuchField`, both fire together), and a static-style method with no
+  `self` param (`impl Foo { fn new(x: int) Foo { ... } }`, called as
+  `Foo.new(5)`) fails identically. So this was never a trait-specific
+  gap, or an instance-vs-static split — `type_infer.rs`'s own comment
+  at the `ExprKind::Call` `Field` arm confirms why: `instance::resolve_receiver`
+  is narrowly scoped to six *builtin* kinds (List/Str/Dict/Tuple/Queue/Stack)
+  by name, and "anything else (user-defined struct methods, etc) falls
+  through to `call_return_type` below, unchanged" — there's no code
+  path from a plain `Field` access on a user struct's value into
+  `impl`-block method lookup at all, trait or not.
+- A related, likely-same-root-cause bug, found alongside this: a value
+  that traces back to `self` (directly, or via `let x = self.field`)
+  fails `TYPE-115 InvalidFormatSpec` on `on_type: "<unknown>"` for
+  *any* format spec (`{self.id:03}`) *inside an impl-block method
+  body*, even though `self.field` resolves fine for ordinary use
+  (`self.id * 2` type-checks and runs correctly) — so `self`'s own type
+  isn't actually unresolved in general, only the interpolation-hole
+  walk's own, separate type lookup fails for it. Extracting to a local
+  first does **not** fix it (confirmed by testing the exact "fix," not
+  assumed from the pattern that worked for a plain, non-`self`-derived
+  local) — `let node_id = self.id; println($"{node_id:03}")` still
+  fails identically, while the same extraction on a struct field
+  accessed *outside* an impl block (`n.id` in `main()`, no `self`
+  involved) works fine. Narrows the bug precisely to "derived from
+  `self`, inside an impl-block method" rather than "any local," and
+  rules out the workaround a separate conversation proposed without
+  re-testing it.
 - `GENERICS_RULES.md` confirms trait bounds on generics (`T: Comparable`)
   are parsed, stored, never enforced.
 - Zero fixtures exercise any of it.
+- One thing that *does* work, confirmed fresh (a separate conversation
+  proposed the test but the transcript never showed whether it passed):
+  generic enum payload matching — `enum Option<T> { Some(T), None }` /
+  `enum Result<T, E> { Ok(T), Err(E) }`, constructed via
+  `Result.Ok(val)`/`Option.Some(idx)` and destructured via
+  `match r { Result.Ok(val) => ..., Result.Err(msg) => ... }` — runs
+  correctly end to end, full pipeline. Unrelated to the impl-block gap
+  above (enum variant construction/matching, not `impl`-block method
+  dispatch), and not something to re-verify again later as if it were
+  still open.
 
 ### Reference-language survey
 
@@ -227,6 +268,67 @@ the same handle repeatedly — the entity-allocator use case
 get `Pool<T>` right for Mid Engine. Not worth building until profiling
 of an actual entity-allocator workload says it's worth it; noted here so
 it isn't rediscovered from scratch later.
+
+## External test findings — verified against source, not taken on faith
+
+A separate conversation ran its own test scripts against (it claimed) this
+compiler and reported several findings. Re-ran the testable ones directly
+against real source before recording anything — about half held up exactly
+as described, and about half were wrong or actively introduced APIs that
+don't exist here:
+
+**Held up, confirmed real:**
+- **Sized integer literals never coerce.** `u8`/`u16`/`u32`/`u64` (and the
+  signed/float/`isize`/`usize` equivalents) are real `TypeKind` variants,
+  not something the other conversation invented — but `infer_literal`
+  hard-codes every bare integer literal to plain `SemaType::Int`
+  immediately, with no placeholder/deferred typing the way Rust's own
+  integer-literal inference works. So `active_streams: u32` initialized as
+  `active_streams = 10` is a genuine `TYPE-101` type mismatch every time,
+  not a parser issue and not something an `ArenaRef`/`Unique`/`GcRef`
+  wrapper rewrite (what the other conversation actually tried) has any
+  bearing on. Not designed or fixed here — a real, narrow gap: either
+  numeric literals need Rust-style deferred/contextual typing, or the
+  language needs a literal suffix (`10u32`) to disambiguate, or sized
+  integer fields need an explicit cast at the call site. Undecided.
+- **Nested generic closing (`List<List<int>>`) fails to parse.** Confirmed
+  directly: `RightShift` (`>>`) is lexed as one token, and the type-expr
+  parser wants a lone `Greater` to close a generic, so
+  `UnexpectedToken { found: RightShift, expected: ["Greater"] }` fires on
+  the second-level close. `List<List<int> >` (space between the two `>`)
+  parses and runs fine — confirmed too, not just repeated from the other
+  conversation's claim. `PARSER_RULES.md` §5.1 already covers the `<`
+  open-vs-less-than ambiguity with speculative parsing; this is the
+  matching close-side gap, not yet handled the same way.
+
+**Also confirmed, not new, but worth having in one place:** the
+"impl-block methods don't dispatch" gap from the Traits section above is
+the same root cause a separate part of this batch hit too (framed there as
+two different, unrelated-sounding errors — `TYPE-103`/`TYPE-104` on one
+test, then a distinct "isn't wired up" claim on another). Struct-shaped
+enum variants (`enum E { V { a: int, b: int } }`, constructed
+`E.V { a = 1, b = 2 }`, destructured `E.V { a, b } => ...` in a `match`)
+work correctly end to end when the field types actually match — confirmed
+directly rather than assumed from the parts of that batch that *did* use
+matching types.
+
+**Did not hold up — don't carry these forward:**
+- `printf` doesn't exist anywhere in this codebase. Only `println`.
+- `String` doesn't exist as a type name here. Only `Str` — confirmed by
+  grepping the actual `TypeKind` enum and `DATASTRUCTURES.md`, not assumed.
+- The other conversation's own diagnosis of the `u32` mismatch above (that
+  it was a struct-literal `=`-vs-`:` parsing issue) was wrong — the actual
+  errors were plain `TYPE-101` type mismatches, not parse errors at all,
+  and the script already used `=` correctly throughout.
+- `GcRef.new(...)`, `Unique.new(...)`, `.into_shared()`, and
+  `frame_arena.alloc(...)` as explicit constructor/conversion calls were
+  never checked against real source in that conversation and don't appear
+  anywhere in this codebase either — treat as unconfirmed, not as an
+  established API, until someone actually checks `MEMORY_MODEL.md`'s own
+  account of how `GcRef`/`Unique`/`Shared`/`ArenaRef` actually get
+  constructed.
+
+
 
 ## Loop power-ups
 

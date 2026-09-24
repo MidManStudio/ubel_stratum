@@ -65,6 +65,23 @@
 //!   added avoids the trigger shape on purpose (confirmed each one
 //!   individually, not assumed safe from the general pattern).
 //! - No occurs-check in unification.
+//! - A value derived from `self` (directly, or via `let x = self.field`)
+//!   inside an `impl`-block method body reports `TYPE-115
+//!   InvalidFormatSpec` on `on_type: "<unknown>"` for *any* format spec
+//!   in a string interpolation hole, even though the same value
+//!   type-checks and runs fine for ordinary (non-formatting) use.
+//!   Confirmed narrow, not assumed: a plain local unrelated to `self`
+//!   inside the same method body formats fine; `self.field` accessed
+//!   *outside* any `impl` block (a plain struct field in `main()`, say)
+//!   formats fine; extracting to a local first (`let x = self.field`
+//!   before formatting `x`) does **not** fix it, despite looking like
+//!   it should follow the same shape as the case that does work. Most
+//!   likely the same root cause as the "impl-block methods don't
+//!   dispatch" gap (`PARKED_IDEAS.md`, "Traits / interface system") —
+//!   `self`'s type isn't fully wired through inside an `impl`-block
+//!   body the way an ordinary parameter's is, and this is one more
+//!   symptom of that, not an independent format-spec bug — but not
+//!   chased to a proven common fix here.
 //! - Multi-element destructuring shares one Span; all get collection elem type.
 //! - A method name pre-inferred as the callee of an enclosing `Call`
 //!   (e.g. `Rectangle.doesNotExist()`) can surface both `NoSuchField`

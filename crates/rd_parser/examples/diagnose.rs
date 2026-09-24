@@ -126,6 +126,21 @@ fn main() {
         // the exact "new error family, forgot to collect it here" gap
         // this project has already hit once; not repeating it this time.
         diags.extend(errs.take_move_errors().iter().map(|e| e.to_diagnostic()));
+        // LifetimeError (lifetime_check.rs's LIFETIME-001/002/003, and
+        // outlives_check.rs's LIFETIME-004/005/006 added on top of those
+        // later) hit the exact gap the two comments just above already
+        // warned about, for real: found by testing `diagnose.rs` against
+        // a real err_outlives_*.ubl fixture and getting nothing but the
+        // bare "status: SEMA ERROR" line, no rendered diagnostic at all
+        // -- LifetimeError has had a complete Diagnosable impl this
+        // whole time, same as BorrowError did; it just was never
+        // collected here, for every one of its error codes, not only
+        // the newest ones. `pipeline.rs`'s own debug-only `{:?}` dump
+        // (a different, lower-fidelity example) did show *something*
+        // for lifetime errors throughout, which is exactly why this sat
+        // unnoticed -- checking only one of the two example tools
+        // hid it.
+        diags.extend(errs.take_lifetime_errors().iter().map(|e| e.to_diagnostic()));
         print!("{}", ubel_stratum::error_management::render_all(&diags, &source));
     }
     if !sema_ok {
