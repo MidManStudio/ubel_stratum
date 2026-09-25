@@ -515,12 +515,44 @@ impl TypeTable {
             SemaType::Int     => Some(Internable::Int),
             SemaType::Uint    => Some(Internable::Uint),
             SemaType::Long    => Some(Internable::Long),
+            SemaType::Ulong   => Some(Internable::Ulong),
             SemaType::Float   => Some(Internable::Float),
             SemaType::Double  => Some(Internable::Double),
             SemaType::Bool    => Some(Internable::Bool),
             SemaType::Char    => Some(Internable::Char),
             SemaType::Str     => Some(Internable::Str),
             SemaType::Void    => Some(Internable::Void),
+            // BUG FIX (TYPE-101 "expected u8, found u8" et al.) — these
+            // eight sized-integer/float variants were declared on
+            // `Internable` itself (and on `SemaType`) but never actually
+            // matched here, so `intern(SemaType::U8)` (and I8/I16/I32/I64/
+            // U16/U32/U64/F32/F64/Isize/Usize) always fell through to the
+            // unconditional `self.insert(ty)` at the bottom of this
+            // function — a fresh, non-deduplicated `TypeId` on every call.
+            // Two independently-built `SemaType::U8`s (e.g. a fn param's
+            // declared type vs. an `as u8` cast's target type, both routed
+            // through `ast_type_to_sema`) therefore never compared equal
+            // via `unify`'s `a == b` fast path, and `structurally_compatible`
+            // has no fallback arm for two matching bare primitives either
+            // (by design — see its own doc comment), so `unify` fell all
+            // the way through to a real `TypeMismatch`, with both sides
+            // displaying identically since `display_type` only reads the
+            // `SemaType` variant, not the `TypeId`. Same bug class as the
+            // `structurally_compatible`/`substitute` gaps documented
+            // elsewhere in this file and in `type_infer.rs` — a type
+            // added to the enum but not fully wired into every consumer.
+            SemaType::I8      => Some(Internable::I8),
+            SemaType::I16     => Some(Internable::I16),
+            SemaType::I32     => Some(Internable::I32),
+            SemaType::I64     => Some(Internable::I64),
+            SemaType::U8      => Some(Internable::U8),
+            SemaType::U16     => Some(Internable::U16),
+            SemaType::U32     => Some(Internable::U32),
+            SemaType::U64     => Some(Internable::U64),
+            SemaType::F32     => Some(Internable::F32),
+            SemaType::F64     => Some(Internable::F64),
+            SemaType::Isize   => Some(Internable::Isize),
+            SemaType::Usize   => Some(Internable::Usize),
             SemaType::Null    => Some(Internable::Null),
             SemaType::Unknown => Some(Internable::Unknown),
             SemaType::Param(i) => Some(Internable::Param(*i)),
