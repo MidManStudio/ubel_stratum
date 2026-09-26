@@ -1,0 +1,23 @@
+// tests/fixtures/ok_sized_int_wrapping_isolated.ubl
+// Real width-correct wrapping: arithmetic overflow wraps (not the
+// f64-promotion path plain `int` arithmetic still uses), `as` casts
+// genuinely truncate instead of passing the value through unchanged,
+// and a suffixed literal directly under unary `-` gets that type's
+// full signed range (its most-negative value included).
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let x: u8 = 250u8
+    let y: u8 = 10u8
+    let wrapped = x + y
+    println($"250u8 + 10u8 = {wrapped}")
+
+    let big = 300
+    let truncated = big as u8
+    println($"300 as u8 = {truncated}")
+
+    let min_i8 = -128i8
+    let min_i32 = -2147483648i32
+    println($"i8::MIN = {min_i8}")
+    println($"i32::MIN = {min_i32}")
+}

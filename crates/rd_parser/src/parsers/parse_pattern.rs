@@ -144,6 +144,17 @@ fn parse_single_pattern<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Patter
             p.cursor.advance();
             parse_range_or_literal(p, Literal::Int(n), lo)
         }
+        // Suffixed literal pattern (`5u8 => ...`). Negative suffixed
+        // literals (`-128i8`) aren't supported as patterns yet — `raw`
+        // is an unsigned magnitude with no representation for "negate
+        // this", unlike plain `Literal::Int` which just flips an `i64`
+        // sign bit below. Falls through to the same "expected integer
+        // or float literal after '-'" error as any other unsupported
+        // token there until that's designed properly.
+        TokenType::TypedIntLit(raw, suffix) => {
+            p.cursor.advance();
+            parse_range_or_literal(p, Literal::TypedInt { raw, suffix }, lo)
+        }
         TokenType::FloatLit(f) => {
             p.cursor.advance();
             parse_range_or_literal(p, Literal::Float(f), lo)
@@ -268,6 +279,7 @@ fn parse_range_or_literal<'ast, 'tok>(
 fn parse_bare_literal<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Literal<'ast>> {
     match p.cursor.peek().clone() {
         TokenType::IntLit(n)    => { p.cursor.advance(); Some(Literal::Int(n)) }
+        TokenType::TypedIntLit(raw, suffix) => { p.cursor.advance(); Some(Literal::TypedInt { raw, suffix }) }
         TokenType::FloatLit(f)  => { p.cursor.advance(); Some(Literal::Float(f)) }
         TokenType::CharLit(c)   => { p.cursor.advance(); Some(Literal::Char(c)) }
         TokenType::StringLit(s) => {

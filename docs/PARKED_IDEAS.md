@@ -278,19 +278,49 @@ as described, and about half were wrong or actively introduced APIs that
 don't exist here:
 
 **Held up, confirmed real:**
-- **Sized integer literals never coerce.** `u8`/`u16`/`u32`/`u64` (and the
-  signed/float/`isize`/`usize` equivalents) are real `TypeKind` variants,
-  not something the other conversation invented — but `infer_literal`
-  hard-codes every bare integer literal to plain `SemaType::Int`
-  immediately, with no placeholder/deferred typing the way Rust's own
-  integer-literal inference works. So `active_streams: u32` initialized as
-  `active_streams = 10` is a genuine `TYPE-101` type mismatch every time,
-  not a parser issue and not something an `ArenaRef`/`Unique`/`GcRef`
-  wrapper rewrite (what the other conversation actually tried) has any
-  bearing on. Not designed or fixed here — a real, narrow gap: either
-  numeric literals need Rust-style deferred/contextual typing, or the
-  language needs a literal suffix (`10u32`) to disambiguate, or sized
-  integer fields need an explicit cast at the call site. Undecided.
+- **Sized integer literals never coerce — half of this is now shipped, half
+  is still open.** `u8`/`u16`/`u32`/`u64` (and the signed/`isize`/`usize`
+  equivalents) are real `TypeKind` variants, not something the other
+  conversation invented, and now have real runtime backing to match:
+  `interpreter::value::Value` gained dedicated `I8`/`I16`/`I32`/`U8`/`U16`/
+  `U32`/`UInt(u64)` variants (only `Uint`/`Ulong` — 64-bit-and-below-vs-
+  above-`i64::MAX` — actually need a variant of their own; `Int`/`Long`/
+  `I64`/`Isize` all share the existing `Value::Int(i64)`, being the same
+  64-bit-signed width already), `eval_cast` truncates/wraps correctly for
+  every one of them instead of the no-op pass-through it used to be, and
+  `eval_binop` got real wrapping arithmetic (`wrapping_add`/`_sub`/`_mul`/
+  `_div`/`_rem`, not the `f64`-promotion path the plain `Int`/`Float`/
+  `Double` numeric ops still use, which cannot represent `u64`'s full
+  range at all). This also closed a real, separate, pre-existing crash:
+  negating `i64::MIN` (reachable via a suffixed literal, see below) used
+  plain `-n` and panicked on overflow in a debug build; now `wrapping_neg`
+  throughout, matching what `docs/PRINT_FORMAT_RULES.md` §4 already
+  documented `Int` as (two's complement) but `-n` didn't actually give.
+  One of the two disambiguation options this entry originally proposed —
+  **a literal suffix (`10u32`)** — is what got built (`docs/ubel.ebnf`'s
+  new `IntSuffix` production; `TYPE-120` rejects a suffixed literal whose
+  value doesn't fit, matching Rust's own "literal out of range" compile
+  error rather than silently wrapping; an unsuffixed literal past
+  `i64::MAX` auto-promotes to an implicit `u64` suffix, since there's no
+  other way such a value could exist as a literal at all — this is also
+  what raised the lexer's overflow ceiling from `i64::MAX` to the full
+  `u64::MAX`). What's still genuinely open, unchanged from before: a
+  **bare, unsuffixed** literal assigned directly to an already-sized-typed
+  field or `let` (`active_streams: u32 = 10`, no suffix) is still a real
+  `TYPE-101` — `infer_literal` still hard-codes an unsuffixed literal to
+  plain `SemaType::Int` with no contextual/deferred typing, so the other
+  disambiguation option this entry originally raised (Rust-style
+  context-driven literal inference) remains fully undecided and unbuilt.
+  Also newly found while building the suffix work, not part of the
+  original external-conversation claims: `byte` (C#) currently maps to
+  *signed* `I8`, not unsigned `U8` — backwards from C#'s own convention —
+  and `sbyte` isn't recognized at all (confirmed by grep, zero references
+  anywhere in the codebase); left as-is on explicit request this session,
+  revisit if C#-parity on this specific keyword ever actually matters.
+  Range *patterns* (`0u8..200u8 => ...`) over a sized-int value also
+  aren't wired up yet — `PatternKind::Range`'s match arm is still gated to
+  `Value::Int`/`Value::Char` only — single-value literal patterns
+  (`5u8 => ...`) work correctly via `match_literal`, only ranges don't.
 - **Nested generic closing (`List<List<int>>`) fails to parse.** Confirmed
   directly: `RightShift` (`>>`) is lexed as one token, and the type-expr
   parser wants a lone `Greater` to close a generic, so

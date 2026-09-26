@@ -1,0 +1,12 @@
+// tests/fixtures/err_sized_int_literal_out_of_range.ubl
+// A suffixed literal whose value doesn't fit the suffix's own range is
+// a compile-time TYPE-120, matching Rust's own "literal out of range"
+// error -- not a silent wraparound (300u8 does NOT become 44 here; it
+// does when computed via `as` at runtime, see
+// ok_sized_int_wrapping_isolated.ubl, but a *literal* is caught earlier).
+// Expected: sema FAIL (IntLiteralOutOfRange, TYPE-120).
+
+fn main() void {
+    let bad = 300u8
+    println($"{bad}")
+}

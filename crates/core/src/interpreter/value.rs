@@ -28,8 +28,35 @@ pub enum Value {
     Null,
     Void,
     Bool(bool),
-    /// Ubel's default integer — i64 matches AST `Literal::Int(i64)`.
+    /// Ubel's default integer — i64 matches AST `Literal::Int(i64)`. Also
+    /// backs `SemaType::Long`/`I64`/`Isize` -- all bit-identical 64-bit
+    /// signed widths, so they share this one representation and (via
+    /// `eval_cast`) genuinely lossless, truncation-free conversion
+    /// between each other; only their *sema* types differ, not their
+    /// runtime shape. `SemaType::Int` itself is documented as 64-bit
+    /// (`docs/PRINT_FORMAT_RULES.md` §4) and used pervasively as the
+    /// default numeric type, so this variant, its wrapping-on-overflow
+    /// arithmetic (`eval_binop`), and its unlimited-within-i64 range are
+    /// all unchanged by the sized-integer work below -- zero risk to the
+    /// large existing body of code that already relies on plain `int`.
     Int(i64),
+    /// Explicitly narrower or differently-signed integers: `u8`/`byte`,
+    /// `i8`/`sbyte`, `u16`, `i16`, `u32`/`uint`, `i32`. Each carries its
+    /// own real Rust primitive so arithmetic (`eval_binop`) and casts
+    /// (`eval_cast`) get genuine width-correct wrapping for free from
+    /// Rust's own `wrapping_*` methods and `as` operator, rather than
+    /// this interpreter re-deriving modular arithmetic by hand for each
+    /// width. `Uint`/`Ushort` (C#) share `U32` -- see `I32`'s sibling
+    /// note on `Int` above for why sharing by bit-width rather than by
+    /// sema-type name is correct here.
+    I8(i8), I16(i16), I32(i32),
+    U8(u8), U16(u16), U32(u32),
+    /// Backs `u64`/`ulong`/`usize` -- the one width `Int(i64)` genuinely
+    /// cannot hold (anything above `i64::MAX`). The reason this feature
+    /// needed a new variant at all rather than just teaching `Int`
+    /// better arithmetic: no `i64`-based representation can losslessly
+    /// hold `u64::MAX`.
+    UInt(u64),
     Float(f32),
     Double(f64),
     Char(char),
@@ -334,6 +361,13 @@ impl Value {
             Value::Void          => "void",
             Value::Bool(_)       => "bool",
             Value::Int(_)        => "int",
+            Value::I8(_)         => "i8",
+            Value::I16(_)        => "i16",
+            Value::I32(_)        => "i32",
+            Value::U8(_)         => "u8",
+            Value::U16(_)        => "u16",
+            Value::U32(_)        => "u32",
+            Value::UInt(_)       => "u64",
             Value::Float(_)      => "float",
             Value::Double(_)     => "double",
             Value::Char(_)       => "char",
@@ -376,6 +410,13 @@ impl Value {
             (Value::Void,  Value::Void)  => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a),  Value::Int(b))  => a == b,
+            (Value::I8(a),   Value::I8(b))   => a == b,
+            (Value::I16(a),  Value::I16(b))  => a == b,
+            (Value::I32(a),  Value::I32(b))  => a == b,
+            (Value::U8(a),   Value::U8(b))   => a == b,
+            (Value::U16(a),  Value::U16(b))  => a == b,
+            (Value::U32(a),  Value::U32(b))  => a == b,
+            (Value::UInt(a), Value::UInt(b)) => a == b,
             (Value::Float(a),  Value::Float(b))  => a == b,
             (Value::Double(a), Value::Double(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
@@ -458,6 +499,13 @@ impl Value {
         use std::cmp::Ordering;
         match (self, other) {
             (Value::Int(a),    Value::Int(b))    => Some(a.cmp(b)),
+            (Value::I8(a),     Value::I8(b))     => Some(a.cmp(b)),
+            (Value::I16(a),    Value::I16(b))    => Some(a.cmp(b)),
+            (Value::I32(a),    Value::I32(b))    => Some(a.cmp(b)),
+            (Value::U8(a),     Value::U8(b))     => Some(a.cmp(b)),
+            (Value::U16(a),    Value::U16(b))    => Some(a.cmp(b)),
+            (Value::U32(a),    Value::U32(b))    => Some(a.cmp(b)),
+            (Value::UInt(a),   Value::UInt(b))   => Some(a.cmp(b)),
             (Value::Float(a),  Value::Float(b))  => a.partial_cmp(b),
             (Value::Double(a), Value::Double(b)) => a.partial_cmp(b),
             (Value::Str(a),    Value::Str(b))    => Some(a.cmp(b)),
@@ -546,6 +594,13 @@ impl Value {
             Value::Null | Value::Void => {}
             Value::Bool(b) => b.hash(hasher),
             Value::Int(n)  => n.hash(hasher),
+            Value::I8(n)   => n.hash(hasher),
+            Value::I16(n)  => n.hash(hasher),
+            Value::I32(n)  => n.hash(hasher),
+            Value::U8(n)   => n.hash(hasher),
+            Value::U16(n)  => n.hash(hasher),
+            Value::U32(n)  => n.hash(hasher),
+            Value::UInt(n) => n.hash(hasher),
             Value::Char(c) => c.hash(hasher),
             Value::Float(f) => {
                 let f = if *f == 0.0 { 0.0f32 } else { *f };
@@ -632,6 +687,8 @@ impl Value {
         match self {
             Value::Null | Value::Void
             | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Double(_)
+            | Value::I8(_) | Value::I16(_) | Value::I32(_)
+            | Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::UInt(_)
             | Value::Char(_) | Value::Str(_)
             | Value::Function(_) | Value::Handle { .. }
             | Value::Pool(_) | Value::InlineList(_) | Value::Linqerizer(_) => self.clone(),
@@ -873,6 +930,13 @@ impl fmt::Display for Value {
             Value::Void        => Ok(()),
             Value::Bool(b)     => write!(f, "{}", b),
             Value::Int(n)      => write!(f, "{}", n),
+            Value::I8(n)       => write!(f, "{}", n),
+            Value::I16(n)      => write!(f, "{}", n),
+            Value::I32(n)      => write!(f, "{}", n),
+            Value::U8(n)       => write!(f, "{}", n),
+            Value::U16(n)      => write!(f, "{}", n),
+            Value::U32(n)      => write!(f, "{}", n),
+            Value::UInt(n)     => write!(f, "{}", n),
             Value::Float(v)    => write!(f, "{}", v),
             Value::Double(v)   => write!(f, "{}", v),
             Value::Char(c)     => write!(f, "{}", c),

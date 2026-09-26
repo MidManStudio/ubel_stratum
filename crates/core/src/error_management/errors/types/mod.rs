@@ -136,6 +136,20 @@ pub enum TypeError {
         span:    Span,
     },
 
+    /// A suffixed integer literal's value doesn't fit the suffix's
+    /// declared width (`300u8`), or an unsuffixed literal auto-promoted
+    /// to `u64` still overflowed even that (unreachable today -- the
+    /// lexer's own `u64::MAX` ceiling already catches that case as a
+    /// lex error first -- kept here anyway so this check is complete on
+    /// its own terms, not dependent on the lexer's ceiling matching it).
+    /// Caught at sema time rather than silently wrapping, matching
+    /// Rust's own `error: literal out of range for` on the same source.
+    IntLiteralOutOfRange {
+        suffix: &'static str,
+        raw:    u64,
+        span:   Span,
+    },
+
     /// A type could not be inferred — too ambiguous.
     CannotInferType {
         span:       Span,
@@ -216,6 +230,7 @@ impl TypeError {
             TypeError::UnknownDeriveTrait          { span, .. } => *span,
             TypeError::DeriveRequiresOther          { span, .. } => *span,
             TypeError::TypeNotOrderable             { span, .. } => *span,
+            TypeError::IntLiteralOutOfRange        { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
             TypeError::UnknownVariant             { span, .. } => *span,
@@ -267,6 +282,9 @@ impl TypeError {
 
             TypeError::TypeNotOrderable { on_type, .. } =>
                 format!("type `{}` doesn't support ordering comparisons", on_type),
+
+            TypeError::IntLiteralOutOfRange { suffix, raw, .. } =>
+                format!("literal `{}{}` is out of range for `{}`", raw, suffix, suffix),
 
             TypeError::CannotInferType { .. } =>
                 "cannot infer type — add an explicit type annotation".to_string(),
@@ -345,6 +363,9 @@ impl TypeError {
             TypeError::TypeNotOrderable { .. } =>
                 Some("add `@derive(PartialOrd)` (or `@derive(Ord)`) to the struct, or compare a different field".to_string()),
 
+            TypeError::IntLiteralOutOfRange { suffix, .. } =>
+                Some(format!("use a smaller value, drop the `{}` suffix, or pick a wider type", suffix)),
+
             _ => None,
         }
     }
@@ -383,6 +404,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::UnknownDeriveTrait { .. }            => "TYPE-116",
             TypeError::DeriveRequiresOther { .. }           => "TYPE-117",
             TypeError::TypeNotOrderable { .. }              => "TYPE-118",
+            TypeError::IntLiteralOutOfRange { .. }          => "TYPE-120",
         }
     }
     fn span(&self) -> Span { self.span() }

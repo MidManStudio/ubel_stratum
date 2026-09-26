@@ -1,0 +1,14 @@
+// tests/fixtures/ok_sized_int_u64_range_isolated.ubl
+// True u64 range: a value above i64::MAX, both with an explicit `u64`
+// suffix and with no suffix at all (auto-promoted to an implicit `u64`
+// by the lexer, since there is no other way such a value could ever be
+// written as a literal). Previously LEX-001 on both forms -- the
+// integer token was hardcoded to i64.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let explicit = 18446744073709551615u64
+    let implicit = 18446744073709551615
+    println($"explicit u64 suffix: {explicit}")
+    println($"auto-promoted, no suffix: {implicit}")
+}

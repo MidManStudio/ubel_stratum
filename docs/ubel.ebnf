@@ -469,9 +469,27 @@ Literal       ::= IntLit
                 | "null"
 
 IntLit        ::= DecimalLit | HexLit | BinaryLit
-DecimalLit    ::= Digit (Digit | "_")*
-HexLit        ::= "0x" HexDigit (HexDigit | "_")*
-BinaryLit     ::= "0b" BinDigit (BinDigit | "_")*
+DecimalLit    ::= Digit (Digit | "_")* IntSuffix?
+HexLit        ::= "0x" HexDigit (HexDigit | "_")* IntSuffix?
+BinaryLit     ::= "0b" BinDigit (BinDigit | "_")* IntSuffix?
+
+(* Rust-named widths only -- there's no C#-style suffix family (byte/
+   short/long/etc. never take a literal suffix; cast with `as` instead).
+   Digit text is parsed as an unsigned 64-bit magnitude regardless of
+   suffix, so any of these -- suffixed or not -- can hold up to
+   `18446744073709551615` (u64::MAX); the suffix (explicit here, or an
+   implicit `u64` the lexer applies on your behalf to an unsuffixed
+   literal whose value exceeds `i64::MAX`, since there is no other way
+   such a value could ever be written) is what's checked at compile
+   time against its own type's actual range -- a value that doesn't fit
+   the suffix it's given (`300u8`) is a compile error (`TYPE-120`), not
+   a silent wraparound. A suffixed literal directly under a unary `-`
+   (`-128i8`) is special-cased to allow that type's full signed range,
+   including its most-negative value, matching how Rust's own compiler
+   treats a negated literal. *)
+IntSuffix     ::= "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64"
+                | "isize" | "usize"
 
 FloatLit      ::= DecimalLit "." (Digit | "_")* ("e" | "E") ("+" | "-")? DecimalLit ("f" | "F")
                 | DecimalLit "." (Digit | "_")* ("f" | "F")

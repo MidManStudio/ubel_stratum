@@ -5,7 +5,7 @@
 // src/lexer/logos_lexer.rs
 
 use logos::Logos;
-use crate::lexer::{Token, TokenType, Span};
+use crate::lexer::{Token, TokenType, Span, IntSuffix};
 use crate::error_management::{ErrorManager, errors::LexicalError};
 use crate::lexer::{keywords, string_parser::StringParser, comment_parser::CommentParser};
 
@@ -158,10 +158,21 @@ enum LogosToken {
     #[token("#")] Hash,
 
     // ── Literals ──────────────────────────────────────────────────
-    #[regex(r"[0-9][0-9_]*", parse_decimal)]
-    #[regex(r"0x[0-9a-fA-F][0-9a-fA-F_]*", parse_hex)]
-    #[regex(r"0b[01][01_]*", parse_binary)]
-    IntLit(i64),
+    // Optional trailing Rust-style width suffix (`255u8`, `5000i64`, …)
+    // folded straight into these three regexes rather than a separate
+    // token, same approach `FloatLit`'s trailing `f`/`F` already uses
+    // just below. Parsed and returned as `u64` (not `i64`) so the digit
+    // part alone can hold the full unsigned range -- needed both for an
+    // explicit `u64` suffix and for a bare, unsuffixed literal in the
+    // top half of that range (auto-promoted to an implicit `u64`, see
+    // `handle_logos_token` below; there is no other way for such a value
+    // to exist as a literal at all). Suffix text itself is re-read from
+    // the raw lexeme in `handle_logos_token`, exactly like the float
+    // suffix is, rather than threaded back out of these callbacks.
+    #[regex(r"[0-9][0-9_]*(u8|i8|u16|i16|u32|i32|u64|i64|usize|isize)?", parse_decimal)]
+    #[regex(r"0x[0-9a-fA-F][0-9a-fA-F_]*(u8|i8|u16|i16|u32|i32|u64|i64|usize|isize)?", parse_hex)]
+    #[regex(r"0b[01][01_]*(u8|i8|u16|i16|u32|i32|u64|i64|usize|isize)?", parse_binary)]
+    IntLit(u64),
 
     #[regex(r"[0-9][0-9_]*\.[0-9_]*[fF]?", parse_float)]
     #[regex(r"[0-9][0-9_]*\.[0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
@@ -193,16 +204,70 @@ enum LogosToken {
 
 // ── Parse helpers ─────────────────────────────────────────────────
 
-fn parse_decimal(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
-    lex.slice().replace('_', "").parse().ok()
+/// Known Rust-style integer literal suffixes, longest-first purely out of
+/// habit -- none of these is actually a suffix of another (`u8` never
+/// collides with `usize`, etc.), so strip order doesn't matter for
+/// correctness, only for readability.
+const INT_SUFFIXES: &[&str] = &[
+    "usize", "isize",
+    "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64",
+];
+
+/// Strip a trailing integer-literal suffix off a numeric lexeme's digit
+/// text, if one is present. `handle_logos_token` re-detects *which*
+/// suffix it was (if any) straight from the raw lexeme afterward, the
+/// same two-step split `FloatLit`'s `f`/`F` suffix already uses below --
+/// this only needs to know where the digits end.
+/// The inverse of `strip_int_suffix`: which suffix (if any) a full
+/// lexeme -- including any `0x`/`0b` prefix, digits, and underscores --
+/// ends with. Used once per int literal in `handle_logos_token`, on the
+/// raw lexeme rather than inside the `logos` callback, same split
+/// `FloatLit`'s `f`/`F` detection already uses.
+fn int_suffix_of(lexeme: &str) -> Option<IntSuffix> {
+    // Longest-first: "usize"/"isize" must be checked before nothing
+    // shorter could ever falsely match them (they don't share a suffix
+    // with any entry below, but checking wide-to-narrow is the safer
+    // habit regardless of that).
+    if lexeme.ends_with("usize") { return Some(IntSuffix::Usize); }
+    if lexeme.ends_with("isize") { return Some(IntSuffix::Isize); }
+    if lexeme.ends_with("u8")  { return Some(IntSuffix::U8); }
+    if lexeme.ends_with("i8")  { return Some(IntSuffix::I8); }
+    if lexeme.ends_with("u16") { return Some(IntSuffix::U16); }
+    if lexeme.ends_with("i16") { return Some(IntSuffix::I16); }
+    if lexeme.ends_with("u32") { return Some(IntSuffix::U32); }
+    if lexeme.ends_with("i32") { return Some(IntSuffix::I32); }
+    if lexeme.ends_with("u64") { return Some(IntSuffix::U64); }
+    if lexeme.ends_with("i64") { return Some(IntSuffix::I64); }
+    None
 }
 
-fn parse_hex(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
-    i64::from_str_radix(&lex.slice()[2..].replace('_', ""), 16).ok()
+fn strip_int_suffix(slice: &str) -> &str {
+    for suf in INT_SUFFIXES {
+        if let Some(stripped) = slice.strip_suffix(suf) {
+            return stripped;
+        }
+    }
+    slice
 }
 
-fn parse_binary(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
-    i64::from_str_radix(&lex.slice()[2..].replace('_', ""), 2).ok()
+// Digit text is parsed as `u64`, not `i64`: wide enough to hold the full
+// unsigned range, needed both for an explicit `u64`/`usize` suffix and for
+// a bare, unsuffixed literal past `i64::MAX` (auto-promoted to an implicit
+// `u64` in `handle_logos_token` below -- there's no other way such a value
+// could ever be written as a literal). `LEX-001` on overflow still fires
+// exactly as before, just at the wider `u64::MAX` ceiling instead of
+// `i64::MAX` -- a real range increase, not merely a type change: `parse`
+// still returns `None` (and this stays a lex error) past `u64::MAX`.
+fn parse_decimal(lex: &mut logos::Lexer<LogosToken>) -> Option<u64> {
+    strip_int_suffix(lex.slice()).replace('_', "").parse().ok()
+}
+
+fn parse_hex(lex: &mut logos::Lexer<LogosToken>) -> Option<u64> {
+    u64::from_str_radix(&strip_int_suffix(&lex.slice()[2..]).replace('_', ""), 16).ok()
+}
+
+fn parse_binary(lex: &mut logos::Lexer<LogosToken>) -> Option<u64> {
+    u64::from_str_radix(&strip_int_suffix(&lex.slice()[2..]).replace('_', ""), 2).ok()
 }
 
 fn parse_float(lex: &mut logos::Lexer<LogosToken>) -> Option<f64> {
@@ -531,7 +596,22 @@ impl<'a> LogosLexer<'a> {
             LogosToken::Semicolon    => TokenType::Semicolon,
             LogosToken::At           => TokenType::At,
             LogosToken::Hash         => TokenType::Hash,
-            LogosToken::IntLit(n)    => TokenType::IntLit(n),
+            LogosToken::IntLit(n)    => match int_suffix_of(lexeme) {
+                // Explicit suffix -- always a TypedIntLit, whatever the
+                // value, even if it happens to fit i64 too (`5i64` stays
+                // TypedIntLit rather than collapsing to a plain IntLit;
+                // sema still needs to see the explicit `i64` intent to
+                // give it that exact type rather than defaulting to Int).
+                Some(suffix) => TokenType::TypedIntLit(n, suffix),
+                // No suffix, but the digits alone already overflow i64 --
+                // this is the auto-promotion case (see `parse_decimal`'s
+                // doc comment): treat it as an implicit `u64` suffix
+                // rather than a lex error, since that's the only way a
+                // value in the top half of u64's range can be written.
+                None if n > i64::MAX as u64 => TokenType::TypedIntLit(n, IntSuffix::U64),
+                // The common case, unchanged: fits i64, no suffix.
+                None => TokenType::IntLit(n as i64),
+            },
             LogosToken::FloatLit(f)  => {
                 if lexeme.ends_with('f') || lexeme.ends_with('F') {
                     TokenType::FloatLit(f as f32)

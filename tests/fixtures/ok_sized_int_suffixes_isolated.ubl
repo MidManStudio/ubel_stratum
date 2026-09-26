@@ -1,0 +1,24 @@
+// tests/fixtures/ok_sized_int_suffixes_isolated.ubl
+// Sized-integer literal suffixes, isolated: every Rust-named width
+// suffix on a bare `let`, no structs/casts/arithmetic involved.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let a = 255u8
+    let b = -128i8
+    let c = 65535u16
+    let d = -32768i16
+    let e = 4294967295u32
+    let f = -2147483648i32
+    let g = 18446744073709551615u64
+    let h = 9223372036854775807i64
+
+    println($"u8: {a}")
+    println($"i8: {b}")
+    println($"u16: {c}")
+    println($"i16: {d}")
+    println($"u32: {e}")
+    println($"i32: {f}")
+    println($"u64: {g}")
+    println($"i64: {h}")
+}

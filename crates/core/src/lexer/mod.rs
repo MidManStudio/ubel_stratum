@@ -6,7 +6,7 @@ pub mod logos_lexer;
 pub mod string_parser;
 pub mod comment_parser;
 
-pub use token::{Token, TokenType, Span, InterpolationPart};
+pub use token::{Token, TokenType, Span, InterpolationPart, IntSuffix};
 pub use logos_lexer::LogosLexer;
 
 /// Main tokenization entry point

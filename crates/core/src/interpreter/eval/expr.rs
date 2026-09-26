@@ -15,7 +15,7 @@ use crate::ast::common::{AssignOp, BinOp, UnaryOp};
 use crate::ast::expressions::{
     ArgKind, Expr, ExprKind, LambdaBody, MatchArmBody, OrElseFallback,
 };
-use crate::ast::literals::{Align, FormatSpec, InterpolationPart, Literal, NumericBase};
+use crate::ast::literals::{Align, FormatSpec, InterpolationPart, IntSuffix, Literal, NumericBase};
 use crate::ast::types::{Type, TypeKind};
 use crate::interpreter::eval::{stmt, pattern, FunctionBody, FunctionDef, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
@@ -88,9 +88,27 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             let v = eval_expr(interp, operand)?;
             match op {
                 UnaryOp::Neg => match v {
-                    Value::Int(n)    => Ok(Value::Int(-n)),
+                    // `wrapping_neg`, not plain `-n`: negating `i64::MIN`
+                    // (reachable via `-9223372036854775808i64`, or any
+                    // computed value that happens to land there) would
+                    // otherwise overflow and panic in a debug build —
+                    // a real, pre-existing crash this closes at the same
+                    // time as wiring up wrapping for the new sized
+                    // variants below, not a new gap this feature
+                    // introduced. `docs/PRINT_FORMAT_RULES.md` §4
+                    // already documents `Int` as two's-complement,
+                    // which is exactly wrapping semantics — this was
+                    // always the intent, just not what `-n` actually did.
+                    Value::Int(n)    => Ok(Value::Int(n.wrapping_neg())),
+                    Value::I8(n)     => Ok(Value::I8(n.wrapping_neg())),
+                    Value::I16(n)    => Ok(Value::I16(n.wrapping_neg())),
+                    Value::I32(n)    => Ok(Value::I32(n.wrapping_neg())),
                     Value::Float(f)  => Ok(Value::Float(-f)),
                     Value::Double(d) => Ok(Value::Double(-d)),
+                    // Unsigned types don't get a `-` operator at all in
+                    // Rust either (`-5u8` is a compile error there) —
+                    // matched here rather than silently wrapping, same
+                    // "cannot negate" panic as any other non-numeric type.
                     other => Err(Signal::Panic(format!("cannot negate {}", other.type_name()))),
                 },
                 UnaryOp::Not => {
@@ -98,7 +116,14 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                     Ok(Value::Bool(!b))
                 }
                 UnaryOp::BitNot => match v {
-                    Value::Int(n) => Ok(Value::Int(!n)),
+                    Value::Int(n)  => Ok(Value::Int(!n)),
+                    Value::I8(n)   => Ok(Value::I8(!n)),
+                    Value::I16(n)  => Ok(Value::I16(!n)),
+                    Value::I32(n)  => Ok(Value::I32(!n)),
+                    Value::U8(n)   => Ok(Value::U8(!n)),
+                    Value::U16(n)  => Ok(Value::U16(!n)),
+                    Value::U32(n)  => Ok(Value::U32(!n)),
+                    Value::UInt(n) => Ok(Value::UInt(!n)),
                     other => Err(Signal::Panic(format!("~ not supported on {}", other.type_name()))),
                 },
                 // Tree-walker doesn't implement real async — await is a no-op here.
@@ -408,6 +433,22 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
 fn eval_literal<'ast>(interp: &mut Interpreter<'ast>, lit: &Literal<'ast>) -> EvalResult {
     match lit {
         Literal::Int(n)    => Ok(Value::Int(*n)),
+        // Sema (`TYPE-120`) already confirmed `raw` fits `suffix`'s range
+        // before this ever runs; the `as` truncations below are just the
+        // mechanical width-narrowing from the wide `u64` token payload
+        // down to each suffix's real Rust type, not a second range check.
+        Literal::TypedInt { raw, suffix } => Ok(match suffix {
+            IntSuffix::I8    => Value::I8(*raw as i8),
+            IntSuffix::I16   => Value::I16(*raw as i16),
+            IntSuffix::I32   => Value::I32(*raw as i32),
+            IntSuffix::I64   => Value::Int(*raw as i64),
+            IntSuffix::Isize => Value::Int(*raw as i64),
+            IntSuffix::U8    => Value::U8(*raw as u8),
+            IntSuffix::U16   => Value::U16(*raw as u16),
+            IntSuffix::U32   => Value::U32(*raw as u32),
+            IntSuffix::U64   => Value::UInt(*raw),
+            IntSuffix::Usize => Value::UInt(*raw),
+        }),
         Literal::Float(f)  => Ok(Value::Float(*f)),
         Literal::Double(d) => Ok(Value::Double(*d)),
         Literal::Bool(b)   => Ok(Value::Bool(*b)),
@@ -658,6 +699,16 @@ fn eval_binop(op: BinOp, lhs: Value, rhs: Value) -> EvalResult {
         _ => {}
     }
 
+    // Sized integers (i8/u8/i16/u16/i32/u32/u64) — real, width-correct
+    // wrapping arithmetic, comparisons, and bitwise ops, entirely
+    // separate from the Int/Float/Double path below (which promotes
+    // through f64 and so both loses precision above 2^53 and has no
+    // notion of a type narrower than i64 to wrap at in the first
+    // place — neither is fit for purpose here).
+    if let Some(result) = sized_int_binop(op, &lhs, &rhs) {
+        return result;
+    }
+
     // Numeric operations with implicit promotion.
     // Promotion ladder: Int → Float → Double.
     let (lv, rv, is_double, is_float) = promote_numeric(&lhs, &rhs)?;
@@ -695,6 +746,71 @@ fn eval_binop(op: BinOp, lhs: Value, rhs: Value) -> EvalResult {
     } else {
         Ok(Value::Int(result as i64))
     }
+}
+
+/// Real, width-correct arithmetic/comparison/bitwise ops for the sized
+/// integer `Value` variants (`I8`/`I16`/`I32`/`U8`/`U16`/`U32`/`UInt`).
+/// Both operands must already be the *same* variant — sema's own
+/// `unify` requires matching operand types for a well-typed binary op,
+/// so a mismatch reaching here means an ill-typed AST got to the
+/// interpreter some other way (a hand-built test bypassing sema, most
+/// likely); either way a clear panic beats silently picking a width or
+/// promoting one side, which this language doesn't otherwise do.
+///
+/// `Some(_)` short-circuits the caller straight back out; `None` means
+/// neither side is one of these variants at all, so the caller falls
+/// through to the existing `Int`/`Float`/`Double` path unchanged.
+fn sized_int_binop(op: BinOp, lhs: &Value, rhs: &Value) -> Option<EvalResult> {
+    macro_rules! width {
+        ($variant:ident, $mask:expr) => {
+            if let (Value::$variant(a), Value::$variant(b)) = (lhs, rhs) {
+                let (a, b) = (*a, *b);
+                return Some(match op {
+                    BinOp::Add => Ok(Value::$variant(a.wrapping_add(b))),
+                    BinOp::Sub => Ok(Value::$variant(a.wrapping_sub(b))),
+                    BinOp::Mul => Ok(Value::$variant(a.wrapping_mul(b))),
+                    BinOp::Div =>
+                        if b == 0 { Err(Signal::Panic("division by zero".into())) }
+                        else { Ok(Value::$variant(a.wrapping_div(b))) },
+                    BinOp::Rem =>
+                        if b == 0 { Err(Signal::Panic("modulo by zero".into())) }
+                        else { Ok(Value::$variant(a.wrapping_rem(b))) },
+                    BinOp::Lt => Ok(Value::Bool(a < b)),
+                    BinOp::Le => Ok(Value::Bool(a <= b)),
+                    BinOp::Gt => Ok(Value::Bool(a > b)),
+                    BinOp::Ge => Ok(Value::Bool(a >= b)),
+                    BinOp::BitAnd => Ok(Value::$variant(a & b)),
+                    BinOp::BitOr  => Ok(Value::$variant(a | b)),
+                    BinOp::BitXor => Ok(Value::$variant(a ^ b)),
+                    // Shift amount masked to the type's own bit width,
+                    // same convention the existing i64 path already
+                    // uses (`a << (b & 63)` below) — defined for any
+                    // `b`, including a negative one, rather than
+                    // matching Rust's own panic-on-out-of-range-shift.
+                    BinOp::Shl => Ok(Value::$variant(a.wrapping_shl((b as u32) & $mask))),
+                    BinOp::Shr => Ok(Value::$variant(a.wrapping_shr((b as u32) & $mask))),
+                    _ => Err(Signal::Panic(format!("unsupported binary op: {:?}", op))),
+                });
+            }
+        };
+    }
+    width!(I8,   7);
+    width!(I16,  15);
+    width!(I32,  31);
+    width!(U8,   7);
+    width!(U16,  15);
+    width!(U32,  31);
+    width!(UInt, 63);
+
+    let is_sized = |v: &Value| matches!(v,
+        Value::I8(_) | Value::I16(_) | Value::I32(_)
+        | Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::UInt(_));
+    if is_sized(lhs) || is_sized(rhs) {
+        return Some(Err(Signal::Panic(format!(
+            "type mismatch in binary op: {} and {}", lhs.type_name(), rhs.type_name()
+        ))));
+    }
+    None
 }
 
 /// Promote both values to f64 for arithmetic.
@@ -1240,28 +1356,98 @@ fn eval_args<'ast>(
 
 // ── Type cast ─────────────────────────────────────────────────────
 
+/// One arm of `eval_cast`'s numeric targets: cast `val` to `$ty`,
+/// wrapped in `Value::$Variant`. Every source variant gets its *own*
+/// direct `as $ty` from Rust — an integer source truncates/extends per
+/// Rust's normal two's-complement `as` rules, and (critically) a float
+/// source saturates per Rust's own `as`-from-float rules (stable since
+/// 1.45) rather than being routed through a shared wide intermediate
+/// first, which would have silently turned that saturation into a
+/// wraparound instead (`300.5 as u8` must land on `255`, not `44`).
+macro_rules! int_cast_arm {
+    ($val:expr, $Variant:ident, $ty:ty, $name:literal) => {
+        match $val {
+            Value::Int(n)    => Ok(Value::$Variant(n as $ty)),
+            Value::I8(n)     => Ok(Value::$Variant(n as $ty)),
+            Value::I16(n)    => Ok(Value::$Variant(n as $ty)),
+            Value::I32(n)    => Ok(Value::$Variant(n as $ty)),
+            Value::U8(n)     => Ok(Value::$Variant(n as $ty)),
+            Value::U16(n)    => Ok(Value::$Variant(n as $ty)),
+            Value::U32(n)    => Ok(Value::$Variant(n as $ty)),
+            Value::UInt(n)   => Ok(Value::$Variant(n as $ty)),
+            Value::Float(f)  => Ok(Value::$Variant(f as $ty)),
+            Value::Double(d) => Ok(Value::$Variant(d as $ty)),
+            Value::Bool(b)   => Ok(Value::$Variant(if b { 1 as $ty } else { 0 as $ty })),
+            Value::Str(ref s) => s.parse::<$ty>()
+                .map(Value::$Variant)
+                .map_err(|_| Signal::Panic(format!("cannot cast '{}' to {}", s, $name))),
+            ref other => Err(Signal::Panic(format!("cannot cast {} to {}", other.type_name(), $name))),
+        }
+    };
+}
+
 fn eval_cast<'ast>(val: Value, ty: &'ast Type<'ast>) -> EvalResult {
     match ty.kind {
-        TypeKind::Int | TypeKind::I64 | TypeKind::I32 => match val {
-            Value::Int(n)    => Ok(Value::Int(n)),
-            Value::Float(f)  => Ok(Value::Int(f as i64)),
-            Value::Double(d) => Ok(Value::Int(d as i64)),
-            Value::Bool(b)   => Ok(Value::Int(if b { 1 } else { 0 })),
-            Value::Str(s)    => s.parse::<i64>()
-                .map(Value::Int)
-                .map_err(|_| Signal::Panic(format!("cannot cast '{}' to int", s))),
-            other => Err(Signal::Panic(format!("cannot cast {} to int", other.type_name()))),
-        },
+        // 64-bit signed family: `int`/`long`/`i64`/`isize` all share the
+        // same `Value::Int(i64)` runtime width (see `Value`'s own doc
+        // comment on why), so casting between any of them and an
+        // already-integer source is exactly the no-op it always was.
+        // `short` widens to `SemaType::Int` at the sema level
+        // (`ast_type_to_sema`) and now gets the matching runtime
+        // treatment here — previously fell all the way through to the
+        // unconditional pass-through below, a real pre-existing gap
+        // (`5.9 as short` silently stayed a `Double`) this closes too.
+        TypeKind::Int | TypeKind::Long | TypeKind::I64 | TypeKind::Isize | TypeKind::Short =>
+            int_cast_arm!(val, Int, i64, "int"),
+
+        // 32-bit unsigned family: `uint`/`u32`/`ushort` (the last via
+        // the same sema-level widening `short` gets above). Real 32-bit
+        // wraparound now, where this and `Uint`/`Ushort` both
+        // previously either had no truncation (`I32`, wrongly grouped
+        // with `Int` before this) or no handling at all (`Uint`/
+        // `Ushort`, falling to the pass-through).
+        TypeKind::Uint | TypeKind::U32 | TypeKind::Ushort =>
+            int_cast_arm!(val, U32, u32, "u32"),
+
+        // 64-bit unsigned family: `ulong`/`u64`/`usize`. The one width
+        // that genuinely cannot be represented by `Value::Int` at all
+        // above `i64::MAX` — see `Value::UInt`'s own doc comment.
+        TypeKind::Ulong | TypeKind::U64 | TypeKind::Usize =>
+            int_cast_arm!(val, UInt, u64, "u64"),
+
+        // `byte` intentionally stays signed (`I8`) per this session's
+        // own decision to leave it as-is rather than flip it to match
+        // C#'s unsigned convention; `i8` shares the same runtime type.
+        TypeKind::Byte | TypeKind::I8 => int_cast_arm!(val, I8, i8, "i8"),
+        TypeKind::Ubyte | TypeKind::U8 => int_cast_arm!(val, U8, u8, "u8"),
+        TypeKind::I16 => int_cast_arm!(val, I16, i16, "i16"),
+        TypeKind::I32 => int_cast_arm!(val, I32, i32, "i32"),
+        TypeKind::U16 => int_cast_arm!(val, U16, u16, "u16"),
+
         TypeKind::Float | TypeKind::F32 => match val {
             Value::Float(f)  => Ok(Value::Float(f)),
-            Value::Int(n)    => Ok(Value::Float(n as f32)),
             Value::Double(d) => Ok(Value::Float(d as f32)),
+            Value::Int(n)    => Ok(Value::Float(n as f32)),
+            Value::I8(n)     => Ok(Value::Float(n as f32)),
+            Value::I16(n)    => Ok(Value::Float(n as f32)),
+            Value::I32(n)    => Ok(Value::Float(n as f32)),
+            Value::U8(n)     => Ok(Value::Float(n as f32)),
+            Value::U16(n)    => Ok(Value::Float(n as f32)),
+            Value::U32(n)    => Ok(Value::Float(n as f32)),
+            Value::UInt(n)   => Ok(Value::Float(n as f32)),
             other => Err(Signal::Panic(format!("cannot cast {} to float", other.type_name()))),
         },
         TypeKind::Double | TypeKind::F64 => match val {
             Value::Double(d) => Ok(Value::Double(d)),
-            Value::Int(n)    => Ok(Value::Double(n as f64)),
             Value::Float(f)  => Ok(Value::Double(f as f64)),
+            Value::Int(n)    => Ok(Value::Double(n as f64)),
+            Value::I8(n)     => Ok(Value::Double(n as f64)),
+            Value::I16(n)    => Ok(Value::Double(n as f64)),
+            Value::I32(n)    => Ok(Value::Double(n as f64)),
+            Value::U8(n)     => Ok(Value::Double(n as f64)),
+            Value::U16(n)    => Ok(Value::Double(n as f64)),
+            Value::U32(n)    => Ok(Value::Double(n as f64)),
+            Value::UInt(n)   => Ok(Value::Double(n as f64)),
             other => Err(Signal::Panic(format!("cannot cast {} to double", other.type_name()))),
         },
         TypeKind::Str => Ok(Value::str_from(val.to_string())),

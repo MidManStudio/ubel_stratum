@@ -115,7 +115,7 @@ use crate::ast::expressions::{
     Arg, ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody,
     MatchArmBody, OrElseFallback,
 };
-use crate::ast::literals::{FormatSpec, InterpolationPart, Literal};
+use crate::ast::literals::{FormatSpec, InterpolationPart, IntSuffix, Literal};
 use crate::ast::patterns::{EnumPatternPayload, Pattern, PatternKind};
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
@@ -125,6 +125,51 @@ use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::symbol_table::{DefId, DefKind};
 use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
+
+// ── Integer literal suffix ranges ───────────────────────────────────
+
+/// Whether `raw` -- a literal's non-negative magnitude exactly as
+/// written; there's no sign in the token itself, unary `-` is a separate
+/// prefix operator applied afterward -- fits the suffix's declared type.
+/// Signed suffixes only ever accept the non-negative half of their
+/// range here, matching Rust's own literal-suffix behavior (`200i8` is
+/// `error: literal out of range for i8` in Rust too, even though the
+/// bit pattern -56 would fit, because nothing about the token itself
+/// makes -56 the intended value).
+/// The magnitude of `suffix`'s most-negative value (`128` for `i8`,
+/// since `i8::MIN == -128`), for the `-128i8` special case in
+/// `infer_expr_inner`'s `UnaryOp::Neg` arm above. `None` for unsigned
+/// suffixes, which have no most-negative value to special-case at all.
+fn int_suffix_signed_min_magnitude(suffix: IntSuffix) -> Option<u64> {
+    match suffix {
+        IntSuffix::I8    => Some(i8::MIN.unsigned_abs() as u64),
+        IntSuffix::I16   => Some(i16::MIN.unsigned_abs() as u64),
+        IntSuffix::I32   => Some(i32::MIN.unsigned_abs() as u64),
+        IntSuffix::I64   => Some(i64::MIN.unsigned_abs()),
+        IntSuffix::Isize => Some(i64::MIN.unsigned_abs()),
+        IntSuffix::U8 | IntSuffix::U16 | IntSuffix::U32
+        | IntSuffix::U64 | IntSuffix::Usize => None,
+    }
+}
+
+fn int_suffix_fits(raw: u64, suffix: IntSuffix) -> bool {
+    match suffix {
+        IntSuffix::I8    => raw <= i8::MAX as u64,
+        IntSuffix::I16   => raw <= i16::MAX as u64,
+        IntSuffix::I32   => raw <= i32::MAX as u64,
+        IntSuffix::I64   => raw <= i64::MAX as u64,
+        // Modeled as i64-width at runtime (`Value::Int`) -- see
+        // `interpreter::value::Value`'s own doc comment for why.
+        IntSuffix::Isize => raw <= i64::MAX as u64,
+        IntSuffix::U8    => raw <= u8::MAX as u64,
+        IntSuffix::U16   => raw <= u16::MAX as u64,
+        IntSuffix::U32   => raw <= u32::MAX as u64,
+        // `raw` is already a `u64`; nothing wider for it to overflow.
+        IntSuffix::U64   => true,
+        // Modeled as u64-width at runtime (`Value::UInt`).
+        IntSuffix::Usize => true,
+    }
+}
 
 // ── Entry point ───────────────────────────────────────────────────
 
@@ -1238,7 +1283,7 @@ impl<'a> InferCtx<'a> {
             }
 
             PatternKind::Literal(lit) => {
-                let lit_ty = self.infer_literal(lit);
+                let lit_ty = self.infer_literal(lit, pat.span);
                 self.unify(scrutinee_ty, lit_ty, pat.span);
                 PatternCoverage::Other
             }
@@ -1979,7 +2024,7 @@ impl<'a> InferCtx<'a> {
 
     fn infer_expr_inner<'ast>(&mut self, expr: &Expr<'ast>) -> TypeId {
         match &expr.kind {
-            ExprKind::Lit(lit) => self.infer_literal(lit),
+            ExprKind::Lit(lit) => self.infer_literal(lit, expr.span),
 
             ExprKind::Ident(_) => {
                 if let Some(def_id) = self.ctx.resolutions.get(expr.span) {
@@ -2028,6 +2073,42 @@ impl<'a> InferCtx<'a> {
             }
 
             ExprKind::UnaryOp { op, operand } => {
+                // `-128i8` (and the i16/i32/i64/isize equivalents):
+                // special-cased the way Rust's own compiler conventionally
+                // treats a negated integer literal, so the type's full
+                // signed range — including its most-negative value — is
+                // available to a literal written this way. Without this,
+                // `TYPE-120` only ever sees the positive magnitude `128`
+                // (see `int_suffix_fits`'s own doc comment for why that's
+                // the check's default), which overflows `i8` even though
+                // the actual value `-128` is `i8::MIN` and perfectly
+                // valid. Scoped exactly like Rust's own special case: only
+                // a literal *directly* under the `-` gets it (`-x` for a
+                // variable `x` doesn't, only `-` immediately followed by
+                // a suffixed literal does), and only signed suffixes have
+                // a most-negative value to special-case in the first
+                // place — this deliberately does not touch (or excuse)
+                // `-5u8`, which stays exactly what it already was: sema
+                // accepts it (there's no compile-time negation-validity
+                // check for *any* type here, signed or not — matches
+                // this codebase's existing convention of leaving
+                // operator-validity to the interpreter's own runtime
+                // panic, same as e.g. `"hello" + 5`), and the interpreter
+                // panics on it at runtime ("cannot negate u8") the same
+                // way it already did before this feature existed.
+                if let (UnaryOp::Neg, ExprKind::Lit(Literal::TypedInt { raw, suffix })) =
+                    (op, &operand.kind)
+                {
+                    if let Some(min_magnitude) = int_suffix_signed_min_magnitude(*suffix) {
+                        if *raw <= min_magnitude {
+                            return self.int_suffix_sema_type(*suffix);
+                        }
+                        // Falls through to the generic path below on
+                        // purpose: `-200i8` really is out of range even
+                        // negated, and that path is what raises `TYPE-120`
+                        // for it.
+                    }
+                }
                 let op_ty = self.infer_expr(operand);
                 match op {
                     UnaryOp::Not    => self.bool_ty(),
@@ -2859,9 +2940,24 @@ impl<'a> InferCtx<'a> {
 
     // ── Literal typing ────────────────────────────────────────────
 
-    fn infer_literal<'ast>(&mut self, lit: &Literal<'ast>) -> TypeId {
+    fn infer_literal<'ast>(&mut self, lit: &Literal<'ast>, span: Span) -> TypeId {
         match lit {
             Literal::Int(_)   => self.ctx.types.intern(SemaType::Int),
+            // `TYPE-120`: a suffix (explicit or the lexer's own
+            // auto-promoted implicit `u64`, see `Literal::TypedInt`'s doc
+            // comment) claims a specific width -- check the value
+            // actually fits it now, at the one place both are known
+            // together, rather than silently wrapping it at runtime.
+            Literal::TypedInt { raw, suffix } => {
+                if !int_suffix_fits(*raw, *suffix) {
+                    self.errors.add_type_error(TypeError::IntLiteralOutOfRange {
+                        suffix: suffix.as_str(),
+                        raw:    *raw,
+                        span,
+                    });
+                }
+                self.int_suffix_sema_type(*suffix)
+            }
             Literal::Float(_) => self.ctx.types.intern(SemaType::Float),
             Literal::Double(_)=> self.ctx.types.intern(SemaType::Double),
             Literal::Bool(_)  => self.ctx.types.intern(SemaType::Bool),
@@ -2888,6 +2984,25 @@ impl<'a> InferCtx<'a> {
                 }
                 self.ctx.types.intern(SemaType::Str)
             }
+        }
+    }
+
+    /// The `SemaType` an explicit (or auto-promoted implicit) integer
+    /// literal suffix resolves to. Always the Rust-named variant --
+    /// there's no suffix syntax for the C#-named twins (`Uint`/`Long`/
+    /// `Ulong`), see `IntSuffix`'s own doc comment.
+    fn int_suffix_sema_type(&mut self, suffix: IntSuffix) -> TypeId {
+        match suffix {
+            IntSuffix::I8    => self.ctx.types.intern(SemaType::I8),
+            IntSuffix::I16   => self.ctx.types.intern(SemaType::I16),
+            IntSuffix::I32   => self.ctx.types.intern(SemaType::I32),
+            IntSuffix::I64   => self.ctx.types.intern(SemaType::I64),
+            IntSuffix::U8    => self.ctx.types.intern(SemaType::U8),
+            IntSuffix::U16   => self.ctx.types.intern(SemaType::U16),
+            IntSuffix::U32   => self.ctx.types.intern(SemaType::U32),
+            IntSuffix::U64   => self.ctx.types.intern(SemaType::U64),
+            IntSuffix::Isize => self.ctx.types.intern(SemaType::Isize),
+            IntSuffix::Usize => self.ctx.types.intern(SemaType::Usize),
         }
     }
 

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::literals::Literal;
+use crate::ast::literals::{IntSuffix, Literal};
 use crate::ast::patterns::{
     DestructureElement, DestructurePattern, EnumPatternPayload,
     FieldPattern, Pattern, PatternKind,
@@ -388,6 +388,7 @@ fn match_literal(lit: &Literal<'_>, value: &Value) -> bool {
         (Literal::Null,      Value::Null)       => true,
         (Literal::Bool(b),   Value::Bool(v))    => b == v,
         (Literal::Int(n),    Value::Int(v))     => n == v,
+        (Literal::TypedInt { raw, suffix }, _) => match_typed_int(*raw, *suffix, value),
         (Literal::Float(f),  Value::Float(v))   => f == v,
         (Literal::Double(d), Value::Double(v))  => d == v,
         (Literal::Char(c),   Value::Char(v))    => c == v,
@@ -395,6 +396,30 @@ fn match_literal(lit: &Literal<'_>, value: &Value) -> bool {
         // Allow int literal to match float/double (common in range patterns).
         (Literal::Int(n),    Value::Float(v))   => (*n as f32) == *v,
         (Literal::Int(n),    Value::Double(v))  => (*n as f64) == *v,
+        _ => false,
+    }
+}
+
+/// `Literal::TypedInt`'s half of `match_literal`: `raw` (an unsigned
+/// magnitude — see that variant's own doc comment) compared against
+/// whichever sized `Value` variant `suffix` says it should be. Only
+/// ever `true` against that one matching variant; a suffixed literal
+/// pattern doesn't loosely match other numeric types the way a plain
+/// `Literal::Int` does against `Float`/`Double` above — the suffix is
+/// exactly the annotation that makes the intended width unambiguous,
+/// so there's no ambiguity left to be lenient about.
+fn match_typed_int(raw: u64, suffix: IntSuffix, value: &Value) -> bool {
+    match (suffix, value) {
+        (IntSuffix::I8,    Value::I8(v))   => raw as i8  == *v,
+        (IntSuffix::I16,   Value::I16(v))  => raw as i16 == *v,
+        (IntSuffix::I32,   Value::I32(v))  => raw as i32 == *v,
+        (IntSuffix::I64,   Value::Int(v))  => raw as i64 == *v,
+        (IntSuffix::Isize, Value::Int(v))  => raw as i64 == *v,
+        (IntSuffix::U8,    Value::U8(v))   => raw as u8  == *v,
+        (IntSuffix::U16,   Value::U16(v))  => raw as u16 == *v,
+        (IntSuffix::U32,   Value::U32(v))  => raw as u32 == *v,
+        (IntSuffix::U64,   Value::UInt(v)) => raw == *v,
+        (IntSuffix::Usize, Value::UInt(v)) => raw == *v,
         _ => false,
     }
 }

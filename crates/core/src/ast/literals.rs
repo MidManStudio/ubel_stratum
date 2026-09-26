@@ -15,6 +15,7 @@
 
 
 use crate::ast::expressions::Expr;
+pub use crate::lexer::token::IntSuffix;
 
 /// A parsed `{expr:spec}` format specifier: the part after the `:` in an
 /// interpolation hole. Covers `[[fill]align][sign]['#']['0']width?
@@ -105,8 +106,19 @@ pub enum InterpolationPart<'ast> {
 /// Every form of literal that Ubel Stratum supports.
 #[derive(Debug, Clone, Copy)]
 pub enum Literal<'ast> {
-    /// Integer literal: `42`, `0xFF`, `0b1010`, `1_000_000`
+    /// Integer literal: `42`, `0xFF`, `0b1010`, `1_000_000`. Always fits
+    /// `i64` -- infers as `SemaType::Int`, exactly as before this feature
+    /// existed. Zero change in behavior for any literal without a suffix
+    /// that also fits `i64`.
     Int(i64),
+    /// Explicitly-suffixed integer literal (`255u8`, `1024u32`, `5000i64`),
+    /// OR an unsuffixed literal whose value overflows `i64::MAX` but fits
+    /// `u64::MAX` -- the lexer treats that case as an implicit `u64`
+    /// suffix (auto-promotion) rather than a lex error, since there is no
+    /// other way for a value in the top half of `u64`'s range to exist as
+    /// a literal at all. `raw` holds the exact bit pattern as `u64`;
+    /// `suffix` says how sema/the interpreter should interpret it.
+    TypedInt { raw: u64, suffix: IntSuffix },
     /// 32-bit float: `3.14f`
     Float(f32),
     /// 64-bit float (default when no suffix): `3.14`

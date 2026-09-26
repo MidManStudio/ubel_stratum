@@ -47,6 +47,14 @@ pub enum TokenType {
 
     // ── Literals ─────────────────────────────────────────────────
     IntLit(i64),
+    /// A Rust-style suffixed integer literal (`255u8`, `5000i64`, …), OR
+    /// an unsuffixed literal past `i64::MAX` auto-promoted to an implicit
+    /// `u64` (see `logos_lexer::handle_logos_token`). Kept as a distinct
+    /// token from plain `IntLit` rather than folding a suffix field into
+    /// it, so every existing consumer of `IntLit(i64)` -- and there were
+    /// many -- keeps compiling and behaving unchanged for the common,
+    /// unsuffixed case.
+    TypedIntLit(u64, IntSuffix),
     FloatLit(f32),
     DoubleLit(f64),
     StringLit(String),
@@ -177,6 +185,7 @@ impl fmt::Display for TokenType {
             TokenType::KwInlineList  => write!(f, "InlineList"),
             TokenType::Underscore    => write!(f, "_"),
             TokenType::IntLit(n)     => write!(f, "{}", n),
+            TokenType::TypedIntLit(n, suf) => write!(f, "{}{}", n, suf.as_str()),
             TokenType::FloatLit(v)   => write!(f, "{}f", v),
             TokenType::DoubleLit(v)  => write!(f, "{}", v),
             TokenType::StringLit(s)  => write!(f, "\"{}\"", s),
@@ -255,6 +264,45 @@ impl fmt::Display for TokenType {
 pub enum InterpolationPart {
     Text(String),
     Expr(Vec<Token>),
+}
+
+/// Explicit Rust-style suffix on an integer literal: `255u8`, `5000i64`,
+/// `1024u32`. Lives here (not in `ast`) since it's fundamentally a
+/// token-level fact -- which suffix text the lexer actually matched --
+/// and `ast::literals::IntSuffix` re-exports this same type rather than
+/// duplicating it, matching how `ast::common` already depends on `lexer`
+/// elsewhere. No C#-style family: C# itself has no per-width integer
+/// suffixes either (only `u`/`l`/`ul`/`f`/`d`/`m`), so there's nothing to
+/// pair with `byte`/`short`/`long` here -- use `as byte` / `as short` /
+/// `as long` for those.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntSuffix {
+    I8, I16, I32, I64,
+    U8, U16, U32, U64,
+    Isize, Usize,
+}
+
+impl IntSuffix {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IntSuffix::I8    => "i8",
+            IntSuffix::I16   => "i16",
+            IntSuffix::I32   => "i32",
+            IntSuffix::I64   => "i64",
+            IntSuffix::U8    => "u8",
+            IntSuffix::U16   => "u16",
+            IntSuffix::U32   => "u32",
+            IntSuffix::U64   => "u64",
+            IntSuffix::Isize => "isize",
+            IntSuffix::Usize => "usize",
+        }
+    }
+}
+
+impl fmt::Display for IntSuffix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

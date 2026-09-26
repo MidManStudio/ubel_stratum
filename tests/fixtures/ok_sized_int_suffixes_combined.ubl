@@ -1,0 +1,46 @@
+// tests/fixtures/ok_sized_int_suffixes_combined.ubl
+// Sized-integer literal suffixes, combined: both the C#-named and
+// Rust-named integer type families as real struct fields, populated
+// with suffixed literals (Rust family) and `as` casts (C# family --
+// `int`/`uint`/`long`/`ulong` deliberately stay distinct SemaTypes from
+// `i32`/`u32`/`i64`/`u64` even though they share runtime width, so a
+// bare literal still needs a cast to cross that boundary; that part is
+// unchanged, pre-existing behavior, not new).
+// Expected: sema OK, interpret OK.
+
+struct CSharpInts {
+    b:  byte,
+    i:  int,
+    ui: uint,
+    l:  long,
+    ul: ulong,
+}
+
+struct RustInts {
+    u8_val:  u8,
+    i8_val:  i8,
+    u32_val: u32,
+    i64_val: i64,
+    u64_val: u64,
+}
+
+fn main() void {
+    let cs = CSharpInts {
+        b  = 100i8,
+        i  = 2147483647,
+        ui = 4294967295 as uint,
+        l  = 9223372036854775807 as long,
+        ul = 18446744073709551615 as ulong,
+    }
+
+    let rs = RustInts {
+        u8_val  = 255u8,
+        i8_val  = -128i8,
+        u32_val = 4294967295u32,
+        i64_val = 9223372036854775807i64,
+        u64_val = 18446744073709551615u64,
+    }
+
+    println($"byte: {cs.b}, int: {cs.i}, uint: {cs.ui}, long: {cs.l}, ulong: {cs.ul}")
+    println($"u8: {rs.u8_val}, i8: {rs.i8_val}, u32: {rs.u32_val}, i64: {rs.i64_val}, u64: {rs.u64_val}")
+}

@@ -146,6 +146,7 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
     let lo = p.span();
     match p.cursor.peek().clone() {
         TokenType::IntLit(n)    => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::Int(n)),    span: lo })) }
+        TokenType::TypedIntLit(raw, suffix) => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::TypedInt { raw, suffix }), span: lo })) }
         TokenType::FloatLit(f)  => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::Float(f)),  span: lo })) }
         TokenType::DoubleLit(d) => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::Double(d)), span: lo })) }
         TokenType::StringLit(s) => { let s = p.intern(&s); p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::Str(s)), span: lo })) }
@@ -359,6 +360,7 @@ fn parse_brace_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option
         // `{ StringLit = ...}` or `{ IntLit = ...}` → Dict
         (TokenType::StringLit(_), TokenType::Equal) |
         (TokenType::IntLit(_),    TokenType::Equal) |
+        (TokenType::TypedIntLit(..), TokenType::Equal) |
         (TokenType::DoubleLit(_), TokenType::Equal) |
         (TokenType::FloatLit(_),  TokenType::Equal) |
         (TokenType::True,         TokenType::Equal) |
