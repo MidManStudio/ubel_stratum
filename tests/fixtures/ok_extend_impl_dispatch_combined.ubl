@@ -1,0 +1,45 @@
+// tests/fixtures/ok_extend_impl_dispatch_combined.ubl
+// extend/impl dispatch combined with already-shipped features: a
+// constructor-style static method returning the struct, an instance
+// method reading multiple fields, a struct field storing another
+// struct, and a for-loop driving repeated instance-method calls.
+// Expected: sema OK, interpret OK.
+
+struct Vector2 {
+    x: int,
+    y: int,
+}
+
+extend Vector2 {
+    fn new(x: int, y: int) Vector2 {
+        return Vector2 { x = x, y = y }
+    }
+
+    fn add(self, other: Vector2) Vector2 {
+        return Vector2.new(self.x + other.x, self.y + other.y)
+    }
+}
+
+struct Accumulator {
+    total: Vector2,
+}
+
+impl Accumulator {
+    fn new() Accumulator {
+        return Accumulator { total = Vector2.new(0, 0) }
+    }
+
+    fn add_point(self, p: Vector2) void {
+        self.total = self.total.add(p)
+    }
+}
+
+fn main() void {
+    let acc = Accumulator.new()
+    let i = 0
+    while (i < 3) {
+        acc.add_point(Vector2.new(1, 2))
+        i = i + 1
+    }
+    println($"total: {acc.total.x}, {acc.total.y}")
+}

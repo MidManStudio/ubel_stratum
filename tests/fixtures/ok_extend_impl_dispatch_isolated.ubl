@@ -1,0 +1,49 @@
+// tests/fixtures/ok_extend_impl_dispatch_isolated.ubl
+// extend/impl method dispatch, isolated: both instance methods (`self`)
+// and static/associated methods (`TypeName.method()`), through both
+// `extend Type { .. }` and the inherent (non-trait) `impl Type { .. }`
+// form -- previously TYPE-103/TYPE-104 at sema, "no method" panic at
+// runtime even once sema was bypassed, for every one of these four
+// combinations. `self` field access inside these bodies also now
+// type-checks for real (see the err_ fixture) rather than silently
+// inferring Unknown.
+// Expected: sema OK, interpret OK.
+
+struct Vector2 {
+    x: int,
+    y: int,
+}
+
+extend Vector2 {
+    fn zero() Vector2 {
+        return Vector2 { x = 0, y = 0 }
+    }
+
+    fn magnitude_sq(self) int {
+        return (self.x * self.x) + (self.y * self.y)
+    }
+}
+
+struct Counter {
+    value: int,
+}
+
+impl Counter {
+    fn new() Counter {
+        return Counter { value = 0 }
+    }
+
+    fn increment(self) void {
+        self.value = self.value + 1
+    }
+}
+
+fn main() void {
+    let origin = Vector2.zero()
+    println($"origin magnitude_sq: {origin.magnitude_sq()}")
+
+    let c = Counter.new()
+    c.increment()
+    c.increment()
+    println($"counter: {c.value}")
+}

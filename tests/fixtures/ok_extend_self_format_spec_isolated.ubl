@@ -1,0 +1,31 @@
+// tests/fixtures/ok_extend_self_format_spec_isolated.ubl
+// A separate, previously-documented bug (docs/PARKED_IDEAS.md's Traits
+// section) turned out to share the extend/impl dispatch fix's exact
+// root cause: a format spec on a value derived from `self` (directly,
+// or via `let x = self.field` first) failed TYPE-115 with
+// on_type: "<unknown>" inside an impl-block method body, because
+// `self`'s own type was never anything but Unknown there. Fixed as a
+// side effect of the same `current_struct_type` wiring, not a separate
+// change -- confirmed here rather than assumed.
+// Expected: sema OK, interpret OK ("005" printed twice).
+
+struct Node {
+    id: int,
+}
+
+extend Node {
+    fn show(self) void {
+        println($"{self.id:03}")
+    }
+
+    fn show_local(self) void {
+        let node_id = self.id
+        println($"{node_id:03}")
+    }
+}
+
+fn main() void {
+    let n = Node { id = 5 }
+    n.show()
+    n.show_local()
+}

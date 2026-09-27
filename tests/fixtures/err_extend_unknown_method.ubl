@@ -1,0 +1,22 @@
+// tests/fixtures/err_extend_unknown_method.ubl
+// A struct with a real extend block still correctly rejects a call to a
+// method that genuinely doesn't exist on it -- pins down that fixing
+// dispatch didn't make method lookup overly permissive (e.g. matching
+// by struct name alone regardless of method name).
+// Expected: sema FAIL (UnknownMethod-family, TYPE-104).
+
+struct Vector2 {
+    x: int,
+    y: int,
+}
+
+extend Vector2 {
+    fn magnitude_sq(self) int {
+        return (self.x * self.x) + (self.y * self.y)
+    }
+}
+
+fn main() void {
+    let v = Vector2 { x = 3, y = 4 }
+    println($"{v.not_a_real_method()}")
+}

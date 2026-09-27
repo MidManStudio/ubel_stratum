@@ -968,6 +968,24 @@ impl<'a> InferCtx<'a> {
                 Item::Struct(s)   => { self.collect_struct_sig(s); }
                 Item::Enum(e)     => { self.collect_enum_sig(e); }
                 Item::Const(c)    => { self.collect_const_sig(c); }
+                // `collect_method_sig` alone (below) records each method as
+                // its own standalone symbol (a real, pre-existing, and
+                // still-needed step — it's what makes `self.ctx.resolutions
+                // .get(m.span)` resolve at all) but was never told which
+                // struct the method actually belongs to. `TYPE-103`/
+                // `TYPE-104` ("type X has no field/method Y") on any
+                // `extend`/`impl`-block method — confirmed the actual,
+                // reported bug — trace straight back to that: nothing here
+                // ever touched `i.target_type`/`x.target_type`, so
+                // `struct_methods` (the table `v.method()` dispatch
+                // actually looks up, see `collect_struct_sig` below) never
+                // got an entry for these methods at all. Fixed by
+                // `register_extend_impl_methods`, a deliberately separate
+                // pass run after this one finishes (not folded into this
+                // loop) so every struct's own `collect_struct_sig` entry
+                // already exists to append onto, regardless of whether the
+                // `extend`/`impl` block appears before or after the
+                // `struct` it targets in the source file.
                 Item::Impl(i)     => {
                     for m in i.methods { self.collect_method_sig(m); }
                 }
@@ -990,6 +1008,85 @@ impl<'a> InferCtx<'a> {
                     }
                 }
                 Item::TypeAlias(_) => {} // alias expansion deferred
+            }
+        }
+        self.register_extend_impl_methods(program);
+    }
+
+    /// The root name of a `target_type` written as a plain (possibly
+    /// generic) path — `Vector2` out of `extend Vector2 { .. }`, `Box` out
+    /// of `impl<T> Box<T> { .. }` — resolved to its declaring `DefId` the
+    /// same way `ast_type_to_sema`'s own `TypeKind::Named` arm does for an
+    /// ordinary type reference. `None` for anything that isn't a plain
+    /// named path (there's nothing sensible for `extend`/`impl` to target
+    /// otherwise) or that doesn't resolve to a known top-level type —
+    /// silently skipped by the caller, the same lenient handling
+    /// `ast_type_to_sema` gives an unresolved type name anywhere else in
+    /// this file (not diagnosed as its own error yet).
+    fn target_type_def_id<'ast>(&self, ty: &Type<'ast>) -> Option<DefId> {
+        match ty.kind {
+            TypeKind::Named { path, .. } => {
+                let root = path.first().copied()?;
+                self.ctx.top_level_def(root)
+            }
+            _ => None,
+        }
+    }
+
+    /// Phase 2a continued: append every `extend`/`impl`-block method's
+    /// shape onto its target struct's `struct_methods` entry, the same
+    /// dispatch table an in-struct `struct S { fn f(self) {..} }` method
+    /// already populates in `collect_struct_sig` below. Deliberately a
+    /// second, later pass over `program.items` (not folded into the loop
+    /// above) rather than an `.insert()` at each `Item::Impl`/`Item::Extend`
+    /// site: `collect_struct_sig` uses a plain `.insert()` that would wipe
+    /// out anything an earlier-processed `extend` block had already added
+    /// for that struct, so this has to run once every struct's own entry
+    /// already exists, appending via `.entry(..).or_default()` rather than
+    /// ever inserting fresh.
+    ///
+    /// Trait `impl`s (`i.trait_path.is_some()`) are skipped here on
+    /// purpose — traits themselves aren't dispatched through yet
+    /// (`docs/PARKED_IDEAS.md`), so registering their methods into
+    /// `struct_methods` would let `v.method()` resolve to a method whose
+    /// trait requirement was never actually checked. An inherent `impl`
+    /// (`impl Type { .. }`, `trait_path: None`) is registered exactly like
+    /// `extend` — the two are equivalent for dispatch purposes today.
+    ///
+    /// Generic targets (`extend Box<T> { .. }`) reuse the target struct's
+    /// own generic arity (`self.generic_arity`) to build the same `Self`
+    /// shape `collect_struct_sig`/`infer_struct_bodies` use, but don't
+    /// bind the `extend`/`impl` block's own generic parameter *names* —
+    /// neither `ImplBlock` nor `ExtendDecl` carries its own
+    /// `generic_params` list the way `StructDecl`/`FunctionDecl` do, so
+    /// there's nothing here to bind them from. Out of scope for now
+    /// (untested, unrequested); the common, non-generic case this was
+    /// actually asked to fix is unaffected.
+    fn register_extend_impl_methods<'ast>(&mut self, program: &Program<'ast>) {
+        for item in program.items {
+            let (target_type, methods) = match item {
+                Item::Extend(x) => (x.target_type, x.methods),
+                Item::Impl(i) if i.trait_path.is_none() => (i.target_type, i.methods),
+                _ => continue,
+            };
+            let Some(def_id) = self.target_type_def_id(target_type) else { continue; };
+            for m in methods {
+                let Some(fn_ty) = self.ctx.def_type(
+                    self.ctx.resolutions.get(m.span).unwrap_or(DefId::INVALID)
+                ) else { continue; };
+                let has_self = m.params.first()
+                    .map(|p| matches!(p.kind,
+                        ParamKind::SelfVal | ParamKind::SelfMut
+                        | ParamKind::SelfRef | ParamKind::SelfRefMut))
+                    .unwrap_or(false);
+                if let SemaType::Function { params, return_type, is_fallible, .. } =
+                    self.ctx.types.get(fn_ty).clone()
+                {
+                    self.struct_methods.entry(def_id).or_default().push((
+                        m.name.to_string(),
+                        MethodShape { has_self, params, return_type, is_fallible },
+                    ));
+                }
             }
         }
     }
@@ -1619,12 +1716,8 @@ impl<'a> InferCtx<'a> {
                 Item::Function(f) => self.infer_function_body(f),
                 Item::Struct(s)   => self.infer_struct_bodies(s),
                 Item::Const(c)    => self.infer_const_body(c),
-                Item::Impl(i) => {
-                    for m in i.methods { self.infer_method_body(m); }
-                }
-                Item::Extend(x) => {
-                    for m in x.methods { self.infer_method_body(m); }
-                }
+                Item::Impl(i) => self.infer_extend_impl_bodies(i.target_type, i.methods),
+                Item::Extend(x) => self.infer_extend_impl_bodies(x.target_type, x.methods),
                 Item::Trait(t) => {
                     for it in t.items {
                         if let TraitItem::DefaultMethod(m) = it {
@@ -1721,6 +1814,43 @@ impl<'a> InferCtx<'a> {
         }
         self.current_struct_type = prev_self;
         self.pop_generic_scope(prev_generics);
+    }
+
+    /// The `extend`/`impl` twin of `infer_struct_bodies` just above: sets
+    /// `current_struct_type` around each method body the same way, so
+    /// `self.x` inside an `extend`/`impl` method actually type-checks
+    /// against the real target struct instead of silently inferring as
+    /// `Unknown` — previously the case for *every* `extend`/`impl` method
+    /// (confirmed: `self.x + "not a number"` inside one raised no error at
+    /// all before this), since nothing set `current_struct_type` for this
+    /// path and `seed_param` explicitly does nothing for `self` params of
+    /// its own (see that function's own `TODO` comment). Applies to every
+    /// `impl`, trait or inherent — unlike dispatch registration
+    /// (`register_extend_impl_methods`), which skips trait impls since
+    /// traits aren't dispatched through yet, a trait impl's method body
+    /// still deserves correct `self` typing for its own sake. Silently
+    /// does nothing for a `target_type` that isn't a plain named path or
+    /// doesn't resolve — same lenient handling as `target_type_def_id`'s
+    /// other caller.
+    fn infer_extend_impl_bodies<'ast>(
+        &mut self,
+        target_type: &'ast Type<'ast>,
+        methods:     &'ast [MethodDecl<'ast>],
+    ) {
+        let Some(def_id) = self.target_type_def_id(target_type) else {
+            for m in methods { self.infer_method_body(m); }
+            return;
+        };
+        let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
+        let self_args: Vec<TypeId> = (0..arity)
+            .map(|i| self.ctx.types.intern(SemaType::Param(i)))
+            .collect();
+        let self_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
+        let prev_self = self.current_struct_type.replace(self_ty);
+        for m in methods {
+            self.infer_method_body(m);
+        }
+        self.current_struct_type = prev_self;
     }
 
     fn infer_const_body<'ast>(&mut self, c: &ConstDecl<'ast>) {

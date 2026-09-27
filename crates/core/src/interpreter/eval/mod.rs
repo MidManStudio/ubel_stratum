@@ -23,6 +23,7 @@ use crate::ast::declarations::{FunctionDecl, MethodDecl, ParamKind, StructMember
 use crate::ast::expressions::Expr;
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::Block;
+use crate::ast::types::{Type, TypeKind};
 use crate::builtins::BuiltinFn;
 use crate::interpreter::env::Environment;
 use crate::interpreter::value::{EvalResult, FunctionId, Signal, Value};
@@ -227,6 +228,31 @@ impl<'ast> Interpreter<'ast> {
         })
     }
 
+    /// The `extend`/inherent-`impl` twin of the `Item::Struct` arm's own
+    /// method registration a few lines down in `run_program` — same
+    /// `register_method` + `method_table` insert per method, just reached
+    /// from a `target_type` instead of a struct's own member list. `None`
+    /// for anything that isn't a plain named path (nothing else is a
+    /// sensible `extend`/`impl` target) silently registers nothing, same
+    /// lenient handling sema's own `target_type_def_id` gives it.
+    fn register_extend_or_impl_methods(
+        &mut self,
+        target_type: &'ast Type<'ast>,
+        methods:     &'ast [MethodDecl<'ast>],
+        top_level_fns: &mut Vec<FunctionId>,
+    ) {
+        let TypeKind::Named { path, .. } = target_type.kind else { return; };
+        let Some(struct_name) = path.first().copied() else { return; };
+        for m in methods.iter().copied() {
+            let id = self.register_method(struct_name, m);
+            self.method_table
+                .entry(struct_name.to_string())
+                .or_default()
+                .insert(m.name.to_string(), id);
+            top_level_fns.push(id);
+        }
+    }
+
     // ── Program entry point ───────────────────────────────────────
 
     pub fn run_program(&mut self, program: &'ast Program<'ast>) -> Result<(), String> {
@@ -285,6 +311,21 @@ impl<'ast> Interpreter<'ast> {
                         })
                         .collect();
                     self.enum_table.insert(e.name.to_string(), variants);
+                }
+                // Interpreter-side twin of sema's own
+                // `register_extend_impl_methods` (`type_infer.rs`) — same
+                // root cause, same fix shape: nothing here ever looked at
+                // `target_type` before, so `method_table` (what
+                // `receiver.method()` dispatch actually looks up, just
+                // below) never got an entry for an `extend`/`impl`-block
+                // method, even once sema was taught to accept the call.
+                // Trait `impl`s are skipped for the same reason sema
+                // skips them: traits aren't dispatched through yet.
+                Item::Extend(x)                                => {
+                    self.register_extend_or_impl_methods(x.target_type, x.methods, &mut top_level_fns);
+                }
+                Item::Impl(i) if i.trait_path.is_none() => {
+                    self.register_extend_or_impl_methods(i.target_type, i.methods, &mut top_level_fns);
                 }
                 _ => {}
             }

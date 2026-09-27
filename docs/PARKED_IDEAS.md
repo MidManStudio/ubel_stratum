@@ -94,44 +94,75 @@ session, never fixture-tested, and not wired to anything functional:
   required-signature methods, all real AST nodes.
 - Name resolution and type inference walk into trait bodies and collect
   method signatures.
-- But `resolve_impl` (`name_resolution.rs`) says so in its own comment:
-  *"impl blocks don't introduce a name... we record method definitions
-  without a specific parent DefId."* Methods inside `impl Foo for Bar`
-  are never linked to `Bar`. Not dispatchable.
-- Confirmed directly, not just from the comment: a **plain inherent
-  `impl Foo { }` block (no trait, no `for` clause) has the identical
-  gap** — `impl Foo { fn get_x(self) int { return self.x } }` then
-  `f.get_x()` fails `TYPE-104 NoSuchMethod` (and `TYPE-103
-  NoSuchField`, both fire together), and a static-style method with no
-  `self` param (`impl Foo { fn new(x: int) Foo { ... } }`, called as
-  `Foo.new(5)`) fails identically. So this was never a trait-specific
-  gap, or an instance-vs-static split — `type_infer.rs`'s own comment
-  at the `ExprKind::Call` `Field` arm confirms why: `instance::resolve_receiver`
-  is narrowly scoped to six *builtin* kinds (List/Str/Dict/Tuple/Queue/Stack)
-  by name, and "anything else (user-defined struct methods, etc) falls
-  through to `call_return_type` below, unchanged" — there's no code
-  path from a plain `Field` access on a user struct's value into
-  `impl`-block method lookup at all, trait or not.
-- A related, likely-same-root-cause bug, found alongside this: a value
+- **Plain (non-trait) `extend`/`impl` dispatch is fixed** — was the
+  entry directly below this one before that session's own follow-up
+  fixed it, so keeping the original finding on record rather than
+  deleting it: `resolve_impl` (`name_resolution.rs`) said so in its own
+  comment (*"impl blocks don't introduce a name... we record method
+  definitions without a specific parent DefId"*), confirmed directly for
+  both `extend Foo { }` and plain inherent `impl Foo { }` (no trait, no
+  `for` clause), both instance (`self`) and static/associated (no
+  `self`) methods — none of the four combinations linked their methods
+  to the target struct's `struct_methods` (sema, `type_infer.rs`) or
+  `method_table` (interpreter, `eval/mod.rs`) entry at all; the actual
+  `resolve_receiver` comment cited below was accurate about why, just
+  not the only place the linkage was missing. Fixed by
+  `register_extend_impl_methods`/`register_extend_or_impl_methods` (one
+  new pass each, sema and interpreter, run once after every struct's own
+  entry already exists so `extend`/`impl` blocks work regardless of
+  which side of the `struct` they appear on in the file) plus
+  `infer_extend_impl_bodies`, the `current_struct_type` fix below.
+  **Trait `impl`s (`impl X for Y`) are deliberately still excluded from
+  both dispatch tables** — registering a trait impl's methods into
+  ordinary dispatch would let `v.method()` resolve to one whose trait
+  requirement was never actually checked, since traits themselves are
+  still exactly as unbuilt as the rest of this section describes.
+  4 new fixtures (`ok_extend_impl_dispatch_isolated`/`_combined`,
+  `err_extend_self_type_mismatch`, `err_extend_unknown_method`).
+- **`self`'s type inside an `extend`/`impl` method body is also fixed** —
+  previously always `Unknown` (`current_struct_type` was only ever set
+  for methods declared directly inside a `struct { }` block,
+  `infer_struct_bodies`; nothing set it for `extend`/`impl`, and
+  `seed_param` explicitly does nothing for `self` params, see that
+  function's own former `TODO`), so `self.x + "not a number"` inside an
+  `extend` method passed sema with zero diagnostic before this. Applies
+  to *every* `impl`, trait or inherent — a trait impl method body still
+  deserves correct `self` typing even though it isn't dispatchable yet.
+  1 new fixture (`err_extend_self_type_mismatch`).
+- The `TYPE-115` "self-derived format spec" bug immediately below
+  **turned out to be the exact same root cause as the `self`-typing gap
+  just above, confirmed by retesting rather than assumed** — fixed as a
+  side effect of `current_struct_type` now being set correctly, not a
+  separate change. 1 new fixture
+  (`ok_extend_self_format_spec_isolated`) pins the retest down.
+- Still genuinely open, unchanged: `resolve_receiver`
+  (`builtins/instance/`) really is narrowly scoped to six *builtin*
+  kinds (List/Str/Dict/Tuple/Queue/Stack) by name — a plain `Field`
+  access still only reaches user-struct method lookup through the path
+  fixed above, not through `resolve_receiver` itself, which is
+  unrelated infrastructure this didn't touch or need to.
+- A related, likely-same-root-cause bug, found alongside this — now
+  fixed, kept here for the record: a value
   that traces back to `self` (directly, or via `let x = self.field`)
-  fails `TYPE-115 InvalidFormatSpec` on `on_type: "<unknown>"` for
+  failed `TYPE-115 InvalidFormatSpec` on `on_type: "<unknown>"` for
   *any* format spec (`{self.id:03}`) *inside an impl-block method
-  body*, even though `self.field` resolves fine for ordinary use
-  (`self.id * 2` type-checks and runs correctly) — so `self`'s own type
-  isn't actually unresolved in general, only the interpolation-hole
-  walk's own, separate type lookup fails for it. Extracting to a local
-  first does **not** fix it (confirmed by testing the exact "fix," not
-  assumed from the pattern that worked for a plain, non-`self`-derived
-  local) — `let node_id = self.id; println($"{node_id:03}")` still
-  fails identically, while the same extraction on a struct field
-  accessed *outside* an impl block (`n.id` in `main()`, no `self`
-  involved) works fine. Narrows the bug precisely to "derived from
-  `self`, inside an impl-block method" rather than "any local," and
-  rules out the workaround a separate conversation proposed without
-  re-testing it.
+  body*, even though `self.field` resolved fine for ordinary use
+  (`self.id * 2` type-checked and ran correctly) — so `self`'s own type
+  wasn't actually unresolved in general, only the interpolation-hole
+  walk's own, separate type lookup failed for it. Extracting to a local
+  first did **not** fix it either (confirmed by testing the exact "fix,"
+  not assumed from the pattern that worked for a plain, non-`self`-derived
+  local) — `let node_id = self.id; println($"{node_id:03}")` failed
+  identically, while the same extraction on a struct field accessed
+  *outside* an impl block (`n.id` in `main()`, no `self` involved)
+  worked fine.
 - `GENERICS_RULES.md` confirms trait bounds on generics (`T: Comparable`)
   are parsed, stored, never enforced.
-- Zero fixtures exercise any of it.
+- Trait dispatch itself (`impl X for Y`, `dyn Trait`, bound enforcement)
+  has zero fixtures and is still exactly as undesigned as this section
+  originally found — the two fixes above close the *mechanism* gap that
+  would otherwise have blocked trait dispatch too, not trait dispatch
+  itself.
 - One thing that *does* work, confirmed fresh (a separate conversation
   proposed the test but the transcript never showed whether it passed):
   generic enum payload matching — `enum Option<T> { Some(T), None }` /
@@ -332,10 +363,11 @@ don't exist here:
   matching close-side gap, not yet handled the same way.
 
 **Also confirmed, not new, but worth having in one place:** the
-"impl-block methods don't dispatch" gap from the Traits section above is
-the same root cause a separate part of this batch hit too (framed there as
-two different, unrelated-sounding errors — `TYPE-103`/`TYPE-104` on one
-test, then a distinct "isn't wired up" claim on another). Struct-shaped
+"impl-block methods don't dispatch" gap from the Traits section above
+(now fixed — see that section) was the same root cause a separate part
+of this batch hit too (framed there as two different, unrelated-sounding
+errors — `TYPE-103`/`TYPE-104` on one test, then a distinct "isn't wired
+up" claim on another). Struct-shaped
 enum variants (`enum E { V { a: int, b: int } }`, constructed
 `E.V { a = 1, b = 2 }`, destructured `E.V { a, b } => ...` in a `match`)
 work correctly end to end when the field types actually match — confirmed

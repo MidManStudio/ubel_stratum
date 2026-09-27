@@ -1,0 +1,23 @@
+// tests/fixtures/err_extend_self_type_mismatch.ubl
+// `self` inside an extend method now carries the real target struct's
+// type (previously always Unknown, which unifies permissively with
+// anything -- this exact program passed sema with no diagnostic at all
+// before that was fixed). `self.x` (an int field) plus a string literal
+// is a genuine TYPE-101.
+// Expected: sema FAIL (TypeMismatch, TYPE-101).
+
+struct Vector2 {
+    x: int,
+    y: int,
+}
+
+extend Vector2 {
+    fn bad(self) int {
+        return self.x + "not a number"
+    }
+}
+
+fn main() void {
+    let v = Vector2 { x = 1, y = 2 }
+    println($"{v.bad()}")
+}
