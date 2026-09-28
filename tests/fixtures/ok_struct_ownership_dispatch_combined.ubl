@@ -1,0 +1,52 @@
+// tests/fixtures/ok_struct_ownership_dispatch_combined.ubl
+// Same fix, exercised through a struct field and a free function
+// parameter rather than a bare local, alongside a while-loop and
+// string interpolation -- mirrors ok_ownership_method_dispatch_combined.ubl's
+// shape but for a user-defined struct's own extend/impl methods rather
+// than a builtin string.
+// Expected: sema OK, interpret OK.
+
+struct Score {
+    points: int,
+}
+
+impl Score {
+    fn new() Score {
+        return Score { points = 0 }
+    }
+
+    fn add(self, amount: int) void {
+        self.points = self.points + amount
+    }
+
+    fn total(self) int {
+        return self.points
+    }
+}
+
+struct Player {
+    name: string,
+    tally: Shared<Score>,
+}
+
+@tier(low)
+fn award_bonus(tally: Unique<Score>, amount: int) int {
+    tally.add(amount)
+    return tally.total()
+}
+
+@tier(low)
+fn main() void {
+    let p = Player { name = "Ada", tally = Shared.new(Score.new()) }
+    let i = 0
+    while (i < 3) {
+        p.tally.add(10)
+        i = i + 1
+    }
+    assert(p.tally.total() == 30, "struct field holding a Shared<Score> dispatches through it correctly across a loop")
+
+    let bonus = award_bonus(Unique.new(Score.new()), 42)
+    assert(bonus == 42, "function parameter typed as Unique<Score> dispatches through the impl method and back out")
+
+    println($"final tally: {p.tally.total()}, bonus: {bonus}")
+}

@@ -135,12 +135,21 @@ session, never fixture-tested, and not wired to anything functional:
   side effect of `current_struct_type` now being set correctly, not a
   separate change. 1 new fixture
   (`ok_extend_self_format_spec_isolated`) pins the retest down.
-- Still genuinely open, unchanged: `resolve_receiver`
-  (`builtins/instance/`) really is narrowly scoped to six *builtin*
-  kinds (List/Str/Dict/Tuple/Queue/Stack) by name — a plain `Field`
-  access still only reaches user-struct method lookup through the path
-  fixed above, not through `resolve_receiver` itself, which is
-  unrelated infrastructure this didn't touch or need to.
+- Method dispatch through `Unique<T>`/`Shared<T>`/`SyncShared<T>` for
+  **user-defined** struct methods: **fixed**. `resolve_receiver`
+  (`builtins/instance/`) is still narrowly scoped to the builtin kinds
+  and returns `None` for a user struct, so the struct-instance-method
+  branch in `type_infer.rs` now peels one ownership wrapper itself
+  before its `SemaType::Named` check (sema only; `eval_method_call`
+  already peeled all three for every receiver). 4 new fixtures
+  (`ok_struct_ownership_dispatch_isolated`/`_combined`,
+  `err_struct_ownership_dispatch_unknown_method`/`_arg_mismatch`).
+- Still open, found while fixing the above: `move_facts.rs`'s
+  by-name exemption (a builtin instance method call does not count as
+  a move of its receiver) has not been extended to user-declared
+  methods, so a second bare use of a `let`-bound `Unique<UserStruct>`
+  local after a method call on it reports `UseAfterMove`. Needs the
+  set of user-declared method names threaded into `move_facts::collect`.
 - A related, likely-same-root-cause bug, found alongside this — now
   fixed, kept here for the record: a value
   that traces back to `self` (directly, or via `let x = self.field`)

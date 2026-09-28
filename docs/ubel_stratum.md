@@ -598,6 +598,17 @@ type checking (TYPE-1xx range).
   `SemaType::Unknown` as orderable. "Don't know yet" isn't "known to
   be wrong", and no other check in this file treats `Unknown` as a
   positive finding of its own either.
+- (MEMORY_MODEL.md §9, Open Decision #5, user-struct half) The
+  struct-instance-method branch of the call arm only matched a bare
+  `SemaType::Named` receiver, so `Unique<T>`/`Shared<T>`/`SyncShared<T>`
+  wrapping a user struct fell through to `NoSuchMethod` even though the
+  method existed. `instance::resolve_receiver` already peels these
+  wrappers but returns `None` for a user struct, discarding the peeled
+  type, so it could not be reused. Fixed by peeling one wrapper locally
+  before the `Named` check; the wrapper is deliberately not reapplied
+  to the return type, matching `resolve_receiver`'s own documented
+  decision. Sema only: `eval_method_call` already peeled all three for
+  every receiver.
 - (this delivery) `.clone()` dispatch needed fixing twice, not once,
   both found by actually running the new
   `ok_derive_ord_and_clone_isolated.ubl` fixture rather than by
@@ -792,3 +803,16 @@ rather than left stale once the over-approximation it described no
 longer matched the code. Same discipline again: checked every line
 this delivery actually wrote or rewrote, not a sweep of any of these
 files' substantial pre-existing content.
+
+A seventh delivery (roadmap item 7, user-struct half: method dispatch
+through `Unique`/`Shared`/`SyncShared` for user-defined `extend`/`impl`
+methods) touched `sema/type_infer.rs` (one branch), the module doc of
+`sema/move_facts.rs` (stale, corrected to describe the by-name exemption
+and the remaining user-method gap), `docs/MEMORY_MODEL.md` §9 (a stale
+paragraph and Open Decision #5's row), `docs/PARKED_IDEAS.md`,
+`docs/OUTLIVES_RULES.md` (header still read "Design, Not Yet Built"
+after all four phases landed), and the public pages
+`web/site/src/project-status.md` and `web/site/src/tier-model.md`,
+which had drifted behind the outlives, `extend`/`impl` dispatch, and
+sized-integer work. Same discipline again: checked every line this
+delivery actually wrote or rewrote, not a sweep of pre-existing content.

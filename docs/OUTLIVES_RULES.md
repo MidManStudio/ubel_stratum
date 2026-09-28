@@ -1,9 +1,11 @@
-# Ubel Stratum — Outlives / Subset Enforcement (Design, Not Yet Built)
+# Ubel Stratum — Outlives / Subset Enforcement (Phases E1 to E4 Landed)
 
-> **Scoping document for the one piece LOW tier's reference story doesn't
-> have yet. Nothing in this document is implemented. Read this before
-> touching `lifetime_check.rs`, `borrow_check.rs`, `cfg.rs`, or `facts.rs`
-> for this work — it explains what's being extended, what's being reused
+> **Scoping document for the piece of LOW tier's reference story that
+> `outlives_check.rs` now implements. All four phases below have landed
+> (see §9 for the order and the fixtures); §4's v1 scope limits and §10's
+> open questions still stand. Read this before touching
+> `lifetime_check.rs`, `outlives_check.rs`, `borrow_check.rs`, `cfg.rs`,
+> or `facts.rs` — it explains what was extended, what was reused
 > verbatim, and where the real risk is.**
 
 ---

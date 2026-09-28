@@ -1,0 +1,22 @@
+// tests/fixtures/err_struct_ownership_dispatch_arg_mismatch.ubl
+// A method reached through Shared<T> still runs full argument
+// unification, not a shortcut that skips type-checking once dispatch
+// itself succeeds -- passing a string where the method expects int
+// still produces a real type error through the wrapper.
+// Expected: sema FAIL (TypeMismatch-family).
+
+struct Counter {
+    value: int,
+}
+
+extend Counter {
+    fn add(self, amount: int) void {
+        self.value = self.value + amount
+    }
+}
+
+@tier(low)
+fn main() void {
+    let s = Shared.new(Counter { value = 0 })
+    s.add("not a number")
+}

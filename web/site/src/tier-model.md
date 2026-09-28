@@ -131,26 +131,29 @@ Not simply "LOW cannot call HIGH": every direction is a separate rule.
 ## What is enforced today
 
 The cross-tier call matrix above, arena-escape checking for the patterns
-shown, and lifetime well-formedness (declared lifetime names must exist,
-`where` clauses can only reference declared names, no outlives cycles)
-are real, running checks in the semantic analysis pass, independent of
-which backend eventually executes the program.
-
-Two things are still in progress rather than complete:
+shown, lifetime well-formedness (declared lifetime names must exist,
+`where` clauses can only reference declared names, no outlives cycles),
+and outlives enforcement across a boundary are real, running checks in
+the semantic analysis pass, independent of which backend eventually
+executes the program.
 
 **Outlives / subset enforcement across a boundary.** LOW-tier borrow
-checking itself is real: a control-flow graph is built per function,
-and loan and liveness checking on top of it genuinely rejects a
-conflicting borrow with NLL-style precision — a reference's *last
-actual use* determines when it stops conflicting, not the block it was
-declared in — with move checking (use-after-move, loop-carried moves,
-reinitialization) alongside it. What that checking does *not* yet cover
-is a reference crossing a function-call or `edge struct` boundary:
-declared lifetime parameters (`[lifetime L]`) are checked for internal
-well-formedness, but nothing yet verifies a caller's argument or a
-struct's field actually satisfies the declared relationship once it
-leaves the function body that created it. That piece is scoped (see the
-repository's `docs/OUTLIVES_RULES.md`) and landing in phases.
+checking is real: a control-flow graph is built per function, and loan
+and liveness checking on top of it rejects a conflicting borrow with
+NLL-style precision, where a reference's *last actual use* determines
+when it stops conflicting, not the block it was declared in, with move
+checking (use-after-move, loop-carried moves, reinitialization)
+alongside it. Outlives enforcement extends that across two boundaries:
+a call to a function with declared `[lifetime ...]` parameters, and the
+construction of an `edge struct` whose fields carry declared lifetimes.
+Declared `outlives` relationships propagate across multiple lifetimes,
+and a boundary argument that cannot be traced to a local is rejected
+conservatively rather than accepted. Three shapes are outside the
+current scope, documented in the repository's `docs/OUTLIVES_RULES.md`:
+methods (which the loan checker does not cover yet either), references
+nested inside generic arguments, and closures that capture references.
+
+One thing is still in progress rather than complete:
 
 **The interpreter's memory model.** The tree-walking interpreter runs
 every tier on the same reference-counted representation. `with arena`

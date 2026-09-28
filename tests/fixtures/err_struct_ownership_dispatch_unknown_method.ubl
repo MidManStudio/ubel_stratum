@@ -1,0 +1,22 @@
+// tests/fixtures/err_struct_ownership_dispatch_unknown_method.ubl
+// A user struct wrapped in Unique<T> still correctly rejects a call to
+// a method that genuinely doesn't exist on it -- pins down that
+// peeling the ownership wrapper before the struct_methods lookup
+// didn't make dispatch overly permissive.
+// Expected: sema FAIL (UnknownMethod-family, TYPE-104).
+
+struct Counter {
+    value: int,
+}
+
+extend Counter {
+    fn get(self) int {
+        return self.value
+    }
+}
+
+@tier(low)
+fn main() void {
+    let u = Unique.new(Counter { value = 0 })
+    println($"{u.not_a_real_method()}")
+}

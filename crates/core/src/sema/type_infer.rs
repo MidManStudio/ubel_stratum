@@ -2623,8 +2623,37 @@ impl<'a> InferCtx<'a> {
                         // so — unlike the associated-call case above —
                         // no fresh `Var`s are needed here, just substitute
                         // the receiver's own args straight in.
+                        //
+                        // MEMORY_MODEL.md §9 Open Decision #5's remaining
+                        // half (PARKED_IDEAS.md, "Traits / interface
+                        // system"): peel at most one ownership wrapper
+                        // (`Unique`/`Shared`/`SyncShared`) before this
+                        // check, mirroring `instance::resolve_receiver`'s
+                        // own peel for the six builtin kinds just above.
+                        // `resolve_receiver` can't be reused directly for
+                        // this: it returns `None` outright for a bare
+                        // `Named` struct (none of its `ReceiverKind` arms
+                        // match one), discarding the very `bare_ty` this
+                        // branch needs, so the peel is repeated narrowly
+                        // here rather than threaded through that call.
+                        // Not reapplied to the return type below, for the
+                        // same reason `resolve_receiver`'s own comment
+                        // gives: nothing here returns a value that itself
+                        // needs `Unique`/`Shared`/`SyncShared` re-applied,
+                        // only the tier wrap `maybe_arena_ref` already
+                        // handles. The interpreter side needed no
+                        // matching change: `eval_method_call`
+                        // (`interpreter/eval/expr.rs`) already peels all
+                        // three unconditionally, for every receiver, not
+                        // just the six builtin kinds.
+                        let struct_recv_ty = match self.ctx.types.get(receiver_ty) {
+                            SemaType::Unique(inner)
+                            | SemaType::Shared(inner)
+                            | SemaType::SyncShared(inner) => *inner,
+                            _ => receiver_ty,
+                        };
                         if let SemaType::Named { def, args: recv_args } =
-                            self.ctx.types.get(receiver_ty).clone()
+                            self.ctx.types.get(struct_recv_ty).clone()
                         {
                             if let Some(methods) = self.struct_methods.get(&def).cloned() {
                                 return match methods.iter().find(|(n, m)| n == field && m.has_self) {

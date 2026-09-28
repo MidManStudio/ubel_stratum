@@ -67,13 +67,20 @@
 //!
 //! One deliberate over-approximation worth naming: a method-call
 //! receiver (`a.method()`) is treated as a move of `a`, same as any
-//! other bare use, because `resolve_receiver` doesn't strip a `Unique`
-//! wrapper for dispatch yet either (`MEMORY_MODEL.md` §9's own open
-//! question — "whether `Unique<List<int>>.push(5)` should even be
-//! legal"). Flagging every method call as consuming its receiver is the
-//! safe direction while that question is still open; loosening it once
-//! method dispatch through `Unique` has a real answer is follow-up, not
-//! a regression to fix later.
+//! other bare use, unless the method name is a known builtin instance
+//! method (`instance::is_builtin_instance_method_name`), which
+//! `walk_expr_move_aware` exempts by name. Method dispatch through
+//! `Unique` now resolves for builtin kinds and for user-defined
+//! `extend`/`impl` methods alike (`MEMORY_MODEL.md` §9, Open Decision
+//! #5), but the by-name exemption has not been extended to user-defined
+//! methods: a second bare use of a `let`-bound `Unique<UserStruct>`
+//! local after a method call on it still reports `UseAfterMove`,
+//! except where the user-declared name happens to coincide with a
+//! builtin one (`get`), which is exempted by accident.
+//! Flagging every user-defined method call as consuming its receiver is
+//! the safe direction; loosening it needs the set of user-declared
+//! method names threaded into `collect`, which is follow-up work, not a
+//! regression to fix later.
 
 use std::collections::{HashMap, HashSet};
 

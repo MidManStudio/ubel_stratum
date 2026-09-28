@@ -1,0 +1,56 @@
+// tests/fixtures/ok_struct_ownership_dispatch_isolated.ubl
+// MEMORY_MODEL.md §9 Open Decision #5, remaining half: does a
+// user-defined struct's own extend/impl methods dispatch correctly
+// through Unique<T>/Shared<T>/SyncShared<T>, not just the six builtin
+// collection kinds ok_ownership_method_dispatch_isolated.ubl already
+// covers? Previously TYPE-103/TYPE-104 for all three wrappers, since
+// the struct-instance-method branch in type_infer.rs only ever matched
+// a bare SemaType::Named, never one still wrapped in an ownership type.
+// Expected: sema OK, interpret OK.
+
+struct Counter {
+    value: int,
+}
+
+extend Counter {
+    fn zero() Counter {
+        return Counter { value = 0 }
+    }
+
+    fn increment(self) void {
+        self.value = self.value + 1
+    }
+
+    fn increment_and_get(self) int {
+        self.value = self.value + 1
+        return self.value
+    }
+
+    fn get(self) int {
+        return self.value
+    }
+}
+
+@tier(low)
+fn main() void {
+    // Unique<T> is move-tracked for `let`-bound locals (move_facts.rs);
+    // a bare use of a tracked local after a method call still correctly
+    // flags UseAfterMove for a user-struct receiver today, unlike the
+    // six builtin kinds move_facts.rs already exempts by name -- a
+    // known, separate, pre-existing scope limit this dispatch fix does
+    // not touch. One call proves dispatch without tripping it.
+    let u = Unique.new(Counter.zero())
+    assert(u.increment_and_get() == 1, "instance method dispatches through Unique<Counter>")
+
+    let s = Shared.new(Counter.zero())
+    s.increment()
+    let s2 = s
+    s2.increment()
+    s2.increment()
+    assert(s.get() == 3, "instance method dispatches through Shared<Counter>, mutation visible through the alias")
+
+    let sync = SyncShared.new(Counter.zero())
+    sync.increment()
+    sync.increment()
+    assert(sync.get() == 2, "instance method dispatches through SyncShared<Counter>")
+}

@@ -21,10 +21,12 @@ every corner of semantic analysis is finished: LOW-tier borrow checking
 has real, CFG-based loan and liveness enforcement in place (genuinely
 non-lexical — a borrow's last actual use determines when it stops
 conflicting, not the enclosing block) and move checking alongside it,
-but that checking is intra-function only. Declared lifetime parameters
-(`[lifetime L]`) parse and are checked for internal well-formedness, but
-nothing yet verifies that a reference crossing a function call or
-`edge struct` field actually respects the declared relationship — see
+but the loan and move checking itself is intra-function. Declared
+lifetime parameters (`[lifetime L]`) are checked for well-formedness,
+and outlives enforcement verifies that a reference crossing a function
+call or an `edge struct` field actually respects the declared
+relationship, with a few documented scope limits (methods, references
+nested inside generics, closures capturing references) — see
 [The Tier Model](./tier-model.md#what-is-enforced-today) for the exact
 line between what parses and type-checks versus what is actually
 verified safe.
@@ -34,11 +36,22 @@ verified safe.
 - `_` as both a match wildcard and a parameter placeholder
 - `@derive` for `PartialEq`, with `Eq`, `Hash`, `Ord`/`PartialOrd`, and
   `Clone` following
-- Lifetime well-formedness checking: declared lifetime names must exist,
-  `where` clause bounds can only reference declared names, no outlives
-  cycles, for both function signatures and `edge struct` fields
+- Outlives/subset enforcement: lifetime well-formedness (declared names
+  must exist, `where` bounds reference declared names, no outlives
+  cycles), plus boundary checks at a function call and at `edge struct`
+  construction, with multi-lifetime constraint propagation
+- `edge struct` now participates in arena-escape checking: a named
+  reference field on an `edge struct` is checked against its declared
+  lifetime rather than the general arena boundary rule
+- Method dispatch on user-defined structs through `extend` and inherent
+  `impl` blocks, both instance methods and `Type.method()` static calls,
+  with `self` now type-checked inside those bodies
 - Method dispatch through `Unique<T>`/`Shared<T>`/`SyncShared<T>`
-  ownership wrappers
+  ownership wrappers, for builtin collections and for user-defined
+  struct methods
+- Fixed-width integers with real wrapping arithmetic and the full `u64`
+  range (`u8`, `i8`, `u16`, `i16`, `u32`, `u64`, and the rest), numeric
+  literal suffixes (`255u8`), and a literal-out-of-range diagnostic
 - A parser ambiguity fix: a bare identifier condition immediately
   followed by a block whose first statement was a plain assignment
   (`if x == y { hit_count = hit_count + 1 }`) could misparse as a
@@ -47,17 +60,21 @@ verified safe.
 
 ## Active work
 
-- Connecting `edge struct`'s `is_edge` marker to the arena-escape
-  checker, its documented purpose today has no effect on that checker
-- Outlives/subset enforcement across a function or `edge struct`
-  boundary — the internal groundwork (materializing what a loan's own
-  valid range actually is) has landed; the checks that use it at an
-  actual call site or struct construction have not yet
+- The trait system: `trait` declarations and `impl Trait for Type`
+  blocks parse, but trait method dispatch, `dyn Trait`, and bound
+  enforcement are not built and still need a design pass
+- Move-checking precision for user-defined methods: a second use of a
+  `let`-bound `Unique<T>` local after a user-declared method call is
+  still reported as a use-after-move
 
 ## Known gaps, tracked rather than hidden
 
-- `edge struct` is parsed and stored on the AST but not yet consulted by
-  the arena-escape checker, so it does not yet do what its name implies
+- Nested generic arguments that end in `>>` (`List<List<int>>`) do not
+  parse yet
+- An unsuffixed integer literal does not coerce to a sized-integer
+  field or binding (`let x: u32 = 10` needs `10u32`)
+- Global `const` items type-check but are not yet initialized by the
+  interpreter, so reading one at runtime panics
 - The interpreter runs every tier on the same reference-counted values;
   `with arena` blocks are validated by the tier checker but do not yet
   allocate or free real memory, that lands with the LLVM backend
