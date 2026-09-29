@@ -1,0 +1,11 @@
+// tests/fixtures/err_assign_to_const_isolated.ubl
+// A global constant is never a valid assignment target. Before this
+// check the assignment passed sema and ran.
+// Expected: sema FAIL (NAME-007, AssignToConst).
+
+const LIMIT: int = 5
+
+fn main() void {
+    LIMIT = 6
+    println($"{LIMIT}")
+}

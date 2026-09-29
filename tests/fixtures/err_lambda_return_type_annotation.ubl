@@ -1,0 +1,17 @@
+// tests/fixtures/err_lambda_return_type_annotation.ubl
+// Lambdas have no return type annotation. `fn(code: int) string { ... }`
+// used to parse `string` as the whole body and then report two
+// unrelated NAME-001 errors; it is now one clear PARSE-004 on the
+// annotation itself.
+// Expected: parse FAIL (IllegalInContext, PARSE-004).
+
+fn run(f: fn(int) string) string {
+    return f(404)
+}
+
+fn main() void {
+    let m = run(fn(code: int) string {
+        return $"code {code}"
+    })
+    println(m)
+}

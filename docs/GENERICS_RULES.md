@@ -142,15 +142,17 @@ access (`p.first`) substitutes using the *receiver's own* `Named { args,
   `extend` at all (checked: zero hits in `tests/fixtures/*.ubl`).
 - **Trait bounds** (`GenericParam.bounds`, parsed, stored, never
   validated) are still completely unenforced — same as before this round.
-- **A diagnostic-duplication wart**, not a correctness bug: a genuinely
-  unknown method name called on an instance (`rect.shrink()` where
-  `shrink` doesn't exist) fires both `NoSuchField` (from the callee's own
+- **A diagnostic-duplication wart, now fixed**: a genuinely unknown
+  method name called on an instance (`rect.shrink()` where `shrink`
+  doesn't exist) used to fire both `NoSuchField` (from the callee's own
   standalone pre-inference, which the `Call` arm always runs first) and
   `NoSuchMethod` (from the dedicated call-dispatch check) for the same
-  typo. Fixing this cleanly needs the callee's inference to know whether
-  it's being evaluated as a `Call`'s callee or as a genuine standalone
-  field access — plumbing not currently threaded through `infer_expr`.
-  Left as-is rather than a rushed, possibly-fragile fix.
+  typo. The `Call` arm now sets `callee_field_pending` just before
+  pre-inferring a `Field` callee and the `Field` arm takes it before
+  inferring anything, so it applies to that one node only; a typo in
+  the callee's own target (`o.innr.n()`) is still reported. Only
+  `NoSuchMethod` fires for the call itself. Not covered by this fix:
+  an unknown method on an `enum` receiver, which sema never reported.
 - **Generic enums have no prelude** — `Option`/`Result` are ordinary
   user-declarable generic enums, not builtins. A fixture that wants them
   declares them locally (matching how `ok_enum_payloads.ubl` already

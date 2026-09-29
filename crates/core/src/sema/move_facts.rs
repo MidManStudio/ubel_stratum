@@ -65,22 +65,18 @@
 //!     `facts::classify_access`'s own treatment of this exact shape
 //!     ("Reassign", never "Conflict").
 //!
-//! One deliberate over-approximation worth naming: a method-call
-//! receiver (`a.method()`) is treated as a move of `a`, same as any
-//! other bare use, unless the method name is a known builtin instance
-//! method (`instance::is_builtin_instance_method_name`), which
-//! `walk_expr_move_aware` exempts by name. Method dispatch through
-//! `Unique` now resolves for builtin kinds and for user-defined
-//! `extend`/`impl` methods alike (`MEMORY_MODEL.md` §9, Open Decision
-//! #5), but the by-name exemption has not been extended to user-defined
-//! methods: a second bare use of a `let`-bound `Unique<UserStruct>`
-//! local after a method call on it still reports `UseAfterMove`,
-//! except where the user-declared name happens to coincide with a
-//! builtin one (`get`), which is exempted by accident.
-//! Flagging every user-defined method call as consuming its receiver is
-//! the safe direction; loosening it needs the set of user-declared
-//! method names threaded into `collect`, which is follow-up work, not a
-//! regression to fix later.
+//! A method-call receiver (`a.method()`) is not a move of `a` when the
+//! method name is a known builtin instance method
+//! (`instance::is_builtin_instance_method_name`) or the name of any
+//! user-declared instance method in the program (a method whose first
+//! parameter is a `self` form, in a struct body or an `extend`/`impl`
+//! block). The user-declared set is built once per program by
+//! `user_method_names` and threaded in through `collect_with`. Both
+//! exemptions are by name, not by type, so a same-named consuming
+//! method on an unrelated type is a known, narrow, accepted gap: the
+//! checker under-reports there, it never rejects a program that is
+//! safe. Every other method call still counts as a bare use of its
+//! receiver.
 
 use std::collections::{HashMap, HashSet};
 
@@ -129,6 +125,57 @@ pub struct MoveFacts<'ast> {
 /// worth running this on. See `collect_program` for the `@tier(low)`
 /// walk this module provides ready-made.
 pub fn collect<'ast>(cfg: &Cfg<'ast>) -> MoveFacts<'ast> {
+    collect_with(cfg, &HashSet::new())
+}
+
+/// Every instance-method name (a method whose first parameter is a
+/// `self` form) declared anywhere in `program`: struct bodies, `extend`
+/// blocks and `impl` blocks. Used as `collect_with`'s second exemption
+/// set; see the module doc.
+pub fn user_method_names<'ast>(program: &Program<'ast>) -> HashSet<&'ast str> {
+    use crate::ast::declarations::{MethodDecl, ParamKind, StructMember};
+    fn add<'ast>(out: &mut HashSet<&'ast str>, m: &MethodDecl<'ast>) {
+        let has_self = m.params.first()
+            .map(|p| matches!(p.kind,
+                ParamKind::SelfVal | ParamKind::SelfMut
+                | ParamKind::SelfRef | ParamKind::SelfRefMut))
+            .unwrap_or(false);
+        if has_self {
+            out.insert(m.name);
+        }
+    }
+    let mut names = HashSet::new();
+    for item in program.items {
+        match item {
+            Item::Struct(s) => {
+                for member in s.members.iter() {
+                    if let StructMember::Method(m) = member {
+                        add(&mut names, m);
+                    }
+                }
+            }
+            Item::Extend(x) => {
+                for m in x.methods.iter() {
+                    add(&mut names, m);
+                }
+            }
+            Item::Impl(i) => {
+                for m in i.methods.iter() {
+                    add(&mut names, m);
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// `collect` with the program's user-declared instance-method names, so
+/// a call to one of them is not counted as a move of its receiver.
+pub fn collect_with<'ast>(
+    cfg:          &Cfg<'ast>,
+    user_methods: &HashSet<&'ast str>,
+) -> MoveFacts<'ast> {
     let mut facts = MoveFacts::default();
 
     for block in &cfg.blocks {
@@ -151,7 +198,7 @@ pub fn collect<'ast>(cfg: &Cfg<'ast>) -> MoveFacts<'ast> {
         for (stmt_index, stmt) in block.stmts.iter().enumerate() {
             let point = Point { block: block.id, stmt_index };
             for_each_top_expr(stmt, &mut |e| {
-                walk_expr_move_aware(e, &mut |use_expr, name| {
+                walk_expr_move_aware(e, user_methods, &mut |use_expr, name| {
                     let place = Place::Local(name);
                     if facts.tracked_locals.contains(&place) {
                         facts.moved_at.entry(place).or_default()
@@ -217,7 +264,8 @@ fn is_unique_new_call<'ast>(expr: &'ast Expr<'ast>) -> bool {
 // the module doc's "What counts as a move" section for why each exists.
 
 struct MoveExprWalker<'w, 'ast, F: FnMut(&'ast Expr<'ast>, &'ast str)> {
-    visit: &'w mut F,
+    visit:        &'w mut F,
+    user_methods: &'w HashSet<&'ast str>,
     _marker: std::marker::PhantomData<&'ast ()>,
 }
 
@@ -246,7 +294,9 @@ impl<'w, 'ast, F: FnMut(&'ast Expr<'ast>, &'ast str)> crate::ast::visitor::AstVi
                 // identifier (a move could be buried deeper inside it,
                 // e.g. an index expression), and always walk every arg.
                 if let ExprKind::Field { target, field } = &callee.kind {
-                    if crate::builtins::instance::is_builtin_instance_method_name(field) {
+                    if crate::builtins::instance::is_builtin_instance_method_name(field)
+                        || self.user_methods.contains(field)
+                    {
                         if !matches!(target.kind, ExprKind::Ident(_)) {
                             self.visit_expr(target);
                         }
@@ -264,11 +314,12 @@ impl<'w, 'ast, F: FnMut(&'ast Expr<'ast>, &'ast str)> crate::ast::visitor::AstVi
 }
 
 fn walk_expr_move_aware<'ast>(
-    expr: &'ast Expr<'ast>,
-    visit: &mut impl FnMut(&'ast Expr<'ast>, &'ast str),
+    expr:         &'ast Expr<'ast>,
+    user_methods: &HashSet<&'ast str>,
+    visit:        &mut impl FnMut(&'ast Expr<'ast>, &'ast str),
 ) {
     use crate::ast::visitor::AstVisitor;
-    MoveExprWalker { visit, _marker: std::marker::PhantomData }.visit_expr(expr);
+    MoveExprWalker { visit, user_methods, _marker: std::marker::PhantomData }.visit_expr(expr);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -503,5 +554,101 @@ mod tests {
             all["low_fn"].moved_at.get(&Place::Local("a")).map(|v| v.len()).unwrap_or(0),
             1
         );
+    }
+    /// `recv.method(arg)` as an expression statement.
+    fn method_call_stmt<'a>(
+        arena: &'a AstArena, recv: &'a str, method: &'a str, arg: &'a Expr<'a>,
+    ) -> Stmt<'a> {
+        let target = ident(arena, recv);
+        let callee = arena.alloc(Expr { kind: ExprKind::Field { target, field: arena.alloc_str(method) }, span: Z });
+        let args = arena.alloc_slice_copy(&[Arg { kind: ArgKind::Positional(arg), span: Z }]);
+        let call = arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: Z });
+        Stmt { kind: StmtKind::Expr(call), span: Z }
+    }
+
+    #[test]
+    fn user_declared_method_call_is_not_a_move_when_its_name_is_supplied() {
+        // let a = Unique.new(5); a.custom_op(1); a.custom_op(2)
+        // `custom_op` is not a builtin instance method name, so with no
+        // user-method set both calls count as uses of `a`; with it in the
+        // set neither does.
+        let arena = AstArena::new();
+        let stmts = [
+            let_stmt(&arena, "a", unique_new(&arena, lit_int(&arena, 5))),
+            method_call_stmt(&arena, "a", "custom_op", lit_int(&arena, 1)),
+            method_call_stmt(&arena, "a", "custom_op", lit_int(&arena, 2)),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let graph = cfg::build(decl);
+
+        let without = collect_with(&graph, &HashSet::new());
+        assert_eq!(
+            without.moved_at.get(&Place::Local("a")).map(|v| v.len()).unwrap_or(0), 2,
+            "an unknown method name still counts as a bare use of its receiver"
+        );
+
+        let mut user = HashSet::new();
+        user.insert("custom_op");
+        let with = collect_with(&graph, &user);
+        assert!(
+            with.moved_at.get(&Place::Local("a")).is_none(),
+            "a user-declared method name must not count as a move of its receiver"
+        );
+    }
+
+    #[test]
+    fn user_method_set_does_not_hide_a_genuine_move_of_the_same_local() {
+        // let a = Unique.new(5); a.custom_op(1); let b = a;
+        let arena = AstArena::new();
+        let stmts = [
+            let_stmt(&arena, "a", unique_new(&arena, lit_int(&arena, 5))),
+            method_call_stmt(&arena, "a", "custom_op", lit_int(&arena, 1)),
+            let_stmt(&arena, "b", ident(&arena, "a")),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let graph = cfg::build(decl);
+        let mut user = HashSet::new();
+        user.insert("custom_op");
+        let facts = collect_with(&graph, &user);
+        assert_eq!(
+            facts.moved_at.get(&Place::Local("a")).map(|v| v.len()).unwrap_or(0), 1,
+            "only `let b = a` is a move"
+        );
+    }
+
+    #[test]
+    fn user_method_names_only_collects_methods_with_a_self_receiver() {
+        use crate::ast::declarations::{
+            ExtendDecl, MethodDecl, Param, ParamKind,
+        };
+        let arena = AstArena::new();
+        let self_param = Param { kind: ParamKind::SelfRef, span: Z };
+        let named_param = Param {
+            kind: ParamKind::Named { mutable: false, name: arena.alloc_str("x"), ty: None, default: None },
+            span: Z,
+        };
+        fn method<'a>(arena: &'a AstArena, name: &str, params: &[Param<'a>]) -> MethodDecl<'a> {
+            MethodDecl {
+                attributes: &[], tier: TierAnnotation::default(), visibility: Visibility::default(),
+                is_async: false, name: arena.alloc_str(name), generic_params: &[],
+                params: arena.alloc_slice_copy(params), return_type: None,
+                body: Block { stmts: &[], span: Z }, span: Z,
+            }
+        }
+        let methods = arena.alloc_slice_copy(&[
+            method(&arena, "bump", &[self_param]),   // instance method
+            method(&arena, "make", &[named_param]),  // associated function, no receiver
+        ]);
+        let ty = arena.alloc(Type {
+            kind: TypeKind::Named { path: arena.alloc_slice_copy(&[arena.alloc_str("Counter")]), args: &[] },
+            span: Z,
+        });
+        let items = arena.alloc_slice_copy(&[Item::Extend(ExtendDecl {
+            attributes: &[], target_type: ty, methods, span: Z,
+        })]);
+        let program = Program { package: None, imports: &[], items, span: Z };
+        let names = user_method_names(&program);
+        assert!(names.contains("bump"));
+        assert!(!names.contains("make"), "an associated function is not an instance method");
     }
 }

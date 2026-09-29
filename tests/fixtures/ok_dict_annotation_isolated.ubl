@@ -1,0 +1,11 @@
+// tests/fixtures/ok_dict_annotation_isolated.ubl
+// `Dictionary` was missing from structurally_compatible, so an annotated
+// dictionary built from `Dictionary.new()` failed with a TypeMismatch
+// against `Dictionary<?T, ?T>`: key and value types were never unified.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let ages: Dictionary<string, int> = Dictionary.new()
+    ages.set("ada", 36)
+    assert(ages.get("ada") == 36, "annotated dictionary stores and reads back")
+}

@@ -48,7 +48,17 @@ verified safe.
   with `self` now type-checked inside those bodies
 - Method dispatch through `Unique<T>`/`Shared<T>`/`SyncShared<T>`
   ownership wrappers, for builtin collections and for user-defined
-  struct methods
+  struct methods, and calling a user-declared method on a `Unique<T>`
+  local no longer counts as moving it, so several calls in a row are
+  accepted while a genuine second move is still rejected
+- Global `const` items are evaluated before `main` runs, in any
+  declaration order, and assigning to one is a compile error
+- Nested generic arguments (`List<List<int>>`,
+  `Dictionary<string, List<int>>`) parse, and annotated dictionaries
+  type-check
+- A return type annotation on a lambda is one clear parse error instead
+  of two unrelated name errors, and an unknown method on a struct is
+  reported once instead of twice
 - Fixed-width integers with real wrapping arithmetic and the full `u64`
   range (`u8`, `i8`, `u16`, `i16`, `u32`, `u64`, and the rest), numeric
   literal suffixes (`255u8`), and a literal-out-of-range diagnostic
@@ -63,18 +73,23 @@ verified safe.
 - The trait system: `trait` declarations and `impl Trait for Type`
   blocks parse, but trait method dispatch, `dyn Trait`, and bound
   enforcement are not built and still need a design pass
-- Move-checking precision for user-defined methods: a second use of a
-  `let`-bound `Unique<T>` local after a user-declared method call is
-  still reported as a use-after-move
+- Design decisions pending before they are built: how a bare integer
+  literal should meet a sized-integer field, whether struct fields get
+  default values, and what a mutable global looks like across tiers
 
 ## Known gaps, tracked rather than hidden
 
-- Nested generic arguments that end in `>>` (`List<List<int>>`) do not
-  parse yet
 - An unsuffixed integer literal does not coerce to a sized-integer
   field or binding (`let x: u32 = 10` needs `10u32`)
-- Global `const` items type-check but are not yet initialized by the
-  interpreter, so reading one at runtime panics
+- `type` aliases are not yet transparent: with `type Score = int`, a
+  `Score` and an `int` do not unify without an explicit cast
+- An unknown method called on an enum value is not caught at compile
+  time and panics when the program runs
+- Calling a function stored in a struct field (`config.callback(4)`) is
+  reported as an unknown method
+- `pub` and `@tier(...)` written on a `const` or `type` item are parsed
+  and then ignored; constants are global to the file and readable from
+  every tier
 - The interpreter runs every tier on the same reference-counted values;
   `with arena` blocks are validated by the tier checker but do not yet
   allocate or free real memory, that lands with the LLVM backend

@@ -1,0 +1,28 @@
+// tests/fixtures/err_unique_user_method_after_move_into_call.ubl
+// Same guarantee through a call boundary: user-method calls on the
+// local are fine, handing it to a function moves it, and handing it to
+// a function a second time is a use after move.
+// Expected: sema FAIL (UseAfterMove, MOVE-001).
+
+struct Counter {
+    value: int,
+}
+
+extend Counter {
+    fn bump(self) void {
+        self.value = self.value + 1
+    }
+}
+
+@tier(low)
+fn consume(c: Unique<Counter>) void {
+    c.bump()
+}
+
+@tier(low)
+fn main() void {
+    let a = Unique.new(Counter { value = 0 })
+    a.bump()
+    consume(a)
+    consume(a)
+}

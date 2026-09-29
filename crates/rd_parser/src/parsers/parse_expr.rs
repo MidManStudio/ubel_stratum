@@ -35,7 +35,7 @@ use ubel_stratum::{
         },
         literals::{Align, FormatSpec, InterpolationPart, Literal, NumericBase},
     },
-    error_management::errors::ParseContext,
+    error_management::errors::{ParseContext, ParseError},
     lexer::{InterpolationPart as LexPart, Span as LSpan, TokenType},
 };
 
@@ -563,6 +563,22 @@ fn parse_lambda<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'a
         params.push(LambdaParam { name, ty, span: plo.merge(&p.span()) }); p.eat_sep();
     }
     if !p.cursor.eat(&TokenType::RightParen) { p.emit(crate::error::unclosed('(', open, None, p.span())); }
+    // Lambdas have no return type annotation. Without this check,
+    // `fn(x: int) string { ... }` parsed `string` as the whole expression
+    // body and left the `{ ... }` block dangling, which surfaced later as
+    // two unrelated NAME-001 errors. Report the annotation itself, consume
+    // it, and carry on with the block so nothing cascades.
+    if let Some(n) = lambda_return_type_ahead(p) {
+        let ty_lo = p.span();
+        let mut last = ty_lo;
+        for _ in 0..n { last = p.cursor.advance().span; }
+        p.emit(ParseError::IllegalInContext {
+            what:       "a return type annotation on a lambda".to_string(),
+            reason:     "lambdas infer their return type from the body".to_string(),
+            span:       ty_lo.merge(&last),
+            suggestion: Some("remove the return type, or declare a named `fn` if the return type must be written out".to_string()),
+        });
+    }
     let body = if p.cursor.is_at(&TokenType::LeftBrace) {
         LambdaBody::Block(crate::parsers::parse_stmt::parse_block_inner(p)?)
     } else {
@@ -572,6 +588,58 @@ fn parse_lambda<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'a
     let params = p.arena.alloc_slice_copy(params.as_slice());
     let node   = p.alloc(Lambda { params, body, span });
     Some(p.alloc(Expr { kind: ExprKind::Lambda(node), span }))
+}
+
+/// After a lambda's `)`, do the next tokens read as `Type {`, a return type
+/// annotation followed by a block body? Returns how many tokens the type
+/// spans. Pure lookahead, nothing consumed and nothing emitted.
+///
+/// A bare `Ident {` is ambiguous with a struct literal body (`fn(a: int)
+/// Point { x = a }`), so an identifier-led type is only taken as an
+/// annotation when the block does not start like a struct literal, that is
+/// when the token after `{` is not `Ident =` and not `}`.
+/// Can this token be the name of a type? Plain identifiers (which include
+/// `int`, `string`, and user types) and the collection keywords, which
+/// have dedicated tokens rather than being identifiers.
+fn is_type_name_token(tt: &TokenType) -> bool {
+    matches!(tt,
+        TokenType::Ident(_)
+        | TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
+        | TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList
+        | TokenType::Task)
+}
+
+fn lambda_return_type_ahead<'ast, 'tok>(p: &Parser<'ast, 'tok>) -> Option<usize> {
+    if !is_type_name_token(p.cursor.peek()) { return None; }
+    let mut i = 1;
+    while matches!(p.cursor.peek_nth(i), TokenType::Dot)
+        && matches!(p.cursor.peek_nth(i + 1), TokenType::Ident(_))
+    {
+        i += 2;
+    }
+    if matches!(p.cursor.peek_nth(i), TokenType::Less) {
+        let mut depth: i32 = 0;
+        loop {
+            match p.cursor.peek_nth(i) {
+                TokenType::Less       => depth += 1,
+                TokenType::Greater    => depth -= 1,
+                TokenType::RightShift => depth -= 2,
+                TokenType::Comma | TokenType::Dot
+                | TokenType::Question | TokenType::Bang => {}
+                tt if is_type_name_token(tt) => {}
+                _ => return None,
+            }
+            i += 1;
+            if depth < 0 { return None; }
+            if depth == 0 { break; }
+        }
+    }
+    while matches!(p.cursor.peek_nth(i), TokenType::Question | TokenType::Bang) { i += 1; }
+    if !matches!(p.cursor.peek_nth(i), TokenType::LeftBrace) { return None; }
+    let struct_lit_like = matches!(p.cursor.peek_nth(i + 1), TokenType::RightBrace)
+        || (matches!(p.cursor.peek_nth(i + 1), TokenType::Ident(_))
+            && matches!(p.cursor.peek_nth(i + 2), TokenType::Equal));
+    if struct_lit_like { None } else { Some(i) }
 }
 
 // ── LINQ query ────────────────────────────────────────────────────────────────

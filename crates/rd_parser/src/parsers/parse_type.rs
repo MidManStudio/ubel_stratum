@@ -149,7 +149,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.cursor.advance();
                 let inner = if self.cursor.eat(&TokenType::Less) {
                     let t = self.parse_type_inner()?;
-                    if let Err(e) = self.cursor.expect(&TokenType::Greater) {
+                    if let Err(e) = self.cursor.expect_generic_close() {
                         self.emit(crate::error::from_cursor(e, ParseContext::TypeExpr));
                         return None;
                     }
@@ -306,7 +306,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         if !self.cursor.is_at(&TokenType::Less) { return None; }
         self.cursor.advance();
         let t = self.parse_type_inner()?;
-        if let Err(e) = self.cursor.expect(&TokenType::Greater) {
+        if let Err(e) = self.cursor.expect_generic_close() {
             self.emit(crate::error::from_cursor(e, ParseContext::TypeExpr));
         }
         Some(t)
@@ -319,7 +319,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         let k = self.parse_type_inner()?;
         self.cursor.eat(&TokenType::Comma); // comma between K and V is required here
         let v = self.parse_type_inner()?;
-        if let Err(e) = self.cursor.expect(&TokenType::Greater) {
+        if let Err(e) = self.cursor.expect_generic_close() {
             self.emit(crate::error::from_cursor(e, ParseContext::TypeExpr));
         }
         Some((k, v))
@@ -358,14 +358,14 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         let mut ok = true;
 
         loop {
-            if self.cursor.is_at(&TokenType::Greater) || self.cursor.is_eof() { break; }
+            if self.cursor.at_generic_close() || self.cursor.is_eof() { break; }
             if let Some(t) = self.parse_type_inner() {
                 args.push(t);
             } else {
                 ok = false; break;
             }
             self.eat_sep();
-            if self.cursor.is_at(&TokenType::Greater) { break; }
+            if self.cursor.at_generic_close() { break; }
         }
 
         // Confirm close `>`. NOTE: earlier revisions of this function also
@@ -382,8 +382,8 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         // this from expression/Pratt context, where a real ambiguity could
         // exist (see PARSER_RULES.md §5.1 — that disambiguation isn't
         // wired through this function).
-        if ok && self.cursor.is_at(&TokenType::Greater) {
-            self.cursor.advance(); // consume `>`
+        if ok && self.cursor.eat_generic_close() {
+            // consumed one `>` (half of a `>>` when nested)
             self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,
                 crate::parser::MemoEntry::Hit { end_pos: self.cursor.position() });
             self.arena.alloc_slice_clone(&args)

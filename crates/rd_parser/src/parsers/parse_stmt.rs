@@ -374,7 +374,7 @@ fn parse_allocator_kind<'ast, 'tok>(
             // `pool<Type>(count)` — consume optional `<Type>`
             if p.cursor.eat(&TokenType::Less) {
                 let ty = p.parse_type_expr();
-                p.cursor.eat(&TokenType::Greater);
+                p.cursor.eat_generic_close();
                 let open_span = p.span();
                 if let Err(e) = p.cursor.expect(&TokenType::LeftParen) {
                     p.emit(crate::error::from_cursor(e, ParseContext::ArenaBlock));

@@ -716,6 +716,36 @@ parsed, same as any other type mismatch.
 
 ---
 
+### 5.9 `>>` closing two generic argument lists, and lambda return types
+
+`List<List<int>>` failed to parse because the lexer tokenizes `>>` as one
+`RightShift` token: it cannot know it is inside a type. The fix is in the
+cursor, not the lexer, since only the parser knows whether a `>` position
+is a type position. `Cursor` gained `at_generic_close`, `eat_generic_close`
+and `expect_generic_close`, plus one private field, `split_at`. A
+`Greater` closes one list as before. A `RightShift` closes two: the first
+call marks the token half consumed and leaves the cursor on it, the
+second call advances past it. `restore` clears the mark, so a speculative
+parse that abandons a half-consumed `>>` cannot leak state into its retry.
+Every type-position closer (`try_parse_generic_args`, the single and
+key/value collection forms, `Task<T>`, `parse_generic_params`, the
+`pool<T>` allocator form) goes through it. Expression-position `>>` is a
+real right shift and is never split, because nothing in expression parsing
+calls the generic-close helpers.
+
+Lambdas take no return type annotation, and `fn(x: int) string { ... }`
+used to parse `string` as the entire expression body, leaving the block
+dangling and surfacing as unrelated name errors. `parse_lambda` now does a
+pure lookahead after the closing `)` (`lambda_return_type_ahead`): a type
+name (an identifier or a collection keyword), optional dotted path and
+generic arguments, optional `?`/`!`, then `{`. If that shape is found it
+consumes the type tokens and emits one `PARSE-004` on the annotation, then
+parses the block normally so nothing cascades. A bare `Ident {` is
+ambiguous with a struct literal body (`fn(a: int) Point { x = a }`), so an
+identifier-led type is only taken as an annotation when the token after
+`{` is not `}` and is not `Ident =`.
+
+
 ## 6. LINQ Query Parsing — Removed
 
 There used to be a dedicated LINQ sub-parser here (`from x in expr where

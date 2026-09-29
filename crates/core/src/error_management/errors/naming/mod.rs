@@ -47,6 +47,13 @@ pub enum NameError {
         name: String,
         span: Span,
     },
+
+    /// A global `const` was the target of an assignment or compound
+    /// assignment. Constants are initialized once and never reassigned.
+    AssignToConst {
+        name: String,
+        span: Span,
+    },
 }
 
 impl NameError {
@@ -58,6 +65,7 @@ impl NameError {
             NameError::UnresolvedPathSegment  { span, .. } => *span,
             NameError::SelfOutsideMethod      { span }     => *span,
             NameError::UnresolvedTypeParam    { span, .. } => *span,
+            NameError::AssignToConst          { span, .. } => *span,
         }
     }
 
@@ -83,6 +91,9 @@ impl NameError {
 
             NameError::UnresolvedTypeParam { name, .. } =>
                 format!("unknown type parameter `{}`", name),
+
+            NameError::AssignToConst { name, .. } =>
+                format!("cannot assign to constant `{}`", name),
         }
     }
 
@@ -93,6 +104,9 @@ impl NameError {
 
             NameError::SelfOutsideMethod { .. } =>
                 Some("move this code into a method that takes `self` as a parameter".to_string()),
+
+            NameError::AssignToConst { .. } =>
+                Some("constants are initialized once; use a `let` binding if the value needs to change".to_string()),
 
             _ => None,
         }
@@ -117,6 +131,7 @@ impl crate::error_management::render::Diagnosable for NameError {
             NameError::UnresolvedPathSegment { .. }  => "NAME-004",
             NameError::SelfOutsideMethod { .. }      => "NAME-005",
             NameError::UnresolvedTypeParam { .. }    => "NAME-006",
+            NameError::AssignToConst { .. }          => "NAME-007",
         }
     }
     fn span(&self) -> Span { self.span() }

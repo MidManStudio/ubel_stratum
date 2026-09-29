@@ -1,0 +1,16 @@
+// tests/fixtures/err_lambda_return_type_generic.ubl
+// The same diagnostic for a generic return type, with a nested `>>`
+// inside it, in a lambda passed alongside other arguments.
+// Expected: parse FAIL (IllegalInContext, PARSE-004).
+
+fn build(n: int, f: fn(int) List<List<int>>) int {
+    return f(n).len()
+}
+
+fn main() void {
+    let n = build(2, fn(k: int) List<List<int>> {
+        let out: List<List<int>> = List.new()
+        return out
+    })
+    println($"{n}")
+}

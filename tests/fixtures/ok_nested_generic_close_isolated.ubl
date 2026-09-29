@@ -1,0 +1,23 @@
+// tests/fixtures/ok_nested_generic_close_isolated.ubl
+// `>>` closing two nested generic argument lists is one lexer token, so
+// `List<List<int>>` failed to parse. The parser now splits the token: the
+// inner list consumes the first `>`, the outer one the second. Covers two
+// and three levels, a dictionary value position, and a user generic.
+// Expected: sema OK, interpret OK.
+
+struct Box<T> {
+    v: T,
+}
+
+fn main() void {
+    let a: List<List<int>> = List.new()
+    let b: List<List<List<int>>> = List.new()
+    let c: Dictionary<string, List<int>> = Dictionary.new()
+    let d: Box<Box<int>> = Box { v = Box { v = 7 } }
+
+    let row: List<int> = List.new()
+    row.push(1)
+    a.push(row)
+    assert(a.len() == 1, "nested list holds the pushed row")
+    assert(d.v.v == 7, "nested user generic reads through both levels")
+}

@@ -1,0 +1,39 @@
+// tests/fixtures/ok_unique_user_method_calls_combined.ubl
+// Repeated user-method calls on a Unique local mixed with impl and
+// extend methods, a while loop, interpolation, and a genuine final move
+// into a function, which is still a legal last use.
+// Expected: sema OK, interpret OK.
+
+struct Account {
+    balance: int,
+}
+
+impl Account {
+    fn deposit(self, amount: int) void {
+        self.balance = self.balance + amount
+    }
+}
+
+extend Account {
+    fn total(self) int {
+        return self.balance
+    }
+}
+
+@tier(low)
+fn settle(acct: Unique<Account>) int {
+    return acct.total()
+}
+
+@tier(low)
+fn main() void {
+    let a = Unique.new(Account { balance = 0 })
+    let i = 0
+    while (i < 4) {
+        a.deposit(25)
+        i = i + 1
+    }
+    println($"balance before settle: {a.total()}")
+    let final_total = settle(a)
+    assert(final_total == 100, "four deposits, then the value moves out")
+}

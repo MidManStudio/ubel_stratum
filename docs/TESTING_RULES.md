@@ -22,7 +22,11 @@ It is not a substitute for a real fixture, for two reasons:
 `tests/fixtures/`, run through the real pipeline (`pipeline.rs`/
 `diagnose.rs`), in addition to (not instead of) any hand-built unit
 tests. Hand-built tests are for fast iteration while building; fixtures
-are the real proof.
+are the real proof. A fixture only records accepted or rejected, so a
+bug that changes how many diagnostics a program produces (one typo
+reported twice, say) is covered by
+`crates/rd_parser/tests/diagnostic_counts.rs` instead, which runs source
+text through lex, parse and sema and asserts exact counts.
 
 ## 2. Mix features together, not just in isolation
 

@@ -681,6 +681,19 @@ fn resolve_expr<'ast>(&mut self, expr: &Expr<'ast>) {
         ExprKind::Assign { target, value, .. } => {
             self.resolve_expr(target);
             self.resolve_expr(value);
+            // A global `const` is never a valid assignment target. Checked
+            // against the scope-resolved definition, not the bare name, so a
+            // local `let` that shadows a constant's name stays assignable.
+            if let ExprKind::Ident(name) = &target.kind {
+                if let Some(id) = self.scopes.resolve(name) {
+                    if matches!(self.ctx.symbols.lookup(id).kind, DefKind::Const) {
+                        self.errors.add_name_error(NameError::AssignToConst {
+                            name: name.to_string(),
+                            span: target.span,
+                        });
+                    }
+                }
+            }
         }
         ExprKind::Pipe { left, right } => {
             self.resolve_expr(left);

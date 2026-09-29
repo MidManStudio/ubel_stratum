@@ -1,0 +1,13 @@
+// tests/fixtures/err_dict_annotation_mismatch.ubl
+// Now that Dictionary arguments are unified, two dictionaries whose
+// value types genuinely differ are still rejected.
+// Expected: sema FAIL (TypeMismatch, TYPE-101).
+
+fn takes(d: Dictionary<string, int>) void {
+    println("x")
+}
+
+fn main() void {
+    let names: Dictionary<string, string> = Dictionary.new()
+    takes(names)
+}

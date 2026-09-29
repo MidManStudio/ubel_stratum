@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use crate::ast::arena::AstArena;
 use crate::ast::common::TierAnnotation;
-use crate::ast::declarations::{FunctionDecl, MethodDecl, ParamKind, StructMember};
+use crate::ast::declarations::{ConstDecl, FunctionDecl, MethodDecl, ParamKind, StructMember};
 use crate::ast::expressions::Expr;
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::Block;
@@ -341,8 +341,63 @@ impl<'ast> Interpreter<'ast> {
         // fn/method's closure with a single snapshot taken now, after the
         // whole pre-declare pass has finished.
         let module_scope = self.env.snapshot();
-        for id in top_level_fns {
+        for id in top_level_fns.iter().copied() {
             self.functions[id].closure = module_scope.clone();
+        }
+
+        // Global `const` items. Sema type-checks and name-resolves them
+        // (`collect_const_sig`, `resolve_const`) but nothing here ever
+        // evaluated one, so reading a constant from any function body
+        // panicked with `undefined name`. Run after the closure backfill
+        // above so an initializer can call a top-level function, then
+        // backfill a second time so every function's snapshot also sees
+        // the constants. Sema accepts a constant that refers to one
+        // declared later in the file (top-level names are all declared
+        // up front), so evaluation retries constants whose initializer hit
+        // an undefined name until a whole pass makes no progress; that is
+        // also what reports a constant cycle, at startup rather than at
+        // sema. Initializers are expected to be pure, since one that
+        // deferred is evaluated again.
+        let mut pending: Vec<ConstDecl<'ast>> = program.items.iter().copied()
+            .filter_map(|item| match item {
+                Item::Const(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        if !pending.is_empty() {
+            let mut last_undefined = String::new();
+            while !pending.is_empty() {
+                let mut deferred: Vec<ConstDecl<'ast>> = Vec::with_capacity(pending.len());
+                for c in pending.iter().copied() {
+                    match expr::eval_expr(self, c.value) {
+                        Ok(v) => self.env.define(c.name, v),
+                        Err(Signal::Panic(msg)) if msg.starts_with("undefined name '") => {
+                            last_undefined = msg;
+                            deferred.push(c);
+                        }
+                        Err(Signal::Panic(msg)) => {
+                            return Err(format!("panic: {} (initializing constant `{}`)", msg, c.name));
+                        }
+                        Err(Signal::Fail(v)) => {
+                            return Err(format!("unhandled fail: {} (initializing constant `{}`)", v, c.name));
+                        }
+                        Err(_) => {
+                            return Err(format!("invalid control flow initializing constant `{}`", c.name));
+                        }
+                    }
+                }
+                if deferred.len() == pending.len() {
+                    return Err(format!(
+                        "panic: {} (initializing constant `{}`; the constants involved refer to each other or to a name that is never defined)",
+                        last_undefined, deferred[0].name
+                    ));
+                }
+                pending = deferred;
+            }
+            let module_scope = self.env.snapshot();
+            for id in top_level_fns.iter().copied() {
+                self.functions[id].closure = module_scope.clone();
+            }
         }
 
         let main_val = self.env.get("main").cloned()

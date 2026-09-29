@@ -1,0 +1,29 @@
+// tests/fixtures/ok_unique_user_method_calls_isolated.ubl
+// A call to a user-declared method is not a move of its receiver. Before
+// this, move_facts.rs only exempted builtin instance method names, so a
+// second use of a `let`-bound Unique<UserStruct> local after one method
+// call on it reported MOVE-001.
+// Expected: sema OK, interpret OK.
+
+struct Counter {
+    value: int,
+}
+
+extend Counter {
+    fn bump(self) void {
+        self.value = self.value + 1
+    }
+
+    fn read(self) int {
+        return self.value
+    }
+}
+
+@tier(low)
+fn main() void {
+    let c = Unique.new(Counter { value = 0 })
+    c.bump()
+    c.bump()
+    c.bump()
+    assert(c.read() == 3, "three calls then a read, no move in between")
+}

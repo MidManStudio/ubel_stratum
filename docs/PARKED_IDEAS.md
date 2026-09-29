@@ -144,12 +144,15 @@ session, never fixture-tested, and not wired to anything functional:
   already peeled all three for every receiver). 4 new fixtures
   (`ok_struct_ownership_dispatch_isolated`/`_combined`,
   `err_struct_ownership_dispatch_unknown_method`/`_arg_mismatch`).
-- Still open, found while fixing the above: `move_facts.rs`'s
+- Found while fixing the above, since **fixed**: `move_facts.rs`'s
   by-name exemption (a builtin instance method call does not count as
-  a move of its receiver) has not been extended to user-declared
-  methods, so a second bare use of a `let`-bound `Unique<UserStruct>`
-  local after a method call on it reports `UseAfterMove`. Needs the
-  set of user-declared method names threaded into `move_facts::collect`.
+  a move of its receiver) now also covers every user-declared instance
+  method name in the program (`user_method_names`, threaded in through
+  `collect_with` and `move_check::check_function_with`). Still by name,
+  not by type, so a same-named consuming method on an unrelated type
+  under-reports; it never rejects a safe program. 4 fixtures
+  (`ok_unique_user_method_calls_isolated`/`_combined`,
+  `err_unique_user_method_after_move`/`_after_move_into_call`).
 - A related, likely-same-root-cause bug, found alongside this — now
   fixed, kept here for the record: a value
   that traces back to `self` (directly, or via `let x = self.field`)
@@ -440,3 +443,59 @@ scoped or prioritized. Range-based `for` is the standout "probably
 worth doing first" candidate purely because the hard part (the
 expression itself) is already done; the other three are each their own
 real design-and-build effort.
+
+## Findings from a second external test session (verified by execution)
+
+A pasted transcript of another assistant's exploratory testing was run
+against the real compiler, scenario by scenario, rather than taken on
+faith. Most of it matched what was already known (generics, nested
+patterns, tier checks, precedence, short-circuiting all passed). What
+it actually turned up:
+
+**Fixed in the delivery that recorded this section:**
+
+- Global `const` items type-checked but were never evaluated by the
+  interpreter, so reading one panicked with `undefined name`.
+  `run_program` now evaluates them before `main`, retrying constants
+  whose initializer refers to one declared later in the file, and
+  reports a constant cycle at startup. Assigning to one is now
+  `NAME-007` (`AssignToConst`); a local that shadows a constant's name
+  stays assignable.
+- `List<List<int>>` did not parse: `>>` is one lexer token. The cursor
+  now splits it (`eat_generic_close`), see `PARSER_RULES.md` §5.9.
+- `Dictionary<K, V>` was missing from `structurally_compatible`, so any
+  annotated dictionary failed with a `TypeMismatch` against
+  `Dictionary<?T, ?T>`. Same recurring bug class as `Set`/`Queue`/
+  `Stack` before it.
+- A lambda return type annotation (`fn(x: int) string { ... }`) parsed
+  `string` as the whole body and reported two unrelated `NAME-001`
+  errors. Lambdas have no return type syntax by design; the parser now
+  reports one `PARSE-004` on the annotation itself.
+- An unknown method on a struct reported both `TYPE-103` and
+  `TYPE-104`. The `Call` arm now tells the callee's `Field` node it is
+  a callee (`callee_field_pending`), so only `TYPE-104` fires. The
+  earlier note in `GENERICS_RULES.md` calling this a known wart is
+  updated accordingly.
+
+**Still open, confirmed by execution:**
+
+- A bare unsuffixed literal into a sized-integer field or `let`
+  (`P { n = 10 }` with `n: u32`) is still `TYPE-101`. Needs a design
+  decision (context-driven literal typing versus suffix-only).
+- `type` aliases are not transparent: with `type Score = int`,
+  `let a: Score = 5` is `TYPE-101`, and `Score` and `int` do not unify
+  in either direction. `type NodeId = u64` only worked in the
+  transcript because the value went through `as NodeId`.
+- An unknown method called on an `enum` value passes sema and panics at
+  runtime (`no method 'shade' on enum`); `NoSuchMethod` is only
+  reported for struct receivers.
+- Calling a function-typed struct field (`c.cb(4)` where `cb: fn(int)
+  int`) is reported as `NoSuchMethod`, because the `Call` arm only
+  consults `struct_methods` for a `Field` callee.
+- `pub` and `@tier(...)` written on a `const` or `type` item parse and
+  are silently dropped: `ConstDecl` and `TypeAlias` carry no
+  visibility or tier, and name resolution declares both `Private`.
+- A `TypeMismatch` raised while unifying the arguments of two generic
+  types carries `Span::at(0)`, so the diagnostic points at line 0.
+- Struct field default values (`n: u32 = 5u32`) do not parse, and there
+  is no mutable global item; a top-level `let` is a parse error.

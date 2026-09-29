@@ -1,0 +1,49 @@
+// tests/fixtures/ok_global_const_combined.ubl
+// Constants alongside already-shipped features: a constant declared
+// after its user, a constant built from another constant and from a
+// top-level function call, a lambda and an extend method reading a
+// constant, and a local `let` that shadows a constant's name
+// (assignable, since only the global is a constant).
+// Expected: sema OK, interpret OK.
+
+const DOUBLED: int = BASE * 2
+const BASE: int = 21
+const CHECKED: int = clamp(DOUBLED, 0, LIMIT)
+const LIMIT: int = 100
+
+fn clamp(v: int, lo: int, hi: int) int {
+    if (v < lo) { return lo }
+    if (v > hi) { return hi }
+    return v
+}
+
+struct Meter {
+    reading: int,
+}
+
+extend Meter {
+    fn over_limit(self) bool {
+        return self.reading > LIMIT
+    }
+}
+
+fn apply(v: int, f: fn(int) int) int {
+    return f(v)
+}
+
+fn main() void {
+    assert(DOUBLED == 42, "constant declared before the one it reads")
+    assert(CHECKED == 42, "constant initialized from a function call")
+
+    let m = Meter { reading = 150 }
+    assert(m.over_limit(), "extend method reads a constant")
+
+    let scaled = apply(3, fn(x: int) x * BASE)
+    assert(scaled == 63, "lambda reads a constant")
+
+    let LIMIT = 1
+    LIMIT = 2
+    assert(LIMIT == 2, "a local that shadows a constant stays assignable")
+
+    println($"doubled {DOUBLED}, checked {CHECKED}, scaled {scaled}")
+}

@@ -729,9 +729,9 @@ receiver kind underneath, so `Unique<List<int>>.push(5)` is legal, and
 user-defined `extend`/`impl` methods dispatch through the wrappers via
 `type_infer.rs`'s struct-instance-method branch. Move enforcement is
 built (`move_facts.rs`/`move_check.rs`, scoped to `let`-bound `Unique<T>`
-locals in `@tier(low)` functions); one known gap remains, a user-declared
-method call still counts as a move of its receiver unless its name
-coincides with a builtin instance method name.
+locals in `@tier(low)` functions); a call to a builtin instance method
+or to any user-declared instance method does not count as a move of its
+receiver (by name, see `move_facts.rs`).
 
 ✅ **Implemented — construction syntax:** `Unique.new(value)`,
 `Shared.new(value)`, `SyncShared.new(value)` — the same `Namespace.new()`

@@ -22,7 +22,14 @@ pub struct Cursor<'tok> {
     tokens: &'tok [Token],
     /// Index of the *next* token to be consumed.
     pos:    usize,
+    /// Position of a `>>` token whose first `>` has already been consumed
+    /// as the close of an inner generic argument list, or `NO_SPLIT`. See
+    /// `eat_generic_close`.
+    split_at: usize,
 }
+
+/// `Cursor::split_at` value meaning no `>>` token is half consumed.
+const NO_SPLIT: usize = usize::MAX;
 
 impl<'tok> Cursor<'tok> {
     /// Create a cursor at the beginning of `tokens`.
@@ -32,7 +39,7 @@ impl<'tok> Cursor<'tok> {
     /// Panics in debug builds if `tokens` is empty (no `Eof` sentinel).
     pub fn new(tokens: &'tok [Token]) -> Self {
         debug_assert!(!tokens.is_empty(), "token slice must contain at least an Eof sentinel");
-        Cursor { tokens, pos: 0 }
+        Cursor { tokens, pos: 0, split_at: NO_SPLIT }
     }
 
     // ── Peeking (non-mutating) ────────────────────────────────────────────────
@@ -162,6 +169,58 @@ impl<'tok> Cursor<'tok> {
     #[inline]
     pub fn restore(&mut self, pos: usize) {
         self.pos = pos.min(self.tokens.len() - 1);
+        // A restore can land before a `>>` that was half consumed on the
+        // abandoned attempt; that half consumption must not leak into the
+        // re-parse.
+        self.split_at = NO_SPLIT;
+    }
+
+    // ── Generic-closing `>` (splits `>>`) ─────────────────────────────────────
+
+    /// Is the current token a `>` that can close a generic argument list?
+    ///
+    /// True for `Greater`, and for `RightShift` (`>>`), which closes two
+    /// nested lists at once (`List<List<int>>`) and is tokenized as one
+    /// token because the lexer cannot know it is in a type position.
+    #[inline]
+    pub fn at_generic_close(&self) -> bool {
+        matches!(self.peek(), TokenType::Greater | TokenType::RightShift)
+    }
+
+    /// Consume one `>` toward closing a generic argument list.
+    ///
+    /// A `Greater` token is consumed whole. A `RightShift` token is split:
+    /// the first call marks its first `>` consumed and leaves the cursor on
+    /// the token, the second call consumes the token. Returns `false`, and
+    /// consumes nothing, when the current token is neither.
+    #[inline]
+    pub fn eat_generic_close(&mut self) -> bool {
+        match self.peek() {
+            TokenType::Greater => {
+                self.advance();
+                true
+            }
+            TokenType::RightShift => {
+                if self.split_at == self.pos {
+                    self.split_at = NO_SPLIT;
+                    self.advance();
+                } else {
+                    self.split_at = self.pos;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `eat_generic_close`, or the same `CursorError` `expect(&Greater)`
+    /// would produce.
+    pub fn expect_generic_close(&mut self) -> Result<(), CursorError> {
+        if self.eat_generic_close() {
+            Ok(())
+        } else {
+            self.expect(&TokenType::Greater).map(|_| ())
+        }
     }
 
     // ── Error recovery (sync / skip) ──────────────────────────────────────────

@@ -1,0 +1,28 @@
+// tests/fixtures/ok_global_const_isolated.ubl
+// Global `const` items were name-resolved and type-checked by sema but
+// never evaluated by the interpreter, so reading one from any function
+// body panicked with `undefined name`. Covers the plain read paths:
+// a function body, a struct literal, a loop condition, interpolation.
+// Expected: sema OK, interpret OK.
+
+const MAX_RETRIES: int = 5
+const GREETING: string = "hello"
+const VERBOSE: bool = true
+
+struct Config {
+    retries: int,
+}
+
+fn main() void {
+    let cfg = Config { retries = MAX_RETRIES }
+    assert(cfg.retries == 5, "constant readable in a struct literal")
+
+    let tries = 0
+    while (tries < MAX_RETRIES) {
+        tries = tries + 1
+    }
+    assert(tries == 5, "constant readable in a loop condition")
+
+    assert(VERBOSE, "bool constant readable")
+    println($"{GREETING} after {tries} tries")
+}

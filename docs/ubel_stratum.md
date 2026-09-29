@@ -573,6 +573,13 @@ type checking (TYPE-1xx range).
   function incorrectly triggered that error. Fixed by giving `Discard`
   its own arm ahead of the `self`-family catch-all.
 
+### `sema/name_resolution.rs` (assignment to a constant)
+
+- Nothing stopped `LIMIT = 6` on a global `const`. Added
+  `NameError::AssignToConst` (`NAME-007`). Checked against the
+  scope-resolved definition's kind rather than the bare name, so a local
+  `let` that shadows a constant's name stays assignable.
+
 ### `sema/type_infer.rs`
 
 - Three separate signature-collection call sites used
@@ -598,6 +605,14 @@ type checking (TYPE-1xx range).
   `SemaType::Unknown` as orderable. "Don't know yet" isn't "known to
   be wrong", and no other check in this file treats `Unknown` as a
   positive finding of its own either.
+- `Dictionary<K, V>` was missing from `structurally_compatible`, so an
+  annotated dictionary failed against `Dictionary<?T, ?T>`. Key and
+  value arguments are now unified. Same bug class as `Set`/`Queue`/
+  `Stack`.
+- An unknown method on a struct reported both `NoSuchField` and
+  `NoSuchMethod`. The `Call` arm sets `callee_field_pending` before
+  pre-inferring a `Field` callee and the `Field` arm takes it first
+  thing, so the flag applies to that node only.
 - (MEMORY_MODEL.md §9, Open Decision #5, user-struct half) The
   struct-instance-method branch of the call arm only matched a bare
   `SemaType::Named` receiver, so `Unique<T>`/`Shared<T>`/`SyncShared<T>`
@@ -632,6 +647,15 @@ type checking (TYPE-1xx range).
     deref. Fixed with `*field == "clone"`.
 
 ### `interpreter/eval/mod.rs`
+
+- Global `const` items were name-resolved and type-checked but never
+  evaluated, so any read from a function body panicked with `undefined
+  name`. `run_program` now evaluates them after the first closure
+  backfill, so an initializer can call a top-level function, retrying
+  constants that hit an undefined name until a pass makes no progress
+  (sema accepts a constant that refers to one declared later in the
+  file), then backfills every function's closure a second time so all of
+  them see the constants. A constant cycle is reported at startup.
 
 - `register_fn` and `register_method` built their parameter name list
   with `filter_map`, dropping `Discard` slots the same way the
@@ -816,3 +840,18 @@ after all four phases landed), and the public pages
 which had drifted behind the outlives, `extend`/`impl` dispatch, and
 sized-integer work. Same discipline again: checked every line this
 delivery actually wrote or rewrote, not a sweep of pre-existing content.
+
+An eighth delivery (the queue from the second external test session:
+global `const` evaluation and `NAME-007`, the move-check exemption for
+user-declared methods, nested generic `>>`, the lambda return type
+diagnostic, `Dictionary` unification, and the duplicate `TYPE-103`/
+`TYPE-104`) touched `sema/name_resolution.rs`, `sema/type_infer.rs`,
+`sema/move_facts.rs`, `sema/move_check.rs`, `interpreter/eval/mod.rs`,
+the parser's `cursor.rs`, `parse_type.rs`, `parse_expr.rs` and
+`parse_stmt.rs`, plus `PARSER_RULES.md` §5.9, `DIAGNOSTICS_RULES.md`,
+`GENERICS_RULES.md`, `TESTING_RULES.md`, `PARKED_IDEAS.md`,
+`MEMORY_MODEL.md`, `ubel.ebnf`, both crate docs, and the public
+`project-status.md`. It also corrected two statements the previous
+delivery had written (the `move_facts.rs` module doc and a
+`MEMORY_MODEL.md` sentence) that this delivery made stale. Same
+discipline: checked every line this delivery wrote or rewrote.

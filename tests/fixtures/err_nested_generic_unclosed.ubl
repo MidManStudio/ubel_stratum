@@ -1,0 +1,9 @@
+// tests/fixtures/err_nested_generic_unclosed.ubl
+// Splitting `>>` must not make an unbalanced generic argument list
+// parse: `List<List<int>` still lacks its outer `>`.
+// Expected: parse FAIL.
+
+fn main() void {
+    let a: List<List<int> = List.new()
+    println("unreachable")
+}

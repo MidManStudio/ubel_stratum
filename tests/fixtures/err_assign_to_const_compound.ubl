@@ -1,0 +1,22 @@
+// tests/fixtures/err_assign_to_const_compound.ubl
+// Compound assignment is rejected the same way, including when the
+// constant is reached from inside a method body.
+// Expected: sema FAIL (NAME-007, AssignToConst).
+
+const TOTAL: int = 10
+
+struct Tally {
+    n: int,
+}
+
+extend Tally {
+    fn bump(self) void {
+        self.n = self.n + 1
+        TOTAL += 1
+    }
+}
+
+fn main() void {
+    let t = Tally { n = 0 }
+    t.bump()
+}

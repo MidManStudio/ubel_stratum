@@ -31,6 +31,23 @@ methods, parameters, structs, enums, traits, impls.
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
 `tests/fixtures/ok_callback_registry_combined.ubl`.
 
+### `cursor.rs`, `parsers/parse_type.rs`
+
+**What it does:** `cursor.rs` is the token cursor every parser shares;
+`parse_type.rs` parses type expressions, generic arguments and generic
+declaration parameters.
+
+**Decisions:**
+- `Cursor` splits a `>>` token to close two nested generic argument
+  lists (`at_generic_close`, `eat_generic_close`, `expect_generic_close`,
+  private `split_at`). The lexer cannot make this call, only the parser
+  knows a position is a type position. See `PARSER_RULES.md` §5.9.
+
+**Tests:** `crates/rd_parser/tests/diagnostic_counts.rs`,
+`tests/fixtures/ok_nested_generic_close_isolated.ubl`,
+`tests/fixtures/ok_nested_generic_close_combined.ubl`,
+`tests/fixtures/err_nested_generic_unclosed.ubl`.
+
 ### `parser.rs`, `parsers/parse_expr.rs`, `parsers/parse_stmt.rs`
 
 **What it does:** `parser.rs` is the `Parser` struct and its shared
@@ -108,3 +125,19 @@ expression parser; `parse_stmt.rs` is statement parsing (`if`/`while`/
   match a close for (`(...)`, call args, `[...]`), where the ambiguity
   cannot occur regardless. See `PARSER_RULES.md` §5.8 for the full
   writeup.
+
+### `cursor.rs`, `parsers/parse_type.rs`, `parsers/parse_expr.rs`
+
+- `List<List<int>>` did not parse. `>>` is one `RightShift` token and
+  every generic closer expected a plain `Greater`. Fixed in the cursor by
+  splitting the token, not in the lexer, which cannot know it is in a
+  type position. The half-consumed mark is cleared by `restore` so a
+  speculative parse cannot leak it into a retry.
+- A lambda return type annotation (`fn(x: int) string { ... }`) parsed
+  the type name as the whole body and reported two unrelated name errors.
+  `parse_lambda` now looks ahead for `Type {`, reports one `PARSE-004` on
+  the annotation, and parses the block normally. A `Point { x = a }`
+  struct literal body is not mistaken for an annotation. The first
+  version only recognized identifier-led types and missed `List<int>`,
+  because collection types are dedicated keyword tokens, not identifiers;
+  found by running the probe rather than by reading the code.

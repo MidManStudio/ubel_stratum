@@ -355,6 +355,8 @@ PrimaryExpr   ::= Literal
                 | "(" Expr ")"
 
 (* ── Lambdas ── *)
+(* A lambda has no return type: the result type is inferred from the body.   *)
+(* `fn(x: int) string { ... }` is rejected with PARSE-004 on the annotation. *)
 LambdaExpr    ::= "fn" "(" ParamList? ")" Block
                 | "fn" "(" ParamList? ")" Expr
                 | "fn" Ident Expr    (* single-param shorthand *)

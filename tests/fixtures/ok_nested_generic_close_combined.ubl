@@ -1,0 +1,45 @@
+// tests/fixtures/ok_nested_generic_close_combined.ubl
+// Nested generic annotations in the other places a type can appear: a
+// struct field, a function parameter, a function return type, and a
+// lambda parameter, next to `>` closers that are not doubled.
+// Expected: sema OK, interpret OK.
+
+struct Grid {
+    rows: List<List<int>>,
+}
+
+fn total(rows: List<List<int>>) int {
+    let sum = 0
+    let i = 0
+    while (i < rows.len()) {
+        let row = rows[i]
+        let j = 0
+        while (j < row.len()) {
+            sum = sum + row[j]
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return sum
+}
+
+fn make() List<List<int>> {
+    let out: List<List<int>> = List.new()
+    let r: List<int> = List.new()
+    r.push(2)
+    r.push(3)
+    out.push(r)
+    return out
+}
+
+fn main() void {
+    let g = Grid { rows = make() }
+    assert(total(g.rows) == 5, "field, parameter and return type all use a nested generic")
+
+    let sum_rows = fn(rows: List<List<int>>) total(rows)
+    assert(sum_rows(make()) == 5, "lambda parameter uses a nested generic")
+
+    let plain: List<int> = List.new()
+    plain.push(1)
+    println($"total {total(g.rows)}, plain {plain.len()}")
+}

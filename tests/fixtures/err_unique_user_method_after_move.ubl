@@ -1,0 +1,24 @@
+// tests/fixtures/err_unique_user_method_after_move.ubl
+// Exempting user-declared method calls from counting as a move must not
+// hide a genuine move: the method call in the middle is fine, but
+// `let b = a` consumes `a` and the second bare use after it is still a
+// use after move.
+// Expected: sema FAIL (UseAfterMove, MOVE-001).
+
+struct Counter {
+    value: int,
+}
+
+extend Counter {
+    fn read(self) int {
+        return self.value
+    }
+}
+
+@tier(low)
+fn main() void {
+    let a = Unique.new(Counter { value = 1 })
+    let n = a.read()
+    let b = a
+    let c = a
+}

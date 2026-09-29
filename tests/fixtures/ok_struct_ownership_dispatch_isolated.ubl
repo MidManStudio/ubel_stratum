@@ -33,14 +33,13 @@ extend Counter {
 
 @tier(low)
 fn main() void {
-    // Unique<T> is move-tracked for `let`-bound locals (move_facts.rs);
-    // a bare use of a tracked local after a method call still correctly
-    // flags UseAfterMove for a user-struct receiver today, unlike the
-    // six builtin kinds move_facts.rs already exempts by name -- a
-    // known, separate, pre-existing scope limit this dispatch fix does
-    // not touch. One call proves dispatch without tripping it.
+    // Unique<T> locals are move-tracked, but a call to a user-declared
+    // method does not count as a move of its receiver, so several calls
+    // in a row are fine.
     let u = Unique.new(Counter.zero())
-    assert(u.increment_and_get() == 1, "instance method dispatches through Unique<Counter>")
+    u.increment()
+    assert(u.increment_and_get() == 2, "instance method dispatches through Unique<Counter>")
+    assert(u.get() == 2, "and the receiver is still usable afterwards")
 
     let s = Shared.new(Counter.zero())
     s.increment()

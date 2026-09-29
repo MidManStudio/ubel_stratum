@@ -70,11 +70,12 @@ pub struct Violation {
 /// "methods not yet walked" scope limit `borrow_check::check_program`
 /// already has — `cfg::build` only accepts `&FunctionDecl` today.
 pub fn check_program<'ast>(program: &Program<'ast>) -> Vec<Violation> {
+    let user_methods = move_facts::user_method_names(program);
     let mut violations = Vec::new();
     for item in program.items {
         if let Item::Function(f) = item {
             if f.tier == TierAnnotation::Low {
-                violations.extend(check_function(f));
+                violations.extend(check_function_with(f, &user_methods));
             }
         }
     }
@@ -82,6 +83,15 @@ pub fn check_program<'ast>(program: &Program<'ast>) -> Vec<Violation> {
 }
 
 pub fn check_function<'ast>(decl: &'ast FunctionDecl<'ast>) -> Vec<Violation> {
+    check_function_with(decl, &HashSet::new())
+}
+
+/// `check_function` with the program's user-declared instance-method
+/// names, so a call to one is not treated as a move of its receiver.
+pub fn check_function_with<'ast>(
+    decl:         &'ast FunctionDecl<'ast>,
+    user_methods: &HashSet<&'ast str>,
+) -> Vec<Violation> {
     let graph = cfg::build(decl);
     // Needs the LOAN facts too -- specifically place_defined_at, which
     // is general-purpose (not loan-specific, see facts.rs's own doc
@@ -89,7 +99,7 @@ pub fn check_function<'ast>(decl: &'ast FunctionDecl<'ast>) -> Vec<Violation> {
     // value" -- precisely what should stop move-reachability from
     // propagating past a reinitialization.
     let loan_facts = facts::collect(&graph);
-    let mfacts = move_facts::collect(&graph);
+    let mfacts = move_facts::collect_with(&graph, user_methods);
     check(&graph, &loan_facts, &mfacts)
 }
 

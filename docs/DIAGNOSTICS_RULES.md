@@ -189,6 +189,7 @@ family in `TierError`.
 | NAME-004 | UnresolvedPathSegment |
 | NAME-005 | SelfOutsideMethod |
 | NAME-006 | UnresolvedTypeParam |
+| NAME-007 | AssignToConst |
 
 ### TYPE-1xx — ordinary type checking, `errors/types/mod.rs`
 
@@ -350,7 +351,7 @@ larger effort, not started.
 - `PARSE-001` `UnexpectedToken` — *Error*. "unexpected `found` while parsing context, expected: ...". Suggestion only when exactly one token was expected ("try replacing `found` with expected").
 - `PARSE-002` `UnexpectedEof` — *Error*. "unexpected end of file while parsing context, expected: ...". No suggestion.
 - `PARSE-003` `UnclosedDelimiter` — *Error*. "unclosed `delim` — found `x` instead" or "...reached end of file" if nothing closed it. Suggestion: add the matching closing delimiter.
-- `PARSE-004` `IllegalInContext` — *Error*. "`what` is not allowed here: reason". Suggestion passed through verbatim when the caller supplies one.
+- `PARSE-004` `IllegalInContext` — *Error*. "`what` is not allowed here: reason". Suggestion passed through verbatim when the caller supplies one. Also raised for a return type annotation on a lambda.
 - `PARSE-005` `Raw` — *Error*. Message passed through verbatim, no suggestion. Escape hatch for parser errors that don't fit the other four shapes.
 
 **NAME-0xx**
@@ -360,6 +361,7 @@ larger effort, not started.
 - `NAME-004` `UnresolvedPathSegment` — *Error*. "no member `seg` in `resolved-so-far` (while resolving `full-path`)". No suggestion.
 - `NAME-005` `SelfOutsideMethod` — *Error*. "`self` can only be used inside a method body". Suggestion: move the code into a method that takes `self`.
 - `NAME-006` `UnresolvedTypeParam` — *Error*. "unknown type parameter `x`". No suggestion.
+- `NAME-007` `AssignToConst` — *Error*. "cannot assign to constant `x`". Suggestion: constants are initialized once, use a `let` binding if the value needs to change. Fires for plain and compound assignment; a local `let` that shadows the constant's name stays assignable.
 
 **TYPE-1xx**
 - `TYPE-101` `TypeMismatch` — *Error*. "type mismatch: expected `x`, found `y`". No suggestion; carries a secondary span at where the expected type was established, when known.

@@ -83,12 +83,9 @@
 //!   symptom of that, not an independent format-spec bug — but not
 //!   chased to a proven common fix here.
 //! - Multi-element destructuring shares one Span; all get collection elem type.
-//! - A method name pre-inferred as the callee of an enclosing `Call`
-//!   (e.g. `Rectangle.doesNotExist()`) can surface both `NoSuchField`
-//!   (from the callee's own standalone inference) and `NoSuchMethod`
-//!   (from the Call arm's dedicated dispatch) for the same typo — a
-//!   real diagnostic duplication, not a false positive; see
-//!   GENERICS_RULES.md's own "Known gaps" for why it's left as-is.
+//! - An unknown method name called on an `enum` value is not reported by
+//!   sema (`NoSuchMethod` is only raised for struct receivers) and
+//!   panics at runtime instead; see PARKED_IDEAS.md.
 //! - A struct/enum method's *own* extra generic params (beyond whatever
 //!   generic params the enclosing struct/enum itself declares) aren't
 //!   substituted at call sites — GENERICS_RULES.md.
@@ -298,6 +295,15 @@ struct InferCtx<'a> {
     /// instantiation — with concrete substitution happening at each call
     /// site instead. `None` outside any method body.
     current_struct_type: Option<TypeId>,
+    /// Set by the `Call` arm just before it pre-infers a `Field` callee,
+    /// and consumed (reset) by the `Field` arm's first line. While set,
+    /// that one `Field` node does not report `NoSuchField` for a name
+    /// that is not a field: the `Call` arm's own dispatch reports the
+    /// call-shaped `NoSuchMethod` for the same name, so reporting both
+    /// gave two diagnostics for one typo. Nested field accesses inside
+    /// the callee's target (`a.b.c()`) still report normally, since the
+    /// flag is taken before the target is inferred.
+    callee_field_pending: bool,
     /// Populated once per struct by `collect_struct_sig`, mirrors
     /// `enum_variants`'s role. Field types may contain `Param`
     /// placeholders for a generic struct.
@@ -349,6 +355,7 @@ impl<'a> InferCtx<'a> {
             enum_variants:    HashMap::new(),
             current_generic_params: HashMap::new(),
             current_struct_type:    None,
+            callee_field_pending:   false,
             struct_fields:    HashMap::new(),
             struct_methods:   HashMap::new(),
             struct_derives:   HashMap::new(),
@@ -2249,7 +2256,9 @@ impl<'a> InferCtx<'a> {
             }
 
             ExprKind::Call { callee, args } => {
+                self.callee_field_pending = matches!(callee.kind, ExprKind::Field { .. });
                 let callee_ty = self.infer_expr(callee);
+                self.callee_field_pending = false;
                 for arg in args.iter() {
                     match &arg.kind {
                         ArgKind::Positional(e)       => { self.infer_expr(e); }
@@ -2727,6 +2736,9 @@ impl<'a> InferCtx<'a> {
             }
 
             ExprKind::Field { target, field } => {
+                // Taken before anything is inferred, so it only ever
+                // applies to this node; see `callee_field_pending`.
+                let is_call_callee = std::mem::take(&mut self.callee_field_pending);
                 // `EnumName.Variant` (fieldless/discriminant only — a
                 // payload-carrying variant referenced bare with no call
                 // isn't a valid value on its own; falls through to the
@@ -2802,7 +2814,7 @@ impl<'a> InferCtx<'a> {
                             // below, which already knows about `Clone`.
                             || (*field == "clone" && self.struct_derives.get(&def)
                                 .is_some_and(|d| d.contains("Clone")));
-                        if !is_method {
+                        if !is_method && !is_call_callee {
                             let on_type = self.display_type(receiver_ty);
                             self.errors.add_type_error(TypeError::NoSuchField {
                                 field: field.to_string(),
@@ -3639,6 +3651,26 @@ impl<'a> InferCtx<'a> {
             for (ia, ib) in aa.iter().zip(ab.iter()) {
                 self.unify(*ia, *ib, Span::at(0));
             }
+            return true;
+        }
+
+        // `Dictionary` carries two type arguments, so it cannot go through
+        // the single inner-pair extraction below, and it was missing from
+        // this function entirely: `let d: Dictionary<string, int> =
+        // Dictionary.new()` failed with a TypeMismatch against
+        // `Dictionary<?T, ?T>` because the key and value arguments were
+        // never unified. Same bug class as the `Set`/`Queue`/`Stack`
+        // additions just below.
+        let dict_pair: Option<(TypeId, TypeId, TypeId, TypeId)> = {
+            match (self.ctx.types.get(a), self.ctx.types.get(b)) {
+                (SemaType::Dictionary(ka, va), SemaType::Dictionary(kb, vb)) =>
+                    Some((*ka, *va, *kb, *vb)),
+                _ => None,
+            }
+        };
+        if let Some((ka, va, kb, vb)) = dict_pair {
+            self.unify(ka, kb, Span::at(0));
+            self.unify(va, vb, Span::at(0));
             return true;
         }
 
