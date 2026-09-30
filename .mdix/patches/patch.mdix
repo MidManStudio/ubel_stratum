@@ -1,28 +1,26 @@
 // Brought to u by MidManStudio
-// Housekeeping cleanup after the print-format-leftovers delivery.
+// Repair of the tooling-stubs-and-decisions delivery.
 //
-// The replacements.tar.gz pipeline only adds/replaces files, so the 5
-// stale root-level test files that got relocated into crates/core/tests/
-// during that delivery (basic_tokens_test.rs, comment_test.rs,
-// error_recovery_test.rs, string_interpolation_test.rs) plus the one
-// file confirmed to be a strict subset of basic_tokens_test.rs with
-// zero unique coverage (lexer/keywords_test.rs) were left behind at
-// their old root tests/ paths. Confirmed still present via a fresh
-// clone at the start of this session, exactly as the prior handover
-// flagged.
+// That bundle carried three manifests with the same basename: the root
+// Cargo.toml, crates/cli/Cargo.toml and crates/lsp/Cargo.toml. The
+// standing override in .mdix/replacements/replacements.mdix is keyed by the
+// bare name "Cargo.toml", and lib_replacements.py checks a bare-basename
+// override BEFORE its nested-path rule, so all three landed on the root
+// Cargo.toml and the last one written (the LSP package manifest) won.
+// Result on live master: the root manifest was a package manifest with no
+// [workspace] table, and crates/cli and crates/lsp had no manifest at all.
 //
-// Also fixes a real doc-staleness bug found during that same fresh-clone
-// verification: docs/PRINT_FORMAT_RULES.md section 8 ("Open questions
-// for the next slice") still listed fill character, sign, hash, zero
-// padding and numeric bases as an open question, even though section 4
-// of the SAME file, added by the SAME delivery, documents them as
-// shipped. It also still listed @derive(PartialEq) as "genuinely
-// deferred, not started", which was already wrong before this delivery
-// (PartialEq shipped Sep 3) and doubly wrong after it (Eq, Hash, Ord,
-// PartialOrd, Clone shipped the session before this one). Both stale
-// bullets removed by line range (verified against the exact current
-// content, lines 264-271); the remaining nested-string-literal bullet
-// is untouched and is the only genuinely still-open item in that list.
+// This patch does two things, both as unconditional update_files writes so
+// it is safe to re-run:
+//   1. Restores the three manifests byte-for-byte from the original bundle
+//      (recovered from git history, commit a5f22b1).
+//   2. Rewrites .mdix/replacements/replacements.mdix with an exact-path
+//      override for every crate manifest, so a future bundle that carries
+//      more than one Cargo.toml routes each one correctly (an exact
+//      relative-path key is checked before the bare-basename key).
+//
+// Nothing else from that bundle was affected; every other file was
+// compared against the archive and is identical on master.
 
 @CONFIG(
   version  -> "1.0.0",
@@ -30,13 +28,9 @@
 )
 
 @DATA(
-  delete_files::
-    { path = "tests/basic_tokens_test.rs" }
-    { path = "tests/comment_test.rs" }
-    { path = "tests/error_recovery_test.rs" }
-    { path = "tests/string_interpolation_test.rs" }
-    { path = "tests/lexer/keywords_test.rs" }
-
-  patch_files::
-    { path = "docs/PRINT_FORMAT_RULES.md", op = "delete_lines", from_line = 264, to_line = 271 }
+  update_files::
+    { path = "Cargo.toml", content = "[workspace]\n# crates/parser (lalrpop) is intentionally NOT a default member: lalrpop\n# codegen is too heavy for free GitHub runners and for local dev on older\n# hardware. Build/test it explicitly with:\n#   cargo build --manifest-path crates/parser/Cargo.toml\n# or via ubel-publish.yml's compile_parser: with-parser input.\n#\n# crates/wasm_playground is also deliberately NOT a member, for a\n# different reason: it cross-compiles to wasm32-unknown-unknown for the\n# browser playground and carries its own release profile tuned for .wasm\n# size (opt-level=\"s\") rather than this workspace's opt-level=3; profiles\n# are workspace-level, so a crate that needs different ones has to be its\n# own workspace root. Build it explicitly with:\n#   cargo build --manifest-path crates/wasm_playground/Cargo.toml \\\n#     --target wasm32-unknown-unknown --release\n# or via the site-deploy workflow, which does exactly that.\n#\n# crates/cli (the `ubel` binary) and crates/lsp (the `ubel-lsp` language\n# server) are members so `cargo test --workspace` in CI keeps them\n# compiling, but `default-members` keeps a bare `cargo build` / `cargo test`\n# scoped to core and the parser: the language server pulls in tokio and\n# tower-lsp, which are not worth compiling on every local run. Build them\n# explicitly with `cargo build -p ubel_stratum_cli` / `-p ubel_stratum_lsp`.\nmembers  = [\"crates/core\", \"crates/rd_parser\", \"crates/cli\", \"crates/lsp\"]\ndefault-members = [\"crates/core\", \"crates/rd_parser\"]\nresolver = \"2\"\n\n# Profiles are workspace-level; all crates inherit without re-declaring.\n[profile.release]\nopt-level     = 3\nlto           = true\ncodegen-units = 1\nstrip         = true\n\n[profile.bench]\ninherits      = \"release\"\nlto           = false\ncodegen-units = 4\n" }
+    { path = "crates/cli/Cargo.toml", content = "# ============================================================================\n# NOTICE: Full documentation, design decisions, and fix history for this file\n# live in docs/ubel_stratum_cli.md, section \"Cargo.toml\"\n# ============================================================================\n[package]\nname        = \"ubel_stratum_cli\"\nversion     = \"0.1.0\"\nedition     = \"2021\"\nauthors     = [\"Mid-D-Man\"]\nlicense     = \"MIT OR Apache-2.0\"\ndescription = \"Command-line toolchain for Ubel Stratum (.ubl) files\"\nrepository  = \"https://github.com/Mid-D-Man/ubel_stratum\"\n\n[[bin]]\nname = \"ubel\"\npath = \"src/main.rs\"\n\n[dependencies]\nubel_stratum    = { path = \"../core\" }\nubel_stratum_rd = { path = \"../rd_parser\" }\n\n# Same stack the mdix CLI in DixScript-Rust uses: clap derive for the\n# command tree, colored for terminal output, serde for --json.\nclap       = { version = \"4\", features = [\"derive\"] }\ncolored    = \"2\"\nserde      = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n\n[dev-dependencies]\nassert_cmd = \"2\"\npredicates = \"3\"\ntempfile   = \"3\"\n" }
+    { path = "crates/lsp/Cargo.toml", content = "# ============================================================================\n# NOTICE: Full documentation, design decisions, and fix history for this file\n# live in docs/ubel_stratum_lsp.md, section \"Cargo.toml\"\n# ============================================================================\n[package]\nname        = \"ubel_stratum_lsp\"\nversion     = \"0.1.0\"\nedition     = \"2021\"\nauthors     = [\"Mid-D-Man\"]\nlicense     = \"MIT OR Apache-2.0\"\ndescription = \"Language server for Ubel Stratum (.ubl files)\"\nrepository  = \"https://github.com/Mid-D-Man/ubel_stratum\"\n\n[lib]\nname = \"ubel_stratum_lsp\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"ubel-lsp\"\npath = \"src/main.rs\"\n\n[dependencies]\nubel_stratum    = { path = \"../core\" }\nubel_stratum_rd = { path = \"../rd_parser\" }\n\n# Same stack mdix-lsp in DixScript-Rust uses: tower-lsp for the protocol,\n# tokio as its runtime, dashmap for the shared per-document map, tracing\n# for logging (stderr only: stdout is the LSP channel).\ntower-lsp          = \"0.20\"\ntokio              = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"io-std\", \"time\"] }\ndashmap            = \"6\"\ntracing            = \"0.1\"\ntracing-subscriber = { version = \"0.3\", features = [\"env-filter\"] }\ntracing-appender   = \"0.2\"\n\n[dev-dependencies]\nserde_json = \"1\"\n" }
+    { path = ".mdix/replacements/replacements.mdix", content = "// Brought to u by MidManStudio\n\n@CONFIG(\n  version  -> \"1.0.0\",\n  features -> \"quickfuncs,data\"\n)\n\n@QUICKFUNCS(\n  ~target<object>(_name, _path) {\n    return { name = _name, path = _path }\n  }\n)\n\n@DATA(\n  target_root = \".\"\n\n  overrides::\n    target(\"Cargo.toml\", \"Cargo.toml\")\n    target(\"README.md\", \"README.md\")\n    target(\"crates/core/Cargo.toml\", \"crates/core/Cargo.toml\")\n    target(\"crates/rd_parser/Cargo.toml\", \"crates/rd_parser/Cargo.toml\")\n    target(\"crates/cli/Cargo.toml\", \"crates/cli/Cargo.toml\")\n    target(\"crates/lsp/Cargo.toml\", \"crates/lsp/Cargo.toml\")\n    target(\"crates/parser/Cargo.toml\", \"crates/parser/Cargo.toml\")\n    target(\"crates/wasm_playground/Cargo.toml\", \"crates/wasm_playground/Cargo.toml\")\n    target(\"web/home/index.html\", \"web/home/index.html\")\n    target(\"web/playground/index.html\", \"web/playground/index.html\")\n    target(\"web/dashboard/index.html\", \"web/dashboard/index.html\")\n)\n" }
 )
