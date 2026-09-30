@@ -1,37 +1,38 @@
-# ============================================================================
-# NOTICE: Full documentation, design decisions, and fix history for this file
-# live in docs/ubel_stratum_lsp.md, section "Cargo.toml"
-# ============================================================================
-[package]
-name        = "ubel_stratum_lsp"
-version     = "0.1.0"
-edition     = "2021"
-authors     = ["Mid-D-Man"]
-license     = "MIT OR Apache-2.0"
-description = "Language server for Ubel Stratum (.ubl files)"
-repository  = "https://github.com/Mid-D-Man/ubel_stratum"
+[workspace]
+# crates/parser (lalrpop) is intentionally NOT a default member: lalrpop
+# codegen is too heavy for free GitHub runners and for local dev on older
+# hardware. Build/test it explicitly with:
+#   cargo build --manifest-path crates/parser/Cargo.toml
+# or via ubel-publish.yml's compile_parser: with-parser input.
+#
+# crates/wasm_playground is also deliberately NOT a member, for a
+# different reason: it cross-compiles to wasm32-unknown-unknown for the
+# browser playground and carries its own release profile tuned for .wasm
+# size (opt-level="s") rather than this workspace's opt-level=3; profiles
+# are workspace-level, so a crate that needs different ones has to be its
+# own workspace root. Build it explicitly with:
+#   cargo build --manifest-path crates/wasm_playground/Cargo.toml \
+#     --target wasm32-unknown-unknown --release
+# or via the site-deploy workflow, which does exactly that.
+#
+# crates/cli (the `ubel` binary) and crates/lsp (the `ubel-lsp` language
+# server) are members so `cargo test --workspace` in CI keeps them
+# compiling, but `default-members` keeps a bare `cargo build` / `cargo test`
+# scoped to core and the parser: the language server pulls in tokio and
+# tower-lsp, which are not worth compiling on every local run. Build them
+# explicitly with `cargo build -p ubel_stratum_cli` / `-p ubel_stratum_lsp`.
+members  = ["crates/core", "crates/rd_parser", "crates/cli", "crates/lsp"]
+default-members = ["crates/core", "crates/rd_parser"]
+resolver = "2"
 
-[lib]
-name = "ubel_stratum_lsp"
-path = "src/lib.rs"
+# Profiles are workspace-level; all crates inherit without re-declaring.
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true
 
-[[bin]]
-name = "ubel-lsp"
-path = "src/main.rs"
-
-[dependencies]
-ubel_stratum    = { path = "../core" }
-ubel_stratum_rd = { path = "../rd_parser" }
-
-# Same stack mdix-lsp in DixScript-Rust uses: tower-lsp for the protocol,
-# tokio as its runtime, dashmap for the shared per-document map, tracing
-# for logging (stderr only: stdout is the LSP channel).
-tower-lsp          = "0.20"
-tokio              = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time"] }
-dashmap            = "6"
-tracing            = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender   = "0.2"
-
-[dev-dependencies]
-serde_json = "1"
+[profile.bench]
+inherits      = "release"
+lto           = false
+codegen-units = 4

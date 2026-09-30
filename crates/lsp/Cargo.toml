@@ -1,0 +1,37 @@
+# ============================================================================
+# NOTICE: Full documentation, design decisions, and fix history for this file
+# live in docs/ubel_stratum_lsp.md, section "Cargo.toml"
+# ============================================================================
+[package]
+name        = "ubel_stratum_lsp"
+version     = "0.1.0"
+edition     = "2021"
+authors     = ["Mid-D-Man"]
+license     = "MIT OR Apache-2.0"
+description = "Language server for Ubel Stratum (.ubl files)"
+repository  = "https://github.com/Mid-D-Man/ubel_stratum"
+
+[lib]
+name = "ubel_stratum_lsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ubel-lsp"
+path = "src/main.rs"
+
+[dependencies]
+ubel_stratum    = { path = "../core" }
+ubel_stratum_rd = { path = "../rd_parser" }
+
+# Same stack mdix-lsp in DixScript-Rust uses: tower-lsp for the protocol,
+# tokio as its runtime, dashmap for the shared per-document map, tracing
+# for logging (stderr only: stdout is the LSP channel).
+tower-lsp          = "0.20"
+tokio              = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time"] }
+dashmap            = "6"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender   = "0.2"
+
+[dev-dependencies]
+serde_json = "1"

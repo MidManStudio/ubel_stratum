@@ -1,0 +1,32 @@
+# ============================================================================
+# NOTICE: Full documentation, design decisions, and fix history for this file
+# live in docs/ubel_stratum_cli.md, section "Cargo.toml"
+# ============================================================================
+[package]
+name        = "ubel_stratum_cli"
+version     = "0.1.0"
+edition     = "2021"
+authors     = ["Mid-D-Man"]
+license     = "MIT OR Apache-2.0"
+description = "Command-line toolchain for Ubel Stratum (.ubl) files"
+repository  = "https://github.com/Mid-D-Man/ubel_stratum"
+
+[[bin]]
+name = "ubel"
+path = "src/main.rs"
+
+[dependencies]
+ubel_stratum    = { path = "../core" }
+ubel_stratum_rd = { path = "../rd_parser" }
+
+# Same stack the mdix CLI in DixScript-Rust uses: clap derive for the
+# command tree, colored for terminal output, serde for --json.
+clap       = { version = "4", features = ["derive"] }
+colored    = "2"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile   = "3"
