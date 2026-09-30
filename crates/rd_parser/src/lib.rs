@@ -1,5 +1,6 @@
 // crates/rd_parser/src/lib.rs
 
+pub mod check;
 pub mod cursor;
 pub mod error;
 pub mod keywords;
@@ -8,6 +9,7 @@ pub mod estimates;
 pub(crate) mod parser;
 pub(crate) mod parsers;
 
+pub use check::{check_source, CheckReport, Stage};
 pub use parser::Parser;
 
 use ubel_stratum::{

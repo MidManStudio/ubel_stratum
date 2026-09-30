@@ -499,3 +499,31 @@ it actually turned up:
   types carries `Span::at(0)`, so the diagnostic points at line 0.
 - Struct field default values (`n: u32 = 5u32`) do not parse, and there
   is no mutable global item; a top-level `let` is a parse error.
+
+## Decided, not yet built
+
+Design questions that were presented as options and answered. Each gets
+its own delivery with fixtures; the choice is recorded here so it is not
+re-opened by accident.
+
+**Unsuffixed integer literals: full context-driven typing (Rust style).**
+An unsuffixed integer literal takes its type from where it is used, so
+`P { n = 10 }` with `n: u32`, `let x: u8 = 5`, `f(3)` where the parameter
+is `i16`, and `u32_var + 1` all type-check, with the existing `TYPE-120`
+range check. A literal with nothing to constrain it stays plain `int`. The
+interpreter has no static types, so the runtime side needs coercion of a
+plain integer value at the same boundaries (annotated `let`, struct field,
+call argument, return, assignment, and a sized-integer binary operation
+with a plain integer operand). Rejected: suffix-only (status quo) and
+direct-site-only coercion.
+
+**Mutable globals: `static`, HIGH tier only.** A `static` item is a
+mutable global living in the HIGH tier (GC-managed), private by default,
+`pub` to export once the module system lands. Only `@tier(high)` code may
+read or write one. A `const` stays an immutable, tier-agnostic value; a
+tier annotation on a `const` becomes an error instead of being silently
+dropped. Rejected: tier-specific mutable globals, since an arena has no
+lifetime that can hold a global and a LOW-tier global needs unsafe rules.
+
+**Still open:** struct field default values (`n: u32 = 5u32`), which
+depends on the literal decision above.

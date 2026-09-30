@@ -59,6 +59,10 @@ verified safe.
 - A return type annotation on a lambda is one clear parse error instead
   of two unrelated name errors, and an unknown method on a struct is
   reported once instead of twice
+- Tooling stubs: a `ubel` command line (`check`, `run`, `debug-tokens`,
+  with `--json` output and stable exit codes) and an `ubel-lsp` language
+  server that publishes the compiler's diagnostics as you type. Both call
+  the same one-function check, so an editor and the command line agree
 - Fixed-width integers with real wrapping arithmetic and the full `u64`
   range (`u8`, `i8`, `u16`, `i16`, `u32`, `u64`, and the rest), numeric
   literal suffixes (`255u8`), and a literal-out-of-range diagnostic
@@ -73,9 +77,12 @@ verified safe.
 - The trait system: `trait` declarations and `impl Trait for Type`
   blocks parse, but trait method dispatch, `dyn Trait`, and bound
   enforcement are not built and still need a design pass
-- Design decisions pending before they are built: how a bare integer
-  literal should meet a sized-integer field, whether struct fields get
-  default values, and what a mutable global looks like across tiers
+- Decided, not yet built: unsuffixed integer literals take their type
+  from context (`P { n = 10 }` with `n: u32`), and mutable globals arrive
+  as `static` items in the HIGH tier only
+- Still to decide: whether struct fields get default values
+- The language server publishes diagnostics only; hover, go to
+  definition and completion are not built
 
 ## Known gaps, tracked rather than hidden
 

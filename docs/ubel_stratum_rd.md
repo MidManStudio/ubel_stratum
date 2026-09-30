@@ -31,6 +31,30 @@ methods, parameters, structs, enums, traits, impls.
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
 `tests/fixtures/ok_callback_registry_combined.ubl`.
 
+### `check.rs`
+
+**What it does:** `check_source(&str) -> CheckReport` runs lex, parse and
+sema over a source string and returns every diagnostic as data, together
+with the stage it stopped at (`Stage::Lex`, `Parse`, `Sema`, or `Clean`).
+It is the one entry point both `ubel` (the command line) and `ubel-lsp`
+(the language server) call, so the two report identical diagnostics for
+the same text.
+
+**Decisions:**
+- Stops at the first stage that reports errors, since later stages have
+  nothing sound to work on once an earlier one failed. Sema's own passes
+  keep running after each other inside `analyse`, as before.
+- Every per-phase error list is drained through the `Diagnosable` trait
+  into one flat, phase-ordered `Vec<Diagnostic>`. Nothing here prints or
+  renders; callers choose `render_all`, JSON, or LSP diagnostics.
+- The AST borrows the `AstArena`, so the arena cannot leave the function.
+  A caller that needs to run the program afterwards (`ubel run`) lexes and
+  parses a second time. A `check_with_arena` variant is the fix if that
+  cost ever matters.
+
+**Tests:** unit tests in `check.rs`, and end to end through
+`crates/cli/tests/cli_tests.rs` and `crates/lsp/tests/lsp_stdio.rs`.
+
 ### `cursor.rs`, `parsers/parse_type.rs`
 
 **What it does:** `cursor.rs` is the token cursor every parser shares;
