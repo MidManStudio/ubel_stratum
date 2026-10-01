@@ -1,0 +1,19 @@
+// tests/fixtures/err_int_literal_conflicting_uses_combined.ubl
+// One binding cannot be two integer types. `n` is fixed as u8 by its
+// first use, so passing it where an i16 is wanted is a mismatch, even
+// though either function would have accepted the bare literal itself.
+// Expected: sema FAIL (TypeMismatch, TYPE-101).
+
+fn wants_u8(v: u8) void {
+    println($"{v}")
+}
+
+fn wants_i16(v: i16) void {
+    println($"{v}")
+}
+
+fn main() void {
+    let n = 7
+    wants_u8(n)
+    wants_i16(n)
+}

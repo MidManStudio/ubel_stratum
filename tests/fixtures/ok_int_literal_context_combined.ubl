@@ -1,0 +1,49 @@
+// tests/fixtures/ok_int_literal_context_combined.ubl
+// Context-driven literal typing together with the features it has to
+// live beside: a global const with a narrow type, a generic call, a
+// list whose element type comes from its annotation, a lambda, a
+// literal that nothing constrains (it stays plain int and keeps its
+// full 64-bit range), an integer hole with a numeric-base format spec,
+// and a binding typed by a later use after other uses left it open.
+// Expected: sema OK, interpret OK.
+
+const LIMIT: u16 = 60000
+
+struct Counter {
+    hits: u32,
+}
+
+fn add_hit(c: Counter, by: u32) u32 {
+    return c.hits + by
+}
+
+fn main() void {
+    // A const with an annotation types its initializer.
+    let room: u16 = LIMIT - 1
+    assert(room == 59999, "const minus a literal, both u16")
+    assert(room + 6000 == 463, "u16 arithmetic wraps: 59999 + 6000 = 65999, minus 65536")
+
+    // Nothing constrains this product: plain int, full 64-bit range.
+    let plain = 1_000_000 * 4000
+    assert(plain == 4000000000, "an unconstrained literal stays a plain int")
+
+    // A binding first used open, then typed by a later use.
+    let seed = 7
+    let twice = seed + seed
+    let as_byte: u8 = twice
+    assert(as_byte + 250 == 8, "14u8 + 250 = 264 wraps to 8, seed was typed u8 by its later use")
+
+    let c = Counter { hits = 4 }
+    assert(add_hit(c, 3) == 7, "struct field and call argument together")
+
+    // A list annotation types every element literal.
+    let bytes: List<u8> = [1, 2, 250]
+    assert(bytes[2] + 10 == 4, "list element is a u8 and wraps")
+
+    // A lambda parameter annotation types the call's literal argument.
+    let twice_byte = fn(x: u8) x * 2
+    assert(twice_byte(200) == 144, "lambda argument is a u8, 200 * 2 wraps to 144")
+
+    // A type-dependent format spec settles a bare literal as int.
+    assert($"{255:x}" == "ff", "numeric base on a bare literal is an int")
+}

@@ -46,6 +46,46 @@ sites.
 **Tests:** `sema/tests.rs`,
 `test_sema_discard_param_type_is_enforced_at_call_site`.
 
+**Decisions (context-driven typing of unsuffixed integer literals):**
+- An unsuffixed `Literal::Int` is a fresh type variable that remembers
+  its value and span (`infer_int_literal`; `int_lit_vars` maps the
+  variable number to its `IntLitUse` list, `int_lit_sites` lists every
+  literal site seen). `unify` calls `try_unify_int_lit` right after
+  resolving both sides: a concrete integer type range-checks every
+  literal behind the variable (`TYPE-120`, `bind_int_lit`) and binds it;
+  two literal variables merge; an ordinary variable takes the literal's
+  type; `Unknown` absorbs; an `Optional<T>` unifies its payload with the
+  literal; anything else settles the literal as `int` and unifies again
+  so the mismatch reads the way it did before. `int_type_range` is the
+  one table of integer types, their ranges and display names, and
+  deliberately excludes `float`/`double`.
+- A literal directly under unary `-` goes through `infer_int_literal`
+  with the negated value and records the operand span, so the type's
+  most-negative value is reachable and `-1` for an unsigned type is
+  rejected.
+- `finish_int_literals` runs at the end of each function body, method
+  body and const initializer. It settles anything still open as plain
+  `int` and records the final width of each literal in
+  `SemaContext::int_literal_types`, but only for widths the interpreter
+  represents differently from plain `int`. `default_if_int_lit` settles
+  one variable on the spot for the places that need a concrete shape
+  now (method receivers, `await`, `unwrap_reference`, and
+  type-dependent format specs). It returns the resolved type, never the
+  stale id of an already-settled variable.
+- `check_format_spec` settles an open literal only for a spec that
+  depends on the type (precision, `+`, zero-pad, a numeric base), since
+  the runtime implements those on plain `int` only. Width, fill, align
+  and `?` leave it open.
+- `binop_result`'s orderable list now includes the sized integers and
+  `f32`/`f64`, and an open literal variable, so `a < b` on two `u32`
+  values is no longer `TYPE-118`.
+- `display_type` shows an open literal variable as `{integer}`.
+
+**Tests:** `crates/rd_parser/tests/int_literal_typing.rs`, the eight
+`ok_int_literal_*` and five `err_int_literal_*` fixtures under
+`tests/fixtures/`, and two end-to-end cases in
+`crates/cli/tests/cli_tests.rs`.
+
 **Decisions (this delivery, `@derive(Eq, Hash, Ord, PartialOrd,
 Clone)`, and real `<`/`<=`/`>`/`>=` operators for `Str` and structs):**
 - `check_derive_attrs` now recognizes all six derive trait names
@@ -300,6 +340,13 @@ still the same `Rc`).
 method calls, struct/anon-object construction.
 
 **Decisions:**
+- `eval_expr` has a dedicated arm for `Literal::Int` ahead of the general
+  literal arm. A literal whose span is in `Interpreter::int_literal_types`
+  becomes the sized `Value` sema picked (`sized_int_from_literal`, plain
+  narrowing casts, since sema already range-checked); every other
+  literal stays `Value::Int`. A literal directly under unary `-` reaches
+  the arm with its positive magnitude and is negated afterwards by
+  `wrapping_neg`, which makes `-128` for an `i8` work.
 - `eval_binop`'s `Lt`/`Le`/`Gt`/`Ge` used to go straight to
   `promote_numeric`, which only handles `Int`/`Float`/`Double`; `Str`,
   `Struct`, and anything else reached a runtime panic
@@ -498,6 +545,17 @@ registration: function and method tables, the struct-derive table, and
 the driver loop that walks the parsed program before execution starts.
 
 **Decisions:**
+- New `int_literal_types: HashMap<Span, IntSuffix>` field and
+  `set_int_literal_types` setter. The interpreter has no static types, so
+  sema's `SemaContext::int_literal_types` is the only way it learns that
+  the `5` in `let x: u8 = 5` is a `u8`. It defaults to empty, which keeps
+  every literal a plain `int`, the behavior of the interpreter's own unit
+  tests that skip sema. Any driver that runs a program after sema must
+  call the setter before `run_program`: `ubel run`, the `pipeline` and
+  `diagnose` examples, and the wasm playground do.
+- `match_literal` (`eval/pattern.rs`) compares an unsuffixed integer
+  literal pattern against every sized-integer variant through `i128`, so
+  `match byte { 255 => .. }` works on a `u8`.
 - `register_fn`/`register_method` now build their `params: Vec<String>`
   list with `enumerate()` and a synthesized `$discardN` name for each
   `ParamKind::Discard` slot, instead of dropping it. That list is later
@@ -520,6 +578,11 @@ the driver loop that walks the parsed program before execution starts.
 type checking (TYPE-1xx range).
 
 **Decisions:**
+- `TypeError::IntLiteralOutOfRange` (TYPE-120) gained `negative` and
+  `inferred`: `raw` is always the magnitude, `negative` says the literal
+  sat directly under unary `-`, and `inferred` marks an unsuffixed
+  literal whose context picked the type (the message then does not
+  repeat a suffix after the digits).
 - `TypeError::DeriveRequiresOther` (TYPE-117) and `TypeError::
   TypeNotOrderable` (TYPE-118), both new this delivery. See
   `sema/type_infer.rs` above for what triggers each. Kept as two
@@ -582,6 +645,11 @@ type checking (TYPE-1xx range).
 
 ### `sema/type_infer.rs`
 
+- `binop_result`'s orderable list covered `int`, `float`, `double` and
+  `string` only, so `a < b` on two `u32` (or `i64`, `u8`, `f32`, and so
+  on) was `TYPE-118` even though the interpreter's sized-integer
+  comparison handles every ordering operator. The sized integers and
+  `f32`/`f64` are now in the list.
 - Three separate signature-collection call sites used
   `ParamKind::Named { ty, .. } => ty.map(...), _ => None` with
   `filter_map`, which silently dropped a `Discard` parameter's declared

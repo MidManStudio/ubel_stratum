@@ -15,6 +15,7 @@
 //! | `def_types`        | `DefId`    | `TypeId`           | type_infer       |
 //! | `expr_types`       | `Span`     | `TypeId`           | type_infer       |
 //! | `binding_types`    | `Span`     | `TypeId`           | type_infer       |
+//! | `int_literal_types`| `Span`     | `IntSuffix`        | type_infer       |
 //! | `symbols`          | —          | `SymbolTable`      | name_resolution  |
 //! | `types`            | —          | `TypeTable`        | type_infer       |
 
@@ -22,6 +23,7 @@
 
 use std::collections::HashMap;
 use crate::ast::common::Span;
+use crate::lexer::token::IntSuffix;
 use crate::sema::symbol_table::{DefId, ResolutionMap, SymbolTable};
 use crate::sema::type_table::{TypeId, TypeTable};
 
@@ -44,6 +46,16 @@ pub struct SemaContext {
 
     /// Inferred type for every let-binding / parameter, keyed by the binding's `Span`.
     pub binding_types: HashMap<Span, TypeId>,
+
+    /// The width an unsuffixed integer literal ended up with, keyed by the
+    /// literal's own `Span`. Only literals whose context picked a type the
+    /// runtime represents differently from the default 64-bit `int`
+    /// (`u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `usize`) get an
+    /// entry; a literal with no entry is a plain `int`. The interpreter
+    /// has no static types of its own, so this table is how it learns
+    /// that `5` in `let x: u8 = 5` is a `u8` (docs/PARKED_IDEAS.md,
+    /// "Unsuffixed integer literals").
+    pub int_literal_types: HashMap<Span, IntSuffix>,
 
     /// Module-level (top-level item) name -> DefId, populated during
     /// name resolution's pre-declare step. Used by type_infer to resolve

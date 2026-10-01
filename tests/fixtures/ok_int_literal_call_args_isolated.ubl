@@ -1,0 +1,61 @@
+// tests/fixtures/ok_int_literal_call_args_isolated.ubl
+// Context-driven integer literal typing, boundary 2: call arguments.
+// A literal passed where the parameter is u8/u32/i16 is that type, for a
+// plain function, an instance method, a static (associated) call, an
+// enum payload, and a generic call whose type argument is fixed by the
+// annotated result. Each result below only comes out right if the
+// argument really was the narrow type at runtime.
+// Expected: sema OK, interpret OK.
+
+enum Shape {
+    Circle(u8),
+    Rect { w: u8, h: u8 },
+}
+
+struct Meter {
+    total: u32,
+}
+
+extend Meter {
+    fn start(at: u32) Meter {
+        return Meter { total = at }
+    }
+
+    fn add(self, by: u8) u8 {
+        return by + 250
+    }
+}
+
+fn plus_five(level: u8) u8 {
+    return level + 5
+}
+
+fn widen(v: i16) i16 {
+    return v * 2
+}
+
+fn identity<T>(x: T) T {
+    return x
+}
+
+fn radius(s: Shape) u8 {
+    match s {
+        Shape.Circle(r) => { return r + 250 }
+        Shape.Rect { w, h } => { return w + h }
+    }
+}
+
+fn main() void {
+    assert(plus_five(251) == 0, "function argument is a u8, 251 + 5 wraps to 0")
+    assert(widen(20000) == -25536, "function argument is an i16, 20000 * 2 wraps")
+
+    let m = Meter.start(4294967295)
+    assert(m.total + 2 == 1, "static call argument is a u32, max + 2 wraps to 1")
+    assert(m.add(10) == 4, "method argument is a u8, 10 + 250 wraps to 4")
+
+    assert(radius(Shape.Circle(10)) == 4, "tuple variant payload is a u8")
+    assert(radius(Shape.Rect { w = 200, h = 100 }) == 44, "struct variant payload is a u8")
+
+    let g: u8 = identity(200)
+    assert(g + 100 == 44, "a generic call takes the annotated type")
+}

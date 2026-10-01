@@ -26,6 +26,12 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
     match &expr.kind {
 
         // ── Literals ──────────────────────────────────────────────
+        // An unsuffixed integer literal whose context picked a width other
+        // than plain `int` (sema records it in `int_literal_types`).
+        ExprKind::Lit(Literal::Int(n)) => Ok(match interp.int_literal_types.get(&expr.span) {
+            Some(suffix) => sized_int_from_literal(*n, *suffix),
+            None         => Value::Int(*n),
+        }),
         ExprKind::Lit(lit) => eval_literal(interp, lit),
 
         // ── Identifier lookup ─────────────────────────────────────
@@ -429,6 +435,27 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
 }
 
 // ── Literal evaluation ────────────────────────────────────────────
+
+/// The value of an unsuffixed integer literal that sema resolved to the
+/// width `suffix` names. Sema has already range-checked `n` against that
+/// width (`TYPE-120`), so the `as` casts are mechanical narrowing, not a
+/// second check. A literal directly under `-` reaches here with its
+/// positive magnitude and is negated afterwards by `UnaryOp::Neg`, whose
+/// `wrapping_neg` makes the most-negative value (`-128` for `i8`) work.
+fn sized_int_from_literal(n: i64, suffix: IntSuffix) -> Value {
+    match suffix {
+        IntSuffix::I8    => Value::I8(n as i8),
+        IntSuffix::I16   => Value::I16(n as i16),
+        IntSuffix::I32   => Value::I32(n as i32),
+        IntSuffix::I64   => Value::Int(n),
+        IntSuffix::Isize => Value::Int(n),
+        IntSuffix::U8    => Value::U8(n as u8),
+        IntSuffix::U16   => Value::U16(n as u16),
+        IntSuffix::U32   => Value::U32(n as u32),
+        IntSuffix::U64   => Value::UInt(n as u64),
+        IntSuffix::Usize => Value::UInt(n as u64),
+    }
+}
 
 fn eval_literal<'ast>(interp: &mut Interpreter<'ast>, lit: &Literal<'ast>) -> EvalResult {
     match lit {

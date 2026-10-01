@@ -1,0 +1,9 @@
+// tests/fixtures/err_int_literal_not_float_isolated.ubl
+// An integer literal never becomes a float implicitly: `let f: float = 5`
+// is a type mismatch, the same as in Rust. The fix is `5.0`.
+// Expected: sema FAIL (TypeMismatch, TYPE-101).
+
+fn main() void {
+    let f: float = 5
+    println($"{f}")
+}

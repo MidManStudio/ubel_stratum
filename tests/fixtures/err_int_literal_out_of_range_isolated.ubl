@@ -1,0 +1,10 @@
+// tests/fixtures/err_int_literal_out_of_range_isolated.ubl
+// An unsuffixed literal whose context picks a type too narrow for it is
+// TYPE-120, the same range check a suffixed literal gets. 300 does not
+// fit u8, and it is NOT silently truncated to 44.
+// Expected: sema FAIL (IntLiteralOutOfRange, TYPE-120).
+
+fn main() void {
+    let bad: u8 = 300
+    println($"{bad}")
+}

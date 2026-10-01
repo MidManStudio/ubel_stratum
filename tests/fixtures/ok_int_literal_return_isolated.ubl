@@ -1,0 +1,36 @@
+// tests/fixtures/ok_int_literal_return_isolated.ubl
+// Context-driven integer literal typing, boundary 4: return values.
+// A literal in `return` takes the declared return type of the function
+// or method, so the caller receives a real sized value.
+// Expected: sema OK, interpret OK.
+
+struct Gauge {
+    base: u8,
+}
+
+extend Gauge {
+    fn ceiling(self) u8 {
+        return 255
+    }
+}
+
+fn top() u8 {
+    return 255
+}
+
+fn lowest_value() i16 {
+    return -32768
+}
+
+fn stamp() u32 {
+    return 4294967295
+}
+
+fn main() void {
+    assert(top() + 1 == 0, "a u8 return of 255 wraps when 1 is added")
+    assert(lowest_value() - 1 == 32767, "an i16 return of -32768 wraps when 1 is subtracted")
+    assert(stamp() + 1 == 0, "a u32 return wraps at 2^32")
+
+    let g = Gauge { base = 1 }
+    assert(g.ceiling() + g.base == 0, "a method return is a u8 too")
+}

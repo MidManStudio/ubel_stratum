@@ -54,7 +54,16 @@ pub fn run_file(path: &Path) -> Result<RunOutcome, CliError> {
     let program = ubel_stratum_rd::parse(&arena, &tokens, outcome.source.clone())
         .map_err(|_| CliError::Internal("re-parse failed after a clean check".into()))?;
 
+    // Sema resolved the width of every unsuffixed integer literal; the
+    // interpreter has no static types and needs that table to run
+    // `let x: u8 = 5` with a real `u8`. Spans are byte offsets into the
+    // same source, so the table from this pass matches the tree parsed
+    // just above.
+    let sema_ctx = ubel_stratum::sema::analyse(&program, &arena, outcome.source.clone())
+        .map_err(|_| CliError::Internal("re-analysis failed after a clean check".into()))?;
+
     let mut interp = Interpreter::new(&arena);
+    interp.set_int_literal_types(sema_ctx.int_literal_types);
     match interp.run_program(&program) {
         Ok(())  => Ok(RunOutcome::Finished),
         Err(e)  => Ok(RunOutcome::RuntimeError(format!("{e}"))),

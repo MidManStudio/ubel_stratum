@@ -479,9 +479,9 @@ it actually turned up:
 
 **Still open, confirmed by execution:**
 
-- A bare unsuffixed literal into a sized-integer field or `let`
-  (`P { n = 10 }` with `n: u32`) is still `TYPE-101`. Needs a design
-  decision (context-driven literal typing versus suffix-only).
+- ~~A bare unsuffixed literal into a sized-integer field or `let`
+  (`P { n = 10 }` with `n: u32`) is still `TYPE-101`.~~ Fixed by
+  context-driven literal typing, see "Built" below.
 - `type` aliases are not transparent: with `type Score = int`,
   `let a: Score = 5` is `TYPE-101`, and `Score` and `int` do not unify
   in either direction. `type NodeId = u64` only worked in the
@@ -500,22 +500,99 @@ it actually turned up:
 - Struct field default values (`n: u32 = 5u32`) do not parse, and there
   is no mutable global item; a top-level `let` is a parse error.
 
+## Built
+
+**Unsuffixed integer literals: full context-driven typing (Rust style).**
+Decided in the session that added the `ubel` and `ubel-lsp` stubs, built
+in the one after. An unsuffixed integer literal now takes its type from
+where it is used, so `P { n = 10 }` with `n: u32`, `let x: u8 = 5`,
+`f(3)` where the parameter is `i16`, `u32_var + 1`, a literal `match`
+pattern against a `u8`, and `return 255` from a `u8` function all
+type-check, with the existing `TYPE-120` range check applied to the
+inferred width. A literal with nothing to constrain it stays plain `int`
+(full 64-bit range).
+
+How it works, in `sema/type_infer.rs`:
+
+- An unsuffixed literal starts as a fresh type variable that remembers
+  its value and span (`infer_int_literal`). Unifying it with a concrete
+  integer type range-checks the value and binds the variable
+  (`try_unify_int_lit`, called from the top of `unify`). Unifying it with
+  another literal variable merges the two, so `[1, 2, 300]` bound to
+  `List<u8>` reports only the `300`. Unifying it with a float, string,
+  struct or anything else is an ordinary mismatch, so `let f: float = 5`
+  stays `TYPE-101` (write `5.0`).
+- A literal directly under unary `-` is checked as the negative value it
+  denotes, so `let x: i8 = -128` is accepted and `let x: u8 = -1` is
+  `TYPE-120` instead of wrapping.
+- Whatever is still open when a function body, method body or const
+  initializer ends is settled as plain `int` (`finish_int_literals`). A
+  few spots need a concrete shape immediately (a method receiver, an
+  `await` operand, a type-dependent format spec) and settle the literal
+  as `int` on the spot (`default_if_int_lit`).
+- A format spec that depends on the type (precision, `+`, zero-pad, a
+  numeric base) settles an open literal as `int`, because the runtime
+  only implements those on plain `int`. Width, fill, alignment and `?`
+  leave it open. The practical effect: `let n = 255` used as `{n:+}` and
+  later as `let b: u8 = n` is a mismatch, reported instead of silently
+  printing without the spec.
+- The width each literal ended up with is recorded in
+  `SemaContext::int_literal_types` (keyed by the literal's `Span`), only
+  for the widths the runtime represents differently from plain `int`
+  (`u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `usize`). The
+  interpreter has no static types, so `Interpreter::set_int_literal_types`
+  hands it that table before `run_program`, and `eval_expr` builds the
+  sized `Value` for a recorded literal. Every driver that runs a program
+  after sema sets it: `ubel run`, the `pipeline` and `diagnose`
+  examples, and the wasm playground.
+
+Deviation from the original plan: the plan called for coercing a plain
+`Value::Int` at runtime at each boundary (annotated `let`, struct field,
+call argument, return, assignment, and a sized-integer binary operation
+with a plain operand). The built design resolves the width statically in
+sema and records it, which covers every boundary without a per-boundary
+runtime hook and keeps range checking in one place. A sized/plain mix at
+runtime is still a clear panic (`type mismatch in binary op`), never a
+guessed width. That panic is only reachable when sema could not type the
+literal (see the gaps below).
+
+Also changed: ordering comparisons (`<`, `<=`, `>`, `>=`) on the sized
+integers and `f32`/`f64` were rejected as `TYPE-118` although the
+interpreter compares them fine. `binop_result`'s orderable list now
+includes them.
+
+Known gaps, recorded rather than hidden:
+
+- Builtin method arguments are not type-checked at all: a builtin method
+  signature carries only a return shape and an arity. So
+  `list.push(200)` on a `List<u8>` stores a plain `int`, and a later
+  `list[0] + 100` is a runtime panic. This predates literal typing
+  (`push(200)` was equally untyped), and fixing it means giving builtin
+  signatures parameter types.
+- `{x:x}`, `{x:+}` and `{x:05}` on a sized integer are still rejected
+  (`TYPE-115` and friends) and the runtime only implements them on plain
+  `int`. Extending both is a design choice (what `{:x}` prints for a
+  negative `i8`).
+- A literal that meets an unresolved type (`Unknown`) is settled as
+  `int`. If the other side turns out to be sized at runtime, the mix
+  panics. One way to reach this: a user function named like a global
+  builtin, for example `fn floor() i16`, and then `floor() - 1`. Observed,
+  not traced further.
+- Range patterns over sized integers (`1..=5`) and a literal pattern
+  that is negative and suffixed are unchanged by this work. `1..=5` does
+  not currently reach the pattern parser at all: the lexer reads `1.` as
+  a double.
+- A call whose first argument starts with a parenthesized expression,
+  `assert((c & 255) == 255, "msg")`, fails to parse. Observed while
+  writing fixtures; parser behavior, unrelated to literals.
+- A plain `int` expression above 2^53 still goes through `f64` in
+  `promote_numeric`.
+
 ## Decided, not yet built
 
 Design questions that were presented as options and answered. Each gets
 its own delivery with fixtures; the choice is recorded here so it is not
 re-opened by accident.
-
-**Unsuffixed integer literals: full context-driven typing (Rust style).**
-An unsuffixed integer literal takes its type from where it is used, so
-`P { n = 10 }` with `n: u32`, `let x: u8 = 5`, `f(3)` where the parameter
-is `i16`, and `u32_var + 1` all type-check, with the existing `TYPE-120`
-range check. A literal with nothing to constrain it stays plain `int`. The
-interpreter has no static types, so the runtime side needs coercion of a
-plain integer value at the same boundaries (annotated `let`, struct field,
-call argument, return, assignment, and a sized-integer binary operation
-with a plain integer operand). Rejected: suffix-only (status quo) and
-direct-site-only coercion.
 
 **Mutable globals: `static`, HIGH tier only.** A `static` item is a
 mutable global living in the HIGH tier (GC-managed), private by default,
@@ -525,5 +602,8 @@ tier annotation on a `const` becomes an error instead of being silently
 dropped. Rejected: tier-specific mutable globals, since an arena has no
 lifetime that can hold a global and a LOW-tier global needs unsafe rules.
 
-**Still open:** struct field default values (`n: u32 = 5u32`), which
-depends on the literal decision above.
+**Still open:** struct field default values (`n: u32 = 5u32`). The
+literal decision it depended on is built, so this can be taken up next.
+Options: a field initializer with constant expressions, constructors via
+`extend` (already works), or `@derive(Default)`. Recommended: a field
+initializer.

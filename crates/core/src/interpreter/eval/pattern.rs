@@ -388,6 +388,17 @@ fn match_literal(lit: &Literal<'_>, value: &Value) -> bool {
         (Literal::Null,      Value::Null)       => true,
         (Literal::Bool(b),   Value::Bool(v))    => b == v,
         (Literal::Int(n),    Value::Int(v))     => n == v,
+        // An unsuffixed literal pattern against a sized-integer scrutinee
+        // (`match byte { 0 => .., 255 => .. }`): sema unified the literal
+        // with the scrutinee's type and range-checked it, so comparing the
+        // mathematical values is exact. `i128` holds every `i64`/`u64`.
+        (Literal::Int(n),    Value::I8(v))      => *n as i128 == *v as i128,
+        (Literal::Int(n),    Value::I16(v))     => *n as i128 == *v as i128,
+        (Literal::Int(n),    Value::I32(v))     => *n as i128 == *v as i128,
+        (Literal::Int(n),    Value::U8(v))      => *n as i128 == *v as i128,
+        (Literal::Int(n),    Value::U16(v))     => *n as i128 == *v as i128,
+        (Literal::Int(n),    Value::U32(v))     => *n as i128 == *v as i128,
+        (Literal::Int(n),    Value::UInt(v))    => *n as i128 == *v as i128,
         (Literal::TypedInt { raw, suffix }, _) => match_typed_int(*raw, *suffix, value),
         (Literal::Float(f),  Value::Float(v))   => f == v,
         (Literal::Double(d), Value::Double(v))  => d == v,

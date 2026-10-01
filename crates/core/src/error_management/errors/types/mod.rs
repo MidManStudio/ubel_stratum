@@ -144,10 +144,19 @@ pub enum TypeError {
     /// its own terms, not dependent on the lexer's ceiling matching it).
     /// Caught at sema time rather than silently wrapping, matching
     /// Rust's own `error: literal out of range for` on the same source.
+    ///
+    /// Also raised for an *unsuffixed* literal whose inferred type turned
+    /// out to be too narrow for it (`let x: u8 = 300`, `f(-1)` where the
+    /// parameter is `u32`). Then `inferred` is `true`, `suffix` holds the
+    /// name of the type the context picked, and `negative` says whether
+    /// the literal sat directly under a unary `-` (`raw` is always the
+    /// magnitude).
     IntLiteralOutOfRange {
-        suffix: &'static str,
-        raw:    u64,
-        span:   Span,
+        suffix:   &'static str,
+        raw:      u64,
+        negative: bool,
+        inferred: bool,
+        span:     Span,
     },
 
     /// A type could not be inferred — too ambiguous.
@@ -283,8 +292,14 @@ impl TypeError {
             TypeError::TypeNotOrderable { on_type, .. } =>
                 format!("type `{}` doesn't support ordering comparisons", on_type),
 
-            TypeError::IntLiteralOutOfRange { suffix, raw, .. } =>
-                format!("literal `{}{}` is out of range for `{}`", raw, suffix, suffix),
+            TypeError::IntLiteralOutOfRange { suffix, raw, negative, inferred, .. } => {
+                let sign = if *negative { "-" } else { "" };
+                if *inferred {
+                    format!("literal `{}{}` is out of range for `{}`", sign, raw, suffix)
+                } else {
+                    format!("literal `{}{}{}` is out of range for `{}`", sign, raw, suffix, suffix)
+                }
+            }
 
             TypeError::CannotInferType { .. } =>
                 "cannot infer type — add an explicit type annotation".to_string(),
@@ -363,8 +378,12 @@ impl TypeError {
             TypeError::TypeNotOrderable { .. } =>
                 Some("add `@derive(PartialOrd)` (or `@derive(Ord)`) to the struct, or compare a different field".to_string()),
 
-            TypeError::IntLiteralOutOfRange { suffix, .. } =>
-                Some(format!("use a smaller value, drop the `{}` suffix, or pick a wider type", suffix)),
+            TypeError::IntLiteralOutOfRange { suffix, inferred, .. } =>
+                Some(if *inferred {
+                    format!("use a value that fits `{}`, or give the binding a wider type", suffix)
+                } else {
+                    format!("use a smaller value, drop the `{}` suffix, or pick a wider type", suffix)
+                }),
 
             _ => None,
         }

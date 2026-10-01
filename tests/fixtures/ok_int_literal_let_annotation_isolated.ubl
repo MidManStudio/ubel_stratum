@@ -1,0 +1,28 @@
+// tests/fixtures/ok_int_literal_let_annotation_isolated.ubl
+// Context-driven integer literal typing, boundary 1: the annotated let.
+// An unsuffixed literal takes the annotated type (docs/PARKED_IDEAS.md,
+// "Unsuffixed integer literals"), so `let a: u8 = 250` is a real u8 and
+// its arithmetic wraps at 8 bits. A binding with no annotation is typed
+// by a LATER use: `n` below becomes a u16 only because of `let w: u16 = n`.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let a: u8 = 250
+    let wrapped: u8 = a + 10
+    assert(wrapped == 4, "250u8 + 10 wraps to 4")
+
+    let n = 65535
+    let w: u16 = n
+    let over: u16 = w + 1
+    assert(over == 0, "65535u16 + 1 wraps to 0, n was typed u16 by its later use")
+
+    let lowest: i8 = -128
+    let highest: i8 = 127
+    assert(highest + 1 == lowest, "127i8 + 1 wraps to -128")
+
+    let big: u32 = 4000000000
+    assert(big + 500000000 == 205032704, "u32 wraps at 2^32")
+
+    let signed: i64 = 9_000_000_000
+    assert(signed == 9000000000, "a wide literal in an i64 binding is exact")
+}

@@ -1,0 +1,47 @@
+// tests/fixtures/ok_int_literal_match_pattern_isolated.ubl
+// Context-driven integer literal typing, boundary 7: literal patterns.
+// A bare literal pattern takes the scrutinee's sized type, so matching a
+// u8 against `255`, an i8 against `-1`, or an or-pattern of literals
+// works at runtime. A sized value no longer fails to match just because
+// the pattern literal was a plain int.
+// Expected: sema OK, interpret OK.
+
+fn classify(b: u8) string {
+    match b {
+        0 => { return "zero" }
+        255 => { return "max" }
+        _ => { return "other" }
+    }
+}
+
+fn sign(v: i8) string {
+    match v {
+        -1 => { return "minus one" }
+        0 => { return "zero" }
+        127 => { return "max" }
+        _ => { return "other" }
+    }
+}
+
+fn band(v: u8) string {
+    match v {
+        0 | 1 => { return "low" }
+        2 => { return "two" }
+        _ => { return "rest" }
+    }
+}
+
+fn main() void {
+    assert(classify(0) == "zero", "u8 zero")
+    assert(classify(255) == "max", "u8 max")
+    assert(classify(9) == "other", "u8 other")
+
+    assert(sign(-1) == "minus one", "i8 negative literal pattern")
+    assert(sign(0) == "zero", "i8 zero")
+    assert(sign(127) == "max", "i8 max")
+    assert(sign(5) == "other", "i8 other")
+
+    assert(band(1) == "low", "or-pattern, second alternative")
+    assert(band(2) == "two", "single literal after an or-pattern")
+    assert(band(200) == "rest", "or-pattern miss")
+}

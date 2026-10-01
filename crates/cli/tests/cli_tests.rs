@@ -81,6 +81,21 @@ fn debug_tokens_lists_tokens() {
 }
 
 #[test]
+fn run_gives_an_unsuffixed_literal_the_type_its_context_picks() {
+    // `250` is a u8 because of the annotation, so the sum wraps at 8 bits.
+    // This only prints 4 when `run` hands the interpreter the literal
+    // widths that sema resolved.
+    let f = ubl("fn main() void {\n let a: u8 = 250\n let w = a + 10\n println(w)\n}\n");
+    ubel().arg("run").arg(f.path()).assert().success().stdout(contains("4\n"));
+}
+
+#[test]
+fn check_rejects_a_literal_that_does_not_fit_its_type() {
+    let f = ubl("fn main() void {\n let bad: u8 = 300\n}\n");
+    ubel().arg("check").arg(f.path()).assert().code(1).stderr(contains("TYPE-120"));
+}
+
+#[test]
 fn quiet_suppresses_success_output() {
     let f = ubl(VALID);
     ubel().arg("check").arg(f.path()).arg("--quiet").assert().success().stdout("");

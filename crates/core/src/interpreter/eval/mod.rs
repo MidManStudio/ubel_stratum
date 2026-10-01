@@ -18,7 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::arena::AstArena;
-use crate::ast::common::TierAnnotation;
+use crate::ast::common::{Span, TierAnnotation};
+use crate::ast::literals::IntSuffix;
 use crate::ast::declarations::{ConstDecl, FunctionDecl, MethodDecl, ParamKind, StructMember};
 use crate::ast::expressions::Expr;
 use crate::ast::root::{Item, Program};
@@ -123,6 +124,13 @@ pub struct Interpreter<'ast> {
     /// its own to construct from — unlike `List.new()` etc. — so it
     /// reads capacity from here rather than from its own call args.
     pub(crate) pool_capacity_stack: Vec<usize>,
+    /// The width sema gave each unsuffixed integer literal, keyed by the
+    /// literal's span (`SemaContext::int_literal_types`). The interpreter
+    /// has no static types, so this is how `5` in `let x: u8 = 5` becomes
+    /// a `u8` value instead of a plain `int`. Empty by default, which
+    /// leaves every literal a plain `int` -- exactly the behavior of a
+    /// program run without sema, as the interpreter's own unit tests do.
+    pub(crate) int_literal_types: HashMap<Span, IntSuffix>,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -136,9 +144,19 @@ impl<'ast> Interpreter<'ast> {
             struct_field_order: HashMap::new(),
             arena,
             pool_capacity_stack: Vec::new(),
+            int_literal_types: HashMap::new(),
         };
         interp.register_builtins();
         interp
+    }
+
+    /// Hand the interpreter the literal widths sema resolved
+    /// (`SemaContext::int_literal_types`). Call this before `run_program`
+    /// for any program that went through `sema::analyse`; without it a
+    /// literal such as the `5` in `let x: u8 = 5` stays a plain `int` and a
+    /// later `x + y` with a real `u8` panics with a type mismatch.
+    pub fn set_int_literal_types(&mut self, types: HashMap<Span, IntSuffix>) {
+        self.int_literal_types = types;
     }
 
     // ── Registration ─────────────────────────────────────────────

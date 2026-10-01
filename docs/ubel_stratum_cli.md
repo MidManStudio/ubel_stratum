@@ -61,6 +61,10 @@ Marked `[DEBUG]` in its help; the format is not stable. Mirrors
 
 `check_file` and `run_file`. Both go through
 `ubel_stratum_rd::check_source`, the entry the language server also uses.
+`run_file` then re-parses and runs sema again to obtain
+`SemaContext::int_literal_types`, and passes it to
+`Interpreter::set_int_literal_types` before `run_program`. Without it the
+interpreter cannot know that `let x: u8 = 5` holds a `u8`.
 
 ### `services/file_io.rs`, `output/printer.rs`, `output/json_output.rs`
 
@@ -91,7 +95,8 @@ uses stable, and the dependency versions are whatever the resolver picks.
 - `run_file` lexes and parses a second time after a clean check, because the
   AST borrows the arena that `check_source` owned and dropped. Harmless for a
   command-line tool. A `check_with_arena` variant on the parser crate is the
-  fix if it ever matters.
+  fix if it ever matters. It now also runs sema a second time for the literal
+  width table; the same `check_with_arena` variant would remove both repeats.
 
 ### Verification environment
 

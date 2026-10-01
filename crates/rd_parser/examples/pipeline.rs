@@ -62,7 +62,7 @@ fn main() {
         counts[1] += 1;
 
         // ── Stage 3: sema ─────────────────────────────────────────────
-        let _sema_ctx = match ubel_stratum::sema::analyse(&program, &arena, source.clone()) {
+        let sema_ctx = match ubel_stratum::sema::analyse(&program, &arena, source.clone()) {
             Ok(ctx) => ctx,
             Err(mut errs) => {
                 println!("[SEMA-FAIL]       {name}:");
@@ -99,6 +99,7 @@ fn main() {
         }
 
         let mut interp = ubel_stratum::interpreter::Interpreter::new(&arena);
+        interp.set_int_literal_types(sema_ctx.int_literal_types);
         match interp.run_program(&program) {
             Ok(()) => {
                 println!("[FULL-PIPELINE-OK] {name}");

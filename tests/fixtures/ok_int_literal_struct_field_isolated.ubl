@@ -1,0 +1,27 @@
+// tests/fixtures/ok_int_literal_struct_field_isolated.ubl
+// Context-driven integer literal typing, boundary 3: struct fields.
+// A literal in a struct literal takes the declared field type
+// (`Pixel { r = 200 }` with `r: u8`), and so does a literal assigned to
+// a field afterwards, including through a compound assignment.
+// Expected: sema OK, interpret OK.
+
+struct Pixel {
+    r: u8,
+    g: u8,
+    count: u32,
+}
+
+fn main() void {
+    let p = Pixel { r = 200, g = 100, count = 4294967295 }
+    assert(p.r + p.g == 44, "field initializers are u8, 200 + 100 wraps")
+    assert(p.count + 1 == 0, "a u32 field initializer wraps at 2^32")
+
+    p.r = 255
+    assert(p.r + 1 == 0, "assignment to a u8 field stores a u8")
+
+    p.count = 7
+    assert(p.count - 8 == 4294967295, "assignment to a u32 field stores a u32")
+
+    p.g += 200
+    assert(p.g == 44, "compound assignment to a u8 field wraps")
+}

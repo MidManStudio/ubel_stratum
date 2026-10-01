@@ -1,0 +1,16 @@
+// tests/fixtures/err_int_literal_pattern_out_of_range_isolated.ubl
+// A literal pattern takes the scrutinee's type, so it gets the same
+// range check: 300 can never equal a u8, which is a TYPE-120 at the
+// pattern, not a silently dead arm.
+// Expected: sema FAIL (IntLiteralOutOfRange, TYPE-120).
+
+fn band(v: u8) string {
+    match v {
+        300 => { return "never" }
+        _ => { return "rest" }
+    }
+}
+
+fn main() void {
+    println(band(3))
+}

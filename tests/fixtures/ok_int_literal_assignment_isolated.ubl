@@ -1,0 +1,27 @@
+// tests/fixtures/ok_int_literal_assignment_isolated.ubl
+// Context-driven integer literal typing, boundary 5: assignment.
+// A literal assigned to an existing binding takes that binding's type,
+// for plain, compound and repeated assignment, and inside a loop.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let mut n: u8 = 250
+    n = 255
+    assert(n + 1 == 0, "plain assignment stores a u8")
+
+    let mut m: u8 = 250
+    m += 10
+    assert(m == 4, "compound += wraps at u8")
+
+    let mut k: u8 = 3
+    k -= 5
+    assert(k == 254, "compound -= wraps at u8")
+
+    let mut total: u32 = 0
+    let mut i: u32 = 0
+    while i < 3 {
+        total += 2000000000
+        i += 1
+    }
+    assert(total == 1705032704, "three additions of 2e9 wrap at u32")
+}

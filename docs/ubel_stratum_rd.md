@@ -31,6 +31,23 @@ methods, parameters, structs, enums, traits, impls.
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
 `tests/fixtures/ok_callback_registry_combined.ubl`.
 
+### `tests/int_literal_typing.rs`
+
+**What it does:** Integration tests for context-driven typing of
+unsuffixed integer literals. Source text goes through lex, parse and sema,
+and where a test needs runtime values, through the interpreter with
+output capture. Three helpers (`type_error_messages`, `recorded_widths`,
+`run`) keep each test to one source string and one assertion.
+
+**Decisions:**
+- Covers what the `.ubl` fixtures cannot see: exact diagnostic counts and
+  messages for `TYPE-120` at every boundary, which literals sema records
+  in `int_literal_types`, that a run without that table panics on a
+  sized/plain mix instead of guessing, and the two places an open literal
+  is settled as `int` (end of body, type-dependent format spec).
+- The interpreter is driven the same way `ubel run` drives it: sema
+  first, then `set_int_literal_types`, then `run_program`.
+
 ### `check.rs`
 
 **What it does:** `check_source(&str) -> CheckReport` runs lex, parse and

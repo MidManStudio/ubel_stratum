@@ -149,6 +149,42 @@ fn int_suffix_signed_min_magnitude(suffix: IntSuffix) -> Option<u64> {
     }
 }
 
+/// One unsuffixed integer literal whose type is still open: its value
+/// (negative when it sits directly under a unary `-`) and where it was
+/// written, kept so a range check can name it once its type is known.
+#[derive(Clone, Copy)]
+struct IntLitUse {
+    value: i128,
+    span:  Span,
+}
+
+/// The inclusive value range and display name of a concrete integer
+/// type, or `None` for anything that is not one. `int`/`long`/`i64`/
+/// `isize` share the runtime's 64-bit signed representation, and
+/// `uint`/`u32` and `ulong`/`u64`/`usize` share theirs, exactly as the
+/// suffix table above does. `float`/`double` are deliberately not
+/// integers here: an integer literal never becomes a float implicitly
+/// (`let f: float = 5` stays a mismatch, the same as in Rust).
+fn int_type_range(t: &SemaType) -> Option<(i128, i128, &'static str)> {
+    Some(match t {
+        SemaType::Int   => (i64::MIN as i128, i64::MAX as i128, "int"),
+        SemaType::Long  => (i64::MIN as i128, i64::MAX as i128, "long"),
+        SemaType::I64   => (i64::MIN as i128, i64::MAX as i128, "i64"),
+        SemaType::Isize => (i64::MIN as i128, i64::MAX as i128, "isize"),
+        SemaType::I8    => (i8::MIN as i128,  i8::MAX as i128,  "i8"),
+        SemaType::I16   => (i16::MIN as i128, i16::MAX as i128, "i16"),
+        SemaType::I32   => (i32::MIN as i128, i32::MAX as i128, "i32"),
+        SemaType::U8    => (0, u8::MAX as i128,  "u8"),
+        SemaType::U16   => (0, u16::MAX as i128, "u16"),
+        SemaType::U32   => (0, u32::MAX as i128, "u32"),
+        SemaType::Uint  => (0, u32::MAX as i128, "uint"),
+        SemaType::U64   => (0, u64::MAX as i128, "u64"),
+        SemaType::Ulong => (0, u64::MAX as i128, "ulong"),
+        SemaType::Usize => (0, u64::MAX as i128, "usize"),
+        _ => return None,
+    })
+}
+
 fn int_suffix_fits(raw: u64, suffix: IntSuffix) -> bool {
     match suffix {
         IntSuffix::I8    => raw <= i8::MAX as u64,
@@ -338,6 +374,17 @@ struct InferCtx<'a> {
     /// — the same default the whole file already uses for top-level
     /// inference performed outside any function body.
     current_tier:     TierAnnotation,
+    /// Unsuffixed integer literals whose type is still open, keyed by the
+    /// number of the (root) `Var` standing for them. Several literals
+    /// share one entry once their vars have been unified with each other
+    /// (`1 + 2`, `[1, 2, 3]`). An entry disappears the moment its var is
+    /// bound to a concrete type, which is also when the range check runs.
+    /// See `infer_int_literal`.
+    int_lit_vars:     HashMap<u32, Vec<IntLitUse>>,
+    /// Every integer-literal site seen since the last `finish_int_literals`
+    /// (its span and its var), so the final width of each one can be
+    /// recorded in `SemaContext::int_literal_types` for the interpreter.
+    int_lit_sites:    Vec<(Span, TypeId)>,
 }
 
 impl<'a> InferCtx<'a> {
@@ -361,6 +408,8 @@ impl<'a> InferCtx<'a> {
             struct_derives:   HashMap::new(),
             generic_arity:    HashMap::new(),
             current_tier:     TierAnnotation::High,
+            int_lit_vars:     HashMap::new(),
+            int_lit_sites:    Vec::new(),
         }
     }
 
@@ -1735,6 +1784,7 @@ impl<'a> InferCtx<'a> {
                 Item::Enum(_) | Item::TypeAlias(_) => {}
             }
         }
+        self.finish_int_literals();
     }
 
     fn infer_function_body<'ast>(&mut self, f: &FunctionDecl<'ast>) {
@@ -1746,6 +1796,7 @@ impl<'a> InferCtx<'a> {
         let prev_tier = self.current_tier;
         self.current_tier = f.tier;
         self.infer_block(&f.body);
+        self.finish_int_literals();
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
         self.current_tier     = prev_tier;
@@ -1760,6 +1811,7 @@ impl<'a> InferCtx<'a> {
         let prev_tier = self.current_tier;
         self.current_tier = m.tier;
         self.infer_block(&m.body);
+        self.finish_int_literals();
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
         self.current_tier     = prev_tier;
@@ -1869,6 +1921,10 @@ impl<'a> InferCtx<'a> {
                 self.ctx.set_def_type(def_id, inferred);
             }
         }
+        // A const's type is shared by every function that reads it, so
+        // whatever its initializer left open is settled here, not left for
+        // one unrelated caller to decide.
+        self.finish_int_literals();
     }
 
     // ── Block ─────────────────────────────────────────────────────
@@ -2246,6 +2302,17 @@ impl<'a> InferCtx<'a> {
                         // for it.
                     }
                 }
+                // `-128` for an `i8` binding: an unsuffixed literal directly
+                // under `-` is checked as the negative value it denotes, so
+                // the type's most-negative value is reachable, and `-1` for
+                // a `u8` is rejected instead of wrapping. The literal and the
+                // negation share one type, so the operand records the same
+                // var the whole expression returns.
+                if let (UnaryOp::Neg, ExprKind::Lit(Literal::Int(n))) = (op, &operand.kind) {
+                    let ty = self.infer_int_literal(-(*n as i128), operand.span);
+                    self.ctx.set_expr_type(operand.span, ty);
+                    return ty;
+                }
                 let op_ty = self.infer_expr(operand);
                 match op {
                     UnaryOp::Not    => self.bool_ty(),
@@ -2544,7 +2611,7 @@ impl<'a> InferCtx<'a> {
                 // pass already has.
                 if let ExprKind::Field { target, field } = callee.kind {
                     let receiver_ty = self.ctx.expr_type(target.span)
-                        .map(|ty| self.apply(ty));
+                        .map(|ty| { let ty = self.default_if_int_lit(ty); self.apply(ty) });
                     if let Some(receiver_ty) = receiver_ty {
                         if let Some((wrap, kind, bare_ty)) =
                             instance::resolve_receiver(&self.ctx.types, receiver_ty)
@@ -2783,6 +2850,7 @@ impl<'a> InferCtx<'a> {
                 // was constructed), so no fresh-var allocation is needed
                 // here — just substitute into the field's raw stored type.
                 let receiver_ty = self.infer_expr(target);
+                let receiver_ty = self.default_if_int_lit(receiver_ty);
                 let receiver_ty = self.apply(receiver_ty);
                 if let SemaType::Named { def, args } = self.ctx.types.get(receiver_ty).clone() {
                     if let Some(fields) = self.struct_fields.get(&def).cloned() {
@@ -3109,11 +3177,165 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    // ── Integer-literal variables ──────────────────────────────────
+    //
+    // docs/PARKED_IDEAS.md, "Unsuffixed integer literals: full
+    // context-driven typing (Rust style)". An unsuffixed literal starts
+    // as a fresh type variable that remembers its value. Unifying that
+    // variable with a concrete integer type range-checks the value
+    // (`TYPE-120`) and binds it; unifying it with another literal
+    // variable merges the two; unifying it with anything else (a float,
+    // a struct, a string) is an ordinary type mismatch. Whatever is
+    // still open when the enclosing body ends is a plain `int`.
+
+    /// A new literal variable for one unsuffixed integer literal.
+    fn infer_int_literal(&mut self, value: i128, span: Span) -> TypeId {
+        let ty = self.fresh_var();
+        if let &SemaType::Var(n) = self.ctx.types.get(ty) {
+            self.int_lit_vars.insert(n, vec![IntLitUse { value, span }]);
+        }
+        self.int_lit_sites.push((span, ty));
+        ty
+    }
+
+    /// The var number if `ty` (already `apply`-ed) is a still-open
+    /// integer-literal variable.
+    fn int_lit_var_of(&self, ty: TypeId) -> Option<u32> {
+        if ty == TypeId::ERROR { return None; }
+        match self.ctx.types.get(ty) {
+            &SemaType::Var(n) if self.int_lit_vars.contains_key(&n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Range-check every literal behind `var` against `target`, then bind
+    /// the variable to it. `target_ty` must be a concrete integer type
+    /// (the caller establishes that via `int_type_range`).
+    fn bind_int_lit(&mut self, var: u32, target_ty: TypeId, range: (i128, i128, &'static str)) {
+        let (min, max, name) = range;
+        let uses = self.int_lit_vars.remove(&var).unwrap_or_default();
+        for u in uses {
+            if u.value < min || u.value > max {
+                self.errors.add_type_error(TypeError::IntLiteralOutOfRange {
+                    suffix:   name,
+                    raw:      u.value.unsigned_abs() as u64,
+                    negative: u.value < 0,
+                    inferred: true,
+                    span:     u.span,
+                });
+            }
+        }
+        self.unifier.bind(var, target_ty);
+    }
+
+    /// Settle an open literal variable as plain `int`.
+    fn default_int_lit_var(&mut self, var: u32) {
+        let int_ty = self.int_ty();
+        let range  = int_type_range(&SemaType::Int).expect("int is an integer type");
+        self.bind_int_lit(var, int_ty, range);
+    }
+
+    /// If `ty` is still an open literal variable, settle it as `int` and
+    /// return `int`; otherwise return `ty` untouched. For the few places
+    /// that need a concrete shape right now (a format hole, an `await`
+    /// operand, a method receiver) rather than a type to unify later.
+    ///
+    /// The returned id is always the *resolved* type: a variable that an
+    /// earlier call already settled must not come back as the stale
+    /// unresolved id.
+    fn default_if_int_lit(&mut self, ty: TypeId) -> TypeId {
+        let applied = self.apply(ty);
+        match self.int_lit_var_of(applied) {
+            Some(var) => { self.default_int_lit_var(var); self.int_ty() }
+            None      => applied,
+        }
+    }
+
+    /// The literal-variable half of `unify`. `a` and `b` are already
+    /// `apply`-ed and distinct. Returns `true` when at least one side was
+    /// an open literal variable and this handled the pair completely.
+    fn try_unify_int_lit(&mut self, a: TypeId, b: TypeId, span: Span) -> bool {
+        let la = self.int_lit_var_of(a);
+        let lb = self.int_lit_var_of(b);
+        let (lit_var, lit_ty, other) = match (la, lb) {
+            (None, None) => return false,
+            // Two literals: one variable now stands for both.
+            (Some(x), Some(y)) => {
+                self.unifier.bind(x, b);
+                if let Some(uses) = self.int_lit_vars.remove(&x) {
+                    self.int_lit_vars.entry(y).or_default().extend(uses);
+                }
+                return true;
+            }
+            (Some(x), None) => (x, a, b),
+            (None, Some(y)) => (y, b, a),
+        };
+
+        let other_ty = self.ctx.types.get(other).clone();
+
+        // A concrete integer type: range-check and bind.
+        if let Some(range) = int_type_range(&other_ty) {
+            self.bind_int_lit(lit_var, other, range);
+            return true;
+        }
+        match other_ty {
+            // An ordinary variable simply becomes the literal's type.
+            SemaType::Var(o) => { self.unifier.bind(o, lit_ty); true }
+            // Unknown absorbs without cascading, as everywhere in `unify`.
+            SemaType::Unknown => true,
+            // `maybe_int == 5`: the literal meets the payload type.
+            SemaType::Optional(inner) => { self.unify(inner, lit_ty, span); true }
+            // Anything else cannot be an integer. Settle the literal as
+            // `int` and unify again, so the mismatch (or scope-escape)
+            // diagnostic reads exactly as it did before literals were
+            // context-typed.
+            _ => {
+                self.default_int_lit_var(lit_var);
+                self.unify(a, b, span);
+                true
+            }
+        }
+    }
+
+    /// End of a body (or const initializer): record the width each
+    /// literal ended up with for the interpreter, and settle every
+    /// literal nothing constrained as plain `int`.
+    fn finish_int_literals(&mut self) {
+        let sites = std::mem::take(&mut self.int_lit_sites);
+        for (span, ty) in sites {
+            let applied = self.apply(ty);
+            if let Some(var) = self.int_lit_var_of(applied) {
+                self.default_int_lit_var(var);
+                continue;
+            }
+            if applied == TypeId::ERROR { continue; }
+            // `int`, `long`, `i64` and `isize` are all the interpreter's
+            // default 64-bit value, so they need no entry.
+            let suffix = match self.ctx.types.get(applied) {
+                SemaType::I8    => Some(IntSuffix::I8),
+                SemaType::I16   => Some(IntSuffix::I16),
+                SemaType::I32   => Some(IntSuffix::I32),
+                SemaType::U8    => Some(IntSuffix::U8),
+                SemaType::U16   => Some(IntSuffix::U16),
+                SemaType::U32 | SemaType::Uint              => Some(IntSuffix::U32),
+                SemaType::U64 | SemaType::Ulong             => Some(IntSuffix::U64),
+                SemaType::Usize                             => Some(IntSuffix::Usize),
+                _ => None,
+            };
+            if let Some(s) = suffix {
+                self.ctx.int_literal_types.insert(span, s);
+            }
+        }
+    }
+
     // ── Literal typing ────────────────────────────────────────────
 
     fn infer_literal<'ast>(&mut self, lit: &Literal<'ast>, span: Span) -> TypeId {
         match lit {
-            Literal::Int(_)   => self.ctx.types.intern(SemaType::Int),
+            // Unsuffixed: the type comes from where the literal is used
+            // (docs/PARKED_IDEAS.md, "Unsuffixed integer literals"), so it
+            // starts as a literal type variable, see `infer_int_literal`.
+            Literal::Int(n)   => self.infer_int_literal(*n as i128, span),
             // `TYPE-120`: a suffix (explicit or the lexer's own
             // auto-promoted implicit `u64`, see `Literal::TypedInt`'s doc
             // comment) claims a specific width -- check the value
@@ -3122,8 +3344,10 @@ impl<'a> InferCtx<'a> {
             Literal::TypedInt { raw, suffix } => {
                 if !int_suffix_fits(*raw, *suffix) {
                     self.errors.add_type_error(TypeError::IntLiteralOutOfRange {
-                        suffix: suffix.as_str(),
-                        raw:    *raw,
+                        suffix:   suffix.as_str(),
+                        raw:      *raw,
+                        negative: false,
+                        inferred: false,
                         span,
                     });
                 }
@@ -3266,6 +3490,19 @@ impl<'a> InferCtx<'a> {
     /// truncation work on the rendered string regardless), so nothing
     /// to check for those.
     fn check_format_spec(&mut self, spec: &FormatSpec, hole_ty: TypeId, span: Span) {
+        // Precision, `+`, zero-pad and a numeric base are only implemented
+        // for plain `int` (and float/double/str) at runtime, see
+        // `apply_format_spec`, so a spec that depends on the type settles
+        // an open literal (`{255:x}`, or `n` in `let n = 255` used as
+        // `{n:+}`) as `int`. Width, fill, alignment and `?` do not depend
+        // on the type and leave it open for a later use to decide.
+        let type_dependent = spec.precision.is_some() || spec.sign_plus
+            || spec.zero_pad || spec.base.is_some();
+        let hole_ty = if type_dependent {
+            self.default_if_int_lit(hole_ty)
+        } else {
+            self.apply(hole_ty)
+        };
         let resolved = self.ctx.types.get(hole_ty);
         let is_numeric = matches!(resolved, SemaType::Int | SemaType::Float | SemaType::Double);
         let on_type = || resolved.display(&self.ctx.types, &self.ctx.symbols);
@@ -3329,6 +3566,18 @@ impl<'a> InferCtx<'a> {
                 let resolved = self.apply(lhs);
                 let orderable = match self.ctx.types.get(resolved) {
                     SemaType::Int | SemaType::Float | SemaType::Double | SemaType::Str => true,
+                    // The sized integers and `f32`/`f64` were missing from
+                    // this list, so `a < b` on two `u32`s was TYPE-118
+                    // even though the interpreter's `sized_int_binop`
+                    // compares them fine.
+                    SemaType::Uint | SemaType::Long | SemaType::Ulong
+                    | SemaType::I8 | SemaType::I16 | SemaType::I32 | SemaType::I64
+                    | SemaType::U8 | SemaType::U16 | SemaType::U32 | SemaType::U64
+                    | SemaType::Isize | SemaType::Usize
+                    | SemaType::F32 | SemaType::F64 => true,
+                    // Two unconstrained literals (`1 < 2`) are still just
+                    // an integer of some width, and integers are ordered.
+                    SemaType::Var(n) if self.int_lit_vars.contains_key(n) => true,
                     SemaType::Named { def, .. } => self.struct_derives.get(def)
                         .is_some_and(|d| d.contains("PartialOrd") || d.contains("Ord")),
                     // Genuinely unresolved (e.g. a Linqerizer lambda
@@ -3361,6 +3610,7 @@ impl<'a> InferCtx<'a> {
     // ── Type unwrapping helpers ───────────────────────────────────
 
     fn unwrap_task(&mut self, ty: TypeId, span: Span) -> TypeId {
+        let ty = self.default_if_int_lit(ty);
         let resolved = self.apply(ty);
         match self.ctx.types.get(resolved) {
             SemaType::Task(inner) => *inner,
@@ -3381,6 +3631,7 @@ impl<'a> InferCtx<'a> {
     }
 
     fn unwrap_reference(&mut self, ty: TypeId, span: Span) -> TypeId {
+        let ty = self.default_if_int_lit(ty);
         let resolved = self.apply(ty);
         match self.ctx.types.get(resolved) {
             SemaType::Reference { inner, .. } => *inner,
@@ -3528,6 +3779,10 @@ impl<'a> InferCtx<'a> {
         let a = self.apply(a);
         let b = self.apply(b);
         if a == b { return; }
+
+        // An integer-literal variable has its own binding rules (range
+        // check, no implicit float, merging with other literals).
+        if self.try_unify_int_lit(a, b, span) { return; }
 
         // FIX: use reference patterns so we don't try to move out of &SemaType.
         // u32 is Copy so binding through &SemaType::Var(v) gives v: u32.
@@ -3806,6 +4061,7 @@ impl<'a> InferCtx<'a> {
 
     fn display_type(&self, id: TypeId) -> String {
         if id == TypeId::ERROR { return "<error>".into(); }
+        if self.int_lit_var_of(self.apply(id)).is_some() { return "{integer}".into(); }
         self.ctx.types.get(id).display(&self.ctx.types, &self.ctx.symbols)
     }
     }

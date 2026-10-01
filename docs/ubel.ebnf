@@ -488,7 +488,14 @@ BinaryLit     ::= "0b" BinDigit (BinDigit | "_")* IntSuffix?
    a silent wraparound. A suffixed literal directly under a unary `-`
    (`-128i8`) is special-cased to allow that type's full signed range,
    including its most-negative value, matching how Rust's own compiler
-   treats a negated literal. *)
+   treats a negated literal.
+
+   An UNSUFFIXED literal has no fixed type in the grammar. Sema types it
+   from where it is used (`let x: u8 = 5`, `f(3)` for an `i16`
+   parameter, `n + 1` for a `u32` `n`, a `match` pattern against a
+   `u8`) and applies the same `TYPE-120` range check to the type the
+   context picked. With nothing to constrain it, it is a plain `int`.
+   An integer literal never becomes a float implicitly. *)
 IntSuffix     ::= "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64"
                 | "isize" | "usize"

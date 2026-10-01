@@ -1,0 +1,25 @@
+// tests/fixtures/err_int_literal_out_of_range_combined.ubl
+// The range check reaches every boundary that gives a literal a type,
+// not just an annotated let: a call argument, a struct field, a return
+// value, and a negative literal for an unsigned type. Four literals,
+// four TYPE-120 diagnostics, one each.
+// Expected: sema FAIL (IntLiteralOutOfRange, TYPE-120, four times).
+
+struct Cell {
+    v: i8,
+}
+
+fn takes(b: u8) u8 {
+    return b
+}
+
+fn fixed() u16 {
+    return 70000
+}
+
+fn main() void {
+    let a = takes(256)
+    let c = Cell { v = 200 }
+    let d: u32 = -1
+    println($"{a} {c.v} {d} {fixed()}")
+}

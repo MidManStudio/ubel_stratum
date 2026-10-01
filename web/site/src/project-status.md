@@ -66,6 +66,14 @@ verified safe.
 - Fixed-width integers with real wrapping arithmetic and the full `u64`
   range (`u8`, `i8`, `u16`, `i16`, `u32`, `u64`, and the rest), numeric
   literal suffixes (`255u8`), and a literal-out-of-range diagnostic
+- Unsuffixed integer literals take their type from context, the way Rust
+  does: `let x: u8 = 250`, a struct field, a call argument, a return
+  value, an assignment, the other operand of `+` or `<`, and a `match`
+  pattern all give the literal the type the position expects, with the
+  same out-of-range check (`let x: u8 = 300` is an error, not a silent
+  wrap). A literal with nothing to constrain it stays a plain `int`. An
+  integer literal never becomes a float on its own (`let f: float = 5`
+  needs `5.0`). Ordering comparisons now work on the fixed-width integers
 - A parser ambiguity fix: a bare identifier condition immediately
   followed by a block whose first statement was a plain assignment
   (`if x == y { hit_count = hit_count + 1 }`) could misparse as a
@@ -77,17 +85,21 @@ verified safe.
 - The trait system: `trait` declarations and `impl Trait for Type`
   blocks parse, but trait method dispatch, `dyn Trait`, and bound
   enforcement are not built and still need a design pass
-- Decided, not yet built: unsuffixed integer literals take their type
-  from context (`P { n = 10 }` with `n: u32`), and mutable globals arrive
-  as `static` items in the HIGH tier only
-- Still to decide: whether struct fields get default values
+- Decided, not yet built: mutable globals arrive as `static` items in
+  the HIGH tier only
+- Still to decide: whether struct fields get default values. The literal
+  typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to
   definition and completion are not built
 
 ## Known gaps, tracked rather than hidden
 
-- An unsuffixed integer literal does not coerce to a sized-integer
-  field or binding (`let x: u32 = 10` needs `10u32`)
+- Arguments to built-in collection methods are not type-checked, so
+  `list.push(200)` on a `List<u8>` stores a plain `int` and a later
+  `list[0] + 100` fails when the program runs
+- Format specs for sign, zero padding and numeric base (`{x:+}`,
+  `{x:05}`, `{x:x}`) work on plain `int` only, not on the fixed-width
+  integers
 - `type` aliases are not yet transparent: with `type Score = int`, a
   `Score` and an `int` do not unify without an explicit cast
 - An unknown method called on an enum value is not caught at compile

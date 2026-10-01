@@ -27,6 +27,9 @@ bug that changes how many diagnostics a program produces (one typo
 reported twice, say) is covered by
 `crates/rd_parser/tests/diagnostic_counts.rs` instead, which runs source
 text through lex, parse and sema and asserts exact counts.
+`crates/rd_parser/tests/int_literal_typing.rs` does the same for integer
+literal typing and also runs programs through the interpreter, since
+that feature spans sema and runtime.
 
 ## 2. Mix features together, not just in isolation
 

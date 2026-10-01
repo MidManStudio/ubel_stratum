@@ -131,6 +131,12 @@ pub fn run_pipeline(source: &str) -> String {
 
     // ── Stage 3: sema ───────────────────────────────────────────────
     let sema_result = ubel_stratum::sema::analyse(&program, &arena, source.clone());
+    // The width sema resolved for each unsuffixed integer literal; the
+    // interpreter needs it to run `let x: u8 = 5` with a real `u8`.
+    let int_literal_types = match &sema_result {
+        Ok(ctx) => ctx.int_literal_types.clone(),
+        Err(_)  => Default::default(),
+    };
     if let Err(mut errs) = sema_result {
         let mut diags: Vec<Diagnostic> = errs
             .take_name_errors()
@@ -174,6 +180,7 @@ pub fn run_pipeline(source: &str) -> String {
 
     ubel_stratum::builtins::global::io::start_output_capture();
     let mut interp = ubel_stratum::interpreter::Interpreter::new(&arena);
+    interp.set_int_literal_types(int_literal_types);
     let run_result = interp.run_program(&program);
     let output = ubel_stratum::builtins::global::io::take_captured_output();
 

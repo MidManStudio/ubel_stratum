@@ -1,0 +1,31 @@
+// tests/fixtures/ok_int_literal_binary_operand_isolated.ubl
+// Context-driven integer literal typing, boundary 6: the other operand
+// of a binary operator. `u32_var + 1`, `a < 251`, `a == 200` and the
+// bitwise operators all type the literal from the sized operand. The
+// comparison half also covers ordering on sized integers, which used to
+// be rejected as TYPE-118 even though the interpreter supports it.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let a: u8 = 200
+    assert(a == 200, "equality: the literal is a u8, so u8 == u8 holds")
+    assert(a != 201, "inequality against a literal")
+    assert(a < 201, "ordering on u8")
+    assert(a >= 200, "ordering on u8, inclusive")
+
+    let b: i32 = -5
+    assert(b < 0, "ordering on a negative i32")
+    assert(b * 3 == -15, "arithmetic with a literal operand")
+
+    let c: u16 = 65535
+    assert(c + 1 == 0, "u16 + literal wraps")
+    let masked = c & 255
+    assert(masked == 255, "bitwise and with a literal")
+    let shifted = c >> 8
+    assert(shifted == 255, "shift with a literal")
+
+    let d: u64 = 18446744073709551615
+    assert(d + 1 == 0, "u64 + literal wraps")
+
+    assert(1 < 2, "two bare literals are plain ints and are ordered")
+}
