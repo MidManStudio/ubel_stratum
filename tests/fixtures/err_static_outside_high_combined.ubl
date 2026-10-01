@@ -1,0 +1,37 @@
+// tests/fixtures/err_static_outside_high_combined.ubl
+// Every way of touching a static from outside the HIGH tier is its own
+// TIER-015: a read in a LOW function, a write in a MID function, a read
+// inside an interpolation hole, and a read inside a lambda body. Four
+// accesses, four diagnostics. The HIGH function that reads it is fine.
+// Expected: sema FAIL (StaticAccessOutsideHigh, TIER-015, four times).
+
+static TOTAL: int = 0
+
+@tier(low)
+fn low_read() int {
+    return TOTAL
+}
+
+@tier(mid)
+fn mid_write() void {
+    TOTAL = 5
+}
+
+@tier(low)
+fn low_hole() string {
+    return $"{TOTAL}"
+}
+
+@tier(mid)
+fn mid_lambda() int {
+    let get = fn() TOTAL
+    return get()
+}
+
+fn high_read() int {
+    return TOTAL
+}
+
+fn main() void {
+    println($"{high_read()}")
+}

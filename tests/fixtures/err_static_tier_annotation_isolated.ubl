@@ -1,0 +1,16 @@
+// tests/fixtures/err_static_tier_annotation_isolated.ubl
+// A static always lives in the HIGH tier. `@tier(high)` is accepted as a
+// redundant spelling; `@tier(low)` (or mid) on the static itself is
+// reported instead of being silently ignored. Exactly one diagnostic: the
+// `@tier(high)` static two lines down is fine.
+// Expected: parse FAIL (IllegalInContext, PARSE-004).
+
+@tier(low)
+static WRONG: int = 1
+
+@tier(high)
+static FINE: int = 2
+
+fn main() void {
+    println($"{FINE}")
+}

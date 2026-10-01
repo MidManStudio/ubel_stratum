@@ -287,7 +287,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     pub(crate) const DECL_SYNC: &'static [TokenType] = &[
         TokenType::Fn,    TokenType::Struct, TokenType::Enum,
         TokenType::Trait, TokenType::Impl,   TokenType::Extend,
-        TokenType::Const, TokenType::TypeKw, TokenType::Pub,
+        TokenType::Const, TokenType::Static, TokenType::TypeKw, TokenType::Pub,
         TokenType::At,    TokenType::Edge,   TokenType::Eof,
     ];
 

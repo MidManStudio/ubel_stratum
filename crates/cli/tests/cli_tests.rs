@@ -96,6 +96,22 @@ fn check_rejects_a_literal_that_does_not_fit_its_type() {
 }
 
 #[test]
+fn run_shares_one_static_between_functions() {
+    // The static is bumped inside `bump`, a different call from the one
+    // that reads it. It only prints 2 when the interpreter keeps statics
+    // in a store shared across calls.
+    let f = ubl("static N: int = 0\nfn bump() void { N += 1 }\n\
+                 fn main() void {\n bump()\n bump()\n println(N)\n}\n");
+    ubel().arg("run").arg(f.path()).assert().success().stdout(contains("2\n"));
+}
+
+#[test]
+fn check_rejects_a_static_used_from_outside_the_high_tier() {
+    let f = ubl("static N: int = 0\n@tier(low)\nfn f() int { return N }\nfn main() void { println(f()) }\n");
+    ubel().arg("check").arg(f.path()).assert().code(1).stderr(contains("TIER-015"));
+}
+
+#[test]
 fn quiet_suppresses_success_output() {
     let f = ubl(VALID);
     ubel().arg("check").arg(f.path()).arg("--quiet").assert().success().stdout("");

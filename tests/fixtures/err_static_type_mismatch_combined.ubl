@@ -1,0 +1,14 @@
+// tests/fixtures/err_static_type_mismatch_combined.ubl
+// The declared type is enforced at the initializer and at every
+// assignment, the same as for a `let mut`. Three mistakes, three
+// diagnostics: a string initializer for an int static, a string
+// assigned to an int static, and an int assigned to a string static.
+// Expected: sema FAIL (TypeMismatch, TYPE-101, three times).
+
+static COUNT: int = "text"
+static NAME: string = "a"
+
+fn main() void {
+    NAME = 5
+    COUNT = "no"
+}

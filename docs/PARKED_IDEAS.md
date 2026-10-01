@@ -492,13 +492,15 @@ it actually turned up:
 - Calling a function-typed struct field (`c.cb(4)` where `cb: fn(int)
   int`) is reported as `NoSuchMethod`, because the `Call` arm only
   consults `struct_methods` for a `Field` callee.
-- `pub` and `@tier(...)` written on a `const` or `type` item parse and
-  are silently dropped: `ConstDecl` and `TypeAlias` carry no
-  visibility or tier, and name resolution declares both `Private`.
+- `pub` written on a `const` or `type` item, and `@tier(...)` written on
+  a `type` item, parse and are silently dropped: `ConstDecl` and
+  `TypeAlias` carry no visibility or tier, and name resolution declares
+  both `Private`. (`@tier(...)` on a `const` is now `PARSE-004`, see
+  "Mutable globals" under "Built".)
 - A `TypeMismatch` raised while unifying the arguments of two generic
   types carries `Span::at(0)`, so the diagnostic points at line 0.
-- Struct field default values (`n: u32 = 5u32`) do not parse, and there
-  is no mutable global item; a top-level `let` is a parse error.
+- Struct field default values (`n: u32 = 5u32`) do not parse. A
+  top-level `let` is a parse error; use `static` for a mutable global.
 
 ## Built
 
@@ -561,7 +563,7 @@ integers and `f32`/`f64` were rejected as `TYPE-118` although the
 interpreter compares them fine. `binop_result`'s orderable list now
 includes them.
 
-Known gaps, recorded rather than hidden:
+Known gaps of the literal typing work, recorded rather than hidden:
 
 - Builtin method arguments are not type-checked at all: a builtin method
   signature carries only a return shape and an arity. So
@@ -588,19 +590,76 @@ Known gaps, recorded rather than hidden:
 - A plain `int` expression above 2^53 still goes through `f64` in
   `promote_numeric`.
 
+**Mutable globals: `static`, HIGH tier only.** Decided in the session
+that added the `ubel` and `ubel-lsp` stubs, built in the one after the
+literal typing work.
+
+```
+[pub] static NAME: Type = expr
+```
+
+- The type annotation is required. Many functions assign to a static, so
+  its type must not depend on which body happens to be inferred first.
+  A missing `:` is one `PARSE-001`, and the rest of the declaration is
+  skipped (`recover_to_decl`) so its leftover tokens are not reported a
+  second time as a stray top-level item.
+- Private unless marked `pub`. `pub` is recorded on `StaticDecl` and
+  becomes meaningful once the module system lands.
+- Only `@tier(high)` code may read or write a static (`TIER-015`,
+  `StaticAccessOutsideHigh`). That covers an assignment target, an
+  interpolation hole (`$"{N}"`, which the tier checker did not walk
+  before) and a lambda body. The way around it is to read the static in a
+  HIGH function and pass the value in. A static's own initializer is
+  checked as HIGH code.
+- A `const` is unchanged: immutable, tier-agnostic, readable from every
+  tier. A `const` initializer that reads a static is `NAME-008`
+  (`StaticInConst`), since a const is evaluated once at startup and
+  re-evaluated when it had to wait for a later constant.
+- `@tier(...)` written on the item itself is checked in
+  `parse_item_or_block`: on a `const` it is `PARSE-004`, on a `static`
+  `@tier(mid)` and `@tier(low)` are `PARSE-004` and `@tier(high)` is
+  accepted as a redundant spelling. A tier BLOCK around either
+  (`@tier(low) { const N = 1  static S: int = 0 }`) is not an own
+  annotation: the block's tier is for the functions in it, and
+  `apply_block_attrs` never gives a const or a static a tier.
+- Statics are assignable (`DefKind::Static`, unlike `DefKind::Const`), so
+  `NAME-007` does not fire for them. A local of the same name shadows a
+  static, as it does a const.
+
+Runtime. `Environment::snapshot` is a plain clone of the scope stack, and
+`call_function` replaces the interpreter's environment with a clone of
+the function's closure for every call. A global kept in a scope would be
+copied in, assigned to, and discarded when the call returned, so an
+assignment in one function would never be seen by another. Statics
+therefore live in `Interpreter::statics`, a name-keyed table outside the
+scope stack. `lookup` falls back to it after `env` and `write_lvalue`
+checks it after `env.set`, so a local still shadows a static. Heap values
+(a list, a struct) are shared by reference as everywhere else, which
+makes `STATE.hits += 1` work. Initializers run in the same startup retry
+loop as constants, so a static can refer to a constant or another static
+declared later in the file, and a cycle is reported the same way
+(the message reads "initializing static `P`"). Initializers are assumed pure, since a
+deferred one is evaluated again.
+
+Known gaps of the static work, recorded rather than hidden:
+
+- `pub` on a `const` or `type`, and `@tier(...)` on a `type`, are still
+  parsed and dropped. `@tier(...)` on a `const` was the decided part and
+  is now an error.
+- A static whose initializer has side effects may run it more than once,
+  because a deferred initializer is evaluated again. The assumption that
+  initializers are pure is the one constants already carry.
+- `pub` on a static is recorded but has no effect until `summon` lands.
+
 ## Decided, not yet built
 
 Design questions that were presented as options and answered. Each gets
 its own delivery with fixtures; the choice is recorded here so it is not
 re-opened by accident.
 
-**Mutable globals: `static`, HIGH tier only.** A `static` item is a
-mutable global living in the HIGH tier (GC-managed), private by default,
-`pub` to export once the module system lands. Only `@tier(high)` code may
-read or write one. A `const` stays an immutable, tier-agnostic value; a
-tier annotation on a `const` becomes an error instead of being silently
-dropped. Rejected: tier-specific mutable globals, since an arena has no
-lifetime that can hold a global and a LOW-tier global needs unsafe rules.
+Nothing is currently in this state. The two decisions recorded here
+(unsuffixed integer literals and mutable globals) are both built, see
+"Built" above.
 
 **Still open:** struct field default values (`n: u32 = 5u32`). The
 literal decision it depended on is built, so this can be taken up next.

@@ -232,6 +232,27 @@ pub struct ConstDecl<'ast> {
     pub span:       Span,
 }
 
+/// `static NAME: T = expr`: a mutable module-level global.
+///
+/// Unlike [`ConstDecl`] the value can be reassigned after startup, which
+/// is why it has rules a `const` does not: it lives in the HIGH tier only,
+/// only `@tier(high)` code may read or write it, the type annotation is
+/// required (many functions assign to it, so its type must not depend on
+/// which body is inferred first), and it is private unless marked `pub`.
+/// The initializer runs once, before `main`.
+#[derive(Debug, Clone, Copy)]
+pub struct StaticDecl<'ast> {
+    /// `@cfg(...)` and other pre-static attributes. A block's `@tier` is
+    /// not applied to a static (it is always HIGH); an explicit
+    /// `@tier(...)` on the item itself other than `high` is a parse error.
+    pub attributes: &'ast [Attribute<'ast>],
+    pub visibility: Visibility,
+    pub name:       &'ast str,
+    pub ty:         &'ast Type<'ast>,
+    pub value:      &'ast Expr<'ast>,
+    pub span:       Span,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TypeAlias<'ast> {
     /// `@doc(...)` and other pre-type-alias attributes.

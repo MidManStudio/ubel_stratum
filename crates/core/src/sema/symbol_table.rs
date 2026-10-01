@@ -76,6 +76,9 @@ pub enum DefKind {
     },
     /// A top-level constant.
     Const,
+    /// A top-level mutable global (`static NAME: T = expr`). HIGH tier
+    /// only; unlike `Const` it can be assigned to.
+    Static,
     /// A generic type parameter (e.g. `T` in `fn foo<T>`).
     TypeParam {
         parent: DefId,

@@ -143,6 +143,19 @@ pub enum TierError {
         actual:  TierAnnotation,
         span:    Span,
     },
+
+    // ── Mutable globals ──────────────────────────────────────────────
+    /// A `static` was read or written from a function that is not
+    /// `@tier(high)`. A static is a GC-tier mutable global shared by every
+    /// function, which `@tier(mid)` (arena) and `@tier(low)` (manual
+    /// ownership) code has no sound way to hold a reference into, so the
+    /// access is rejected there rather than left to corrupt the tier's own
+    /// guarantees. Pass the value in as a parameter instead.
+    StaticAccessOutsideHigh {
+        name:   String,
+        actual: TierAnnotation,
+        span:   Span,
+    },
 }
 
 impl TierError {
@@ -161,6 +174,7 @@ impl TierError {
             TierError::MidReturnContainsPoolRef   { span, .. } => *span,
             TierError::PoolConstructedOutsideBlock { span, .. } => *span,
             TierError::OwnershipWrapperOutsideLowTier { span, .. } => *span,
+            TierError::StaticAccessOutsideHigh { span, .. } => *span,
         }
     }
 
@@ -241,6 +255,12 @@ impl TierError {
                 "`Pool.new()` requires an enclosing `with pool<T>(count) { }` block to supply \
                  its element type and capacity".to_string(),
 
+            TierError::StaticAccessOutsideHigh { name, actual, .. } =>
+                format!(
+                    "the static `{}` can only be used from `@tier(high)` code; this function is `@tier({})`",
+                    name, tier_name(*actual)
+                ),
+
             TierError::OwnershipWrapperOutsideLowTier { wrapper, actual, .. } =>
                 format!(
                     "`{}.new()` is only valid in `@tier(low)`; this function is `@tier({})`",
@@ -298,6 +318,9 @@ impl TierError {
             TierError::PoolConstructedOutsideBlock { .. } =>
                 Some("wrap this call in a `with pool<T>(count) { }` block".to_string()),
 
+            TierError::StaticAccessOutsideHigh { .. } =>
+                Some("read the static in a `@tier(high)` function and pass the value in as a parameter, or return a result for a `@tier(high)` caller to store".to_string()),
+
             TierError::OwnershipWrapperOutsideLowTier { wrapper, .. } =>
                 Some(format!(
                     "annotate this function with `@tier(low)`, or receive the `{}` as a parameter \
@@ -345,6 +368,7 @@ impl crate::error_management::render::Diagnosable for TierError {
             TierError::MidReturnContainsPoolRef { .. }    => "TIER-012",
             TierError::PoolConstructedOutsideBlock { .. } => "TIER-013",
             TierError::OwnershipWrapperOutsideLowTier { .. } => "TIER-014",
+            TierError::StaticAccessOutsideHigh { .. }        => "TIER-015",
         }
     }
     fn span(&self) -> Span { self.span() }

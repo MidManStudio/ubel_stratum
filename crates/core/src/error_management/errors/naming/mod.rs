@@ -54,6 +54,14 @@ pub enum NameError {
         name: String,
         span: Span,
     },
+
+    /// A `const` initializer read a `static`. A const is evaluated once at
+    /// startup (and again if it had to wait for a later constant), so it
+    /// cannot depend on a mutable global's current value.
+    StaticInConst {
+        name: String,
+        span: Span,
+    },
 }
 
 impl NameError {
@@ -66,6 +74,7 @@ impl NameError {
             NameError::SelfOutsideMethod      { span }     => *span,
             NameError::UnresolvedTypeParam    { span, .. } => *span,
             NameError::AssignToConst          { span, .. } => *span,
+            NameError::StaticInConst          { span, .. } => *span,
         }
     }
 
@@ -94,6 +103,9 @@ impl NameError {
 
             NameError::AssignToConst { name, .. } =>
                 format!("cannot assign to constant `{}`", name),
+
+            NameError::StaticInConst { name, .. } =>
+                format!("a constant cannot read the static `{}`", name),
         }
     }
 
@@ -107,6 +119,9 @@ impl NameError {
 
             NameError::AssignToConst { .. } =>
                 Some("constants are initialized once; use a `let` binding if the value needs to change".to_string()),
+
+            NameError::StaticInConst { .. } =>
+                Some("make the other item a `const` too, or initialize this value from a `static`".to_string()),
 
             _ => None,
         }
@@ -132,6 +147,7 @@ impl crate::error_management::render::Diagnosable for NameError {
             NameError::SelfOutsideMethod { .. }      => "NAME-005",
             NameError::UnresolvedTypeParam { .. }    => "NAME-006",
             NameError::AssignToConst { .. }          => "NAME-007",
+            NameError::StaticInConst { .. }          => "NAME-008",
         }
     }
     fn span(&self) -> Span { self.span() }

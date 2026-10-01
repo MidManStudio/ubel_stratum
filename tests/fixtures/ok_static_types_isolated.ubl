@@ -1,0 +1,56 @@
+// tests/fixtures/ok_static_types_isolated.ubl
+// Statics hold any type, and the declared type drives literal typing
+// exactly as it does for a `let`: `static HP: u8 = 250` is a real u8, so
+// arithmetic on it wraps at 8 bits. Heap values (a list, a struct with a
+// list inside) are shared by reference, a closure can write a static, and
+// a static can hold a function value.
+// Expected: sema OK, interpret OK.
+
+struct State {
+    hits: u32,
+    log:  List<string>,
+}
+
+static HP: u8 = 250
+static NAMES: List<string> = List.new()
+static STATE: State = State { hits = 4294967290, log = List.new() }
+static HANDLER: fn(int) int = fn(x: int) x + 1
+static LABEL: string = "boot"
+
+fn damage() void {
+    HP += 10
+}
+
+fn remember(n: string) void {
+    NAMES.push(n)
+}
+
+fn hit() void {
+    STATE.hits += 10
+    STATE.log.push("hit")
+}
+
+fn main() void {
+    damage()
+    damage()
+    damage()
+    assert(HP == 24, "a u8 static wraps: 250 + 30 = 280, minus 256")
+
+    remember("a")
+    remember("b")
+    assert(NAMES.len() == 2, "a list static is shared by every function")
+
+    hit()
+    assert(STATE.hits == 4, "a u32 field of a static struct wraps")
+    assert(STATE.log.len() == 1, "and the list inside it is shared")
+
+    let bump = fn() { STATE.hits += 1 }
+    bump()
+    bump()
+    assert(STATE.hits == 6, "a closure writes the shared static")
+
+    assert(HANDLER(4) == 5, "a static can hold a function")
+
+    LABEL = "ready"
+    assert(LABEL == "ready", "a string static can be reassigned")
+}

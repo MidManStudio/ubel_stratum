@@ -104,7 +104,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, UnaryOp, Attribute, AttrArg};
 use crate::ast::declarations::{
-    ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock,
+    ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock, StaticDecl,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
     TraitItem, TypeAlias, MethodSig,
 };
@@ -1024,6 +1024,7 @@ impl<'a> InferCtx<'a> {
                 Item::Struct(s)   => { self.collect_struct_sig(s); }
                 Item::Enum(e)     => { self.collect_enum_sig(e); }
                 Item::Const(c)    => { self.collect_const_sig(c); }
+                Item::Static(s)   => { self.collect_static_sig(s); }
                 // `collect_method_sig` alone (below) records each method as
                 // its own standalone symbol (a real, pre-existing, and
                 // still-needed step — it's what makes `self.ctx.resolutions
@@ -1764,6 +1765,14 @@ impl<'a> InferCtx<'a> {
         self.ctx.set_def_type(def_id, ty);
     }
 
+    /// A static's type is always written out (the parser requires the
+    /// annotation), so it is known before any body is inferred.
+    fn collect_static_sig<'ast>(&mut self, s: &StaticDecl<'ast>) {
+        let Some(def_id) = self.ctx.top_level_def(s.name) else { return; };
+        let ty = self.ast_type_to_sema(s.ty);
+        self.ctx.set_def_type(def_id, ty);
+    }
+
     // ── Phase 2b: Body inference ──────────────────────────────────
 
     fn infer_bodies<'ast>(&mut self, program: &Program<'ast>) {
@@ -1772,6 +1781,7 @@ impl<'a> InferCtx<'a> {
                 Item::Function(f) => self.infer_function_body(f),
                 Item::Struct(s)   => self.infer_struct_bodies(s),
                 Item::Const(c)    => self.infer_const_body(c),
+                Item::Static(s)   => self.infer_static_body(s),
                 Item::Impl(i) => self.infer_extend_impl_bodies(i.target_type, i.methods),
                 Item::Extend(x) => self.infer_extend_impl_bodies(x.target_type, x.methods),
                 Item::Trait(t) => {
@@ -1924,6 +1934,19 @@ impl<'a> InferCtx<'a> {
         // A const's type is shared by every function that reads it, so
         // whatever its initializer left open is settled here, not left for
         // one unrelated caller to decide.
+        self.finish_int_literals();
+    }
+
+    /// The initializer must match the declared type. As with a const, a
+    /// literal in it is typed by that declaration (`static HP: u8 = 200`)
+    /// and settled here, since the type is shared by every reader.
+    fn infer_static_body<'ast>(&mut self, s: &StaticDecl<'ast>) {
+        let inferred = self.infer_expr(s.value);
+        if let Some(def_id) = self.ctx.top_level_def(s.name) {
+            if let Some(declared) = self.ctx.def_type(def_id) {
+                self.unify(declared, inferred, s.value.span);
+            }
+        }
         self.finish_int_literals();
     }
 

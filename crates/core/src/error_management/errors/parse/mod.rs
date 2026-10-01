@@ -62,6 +62,7 @@ pub enum ParseContext {
     ImplBlock,
     ExtendDecl,
     ConstDecl,
+    StaticDecl,
     TypeAliasDecl,
 
     // ── Attributes ────────────────────────────────────────────────
@@ -101,6 +102,7 @@ impl ParseContext {
             ParseContext::ImplBlock       => "impl block",
             ParseContext::ExtendDecl      => "extend declaration",
             ParseContext::ConstDecl       => "const declaration",
+            ParseContext::StaticDecl      => "static declaration",
             ParseContext::TypeAliasDecl   => "type alias declaration",
             ParseContext::AttributeDecl   => "attribute",
             ParseContext::CfgAttribute    => "@cfg attribute",

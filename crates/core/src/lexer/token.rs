@@ -9,7 +9,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
     // ── Core keywords ─────────────────────────────────────────────
-    Fn, Let, Mut, Const,
+    Fn, Let, Mut, Const, Static,
     If, Elif, Else, Then, Match, Where,
     For, In, While, Loop,
     Break, Continue, Return,
@@ -121,6 +121,7 @@ impl fmt::Display for TokenType {
             TokenType::Let       => write!(f, "let"),
             TokenType::Mut       => write!(f, "mut"),
             TokenType::Const     => write!(f, "const"),
+            TokenType::Static    => write!(f, "static"),
             TokenType::If        => write!(f, "if"),
             TokenType::Elif      => write!(f, "elif"),
             TokenType::Else      => write!(f, "else"),

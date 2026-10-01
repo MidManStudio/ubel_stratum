@@ -49,7 +49,7 @@
 
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, ExtendDecl, FunctionDecl, ImplBlock, MethodDecl,
-    ParamKind, StructDecl, StructMember, TraitDecl, TraitItem, TypeAlias,
+    ParamKind, StaticDecl, StructDecl, StructMember, TraitDecl, TraitItem, TypeAlias,
 };
 use crate::ast::expressions::{
     ArgKind, ElifBranch, Expr, ExprKind, IfBranchBody, IfExpr, LambdaBody,
@@ -75,6 +75,7 @@ pub trait AstVisitor<'ast> {
     fn visit_impl_block(&mut self, i: &ImplBlock<'ast>) { walk_impl_block(self, i) }
     fn visit_extend_decl(&mut self, e: &ExtendDecl<'ast>) { walk_extend_decl(self, e) }
     fn visit_const_decl(&mut self, c: &ConstDecl<'ast>) { walk_const_decl(self, c) }
+    fn visit_static_decl(&mut self, s: &StaticDecl<'ast>) { walk_static_decl(self, s) }
     /// `TypeAlias` has no `Stmt`/`Expr` children — nothing to walk into.
     fn visit_type_alias(&mut self, _t: &TypeAlias<'ast>) {}
 
@@ -101,6 +102,7 @@ pub fn walk_item<'ast, V: AstVisitor<'ast> + ?Sized>(v: &mut V, item: &Item<'ast
         Item::Impl(i)      => v.visit_impl_block(i),
         Item::Extend(e)    => v.visit_extend_decl(e),
         Item::Const(c)     => v.visit_const_decl(c),
+        Item::Static(s)    => v.visit_static_decl(s),
         Item::TypeAlias(a) => v.visit_type_alias(a),
     }
 }
@@ -156,6 +158,10 @@ pub fn walk_extend_decl<'ast, V: AstVisitor<'ast> + ?Sized>(v: &mut V, e: &Exten
 
 pub fn walk_const_decl<'ast, V: AstVisitor<'ast> + ?Sized>(v: &mut V, c: &ConstDecl<'ast>) {
     v.visit_expr(c.value);
+}
+
+pub fn walk_static_decl<'ast, V: AstVisitor<'ast> + ?Sized>(v: &mut V, s: &StaticDecl<'ast>) {
+    v.visit_expr(s.value);
 }
 
 // ── Block / statement walkers ────────────────────────────────────────

@@ -38,7 +38,7 @@ pub(crate) fn parse_program<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Program<'
                 TokenType::Summon, TokenType::From,
                 TokenType::Fn, TokenType::Struct, TokenType::Enum,
                 TokenType::Trait, TokenType::Impl, TokenType::Extend,
-                TokenType::Const, TokenType::TypeKw, TokenType::Pub,
+                TokenType::Const, TokenType::Static, TokenType::TypeKw, TokenType::Pub,
                 TokenType::At, TokenType::Edge, TokenType::Package,
                 TokenType::Eof,
             ]);

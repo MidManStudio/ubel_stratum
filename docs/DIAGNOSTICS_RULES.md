@@ -190,6 +190,7 @@ family in `TierError`.
 | NAME-005 | SelfOutsideMethod |
 | NAME-006 | UnresolvedTypeParam |
 | NAME-007 | AssignToConst |
+| NAME-008 | StaticInConst |
 
 ### TYPE-1xx — ordinary type checking, `errors/types/mod.rs`
 
@@ -234,6 +235,7 @@ family in `TierError`.
 | TIER-012 | MidReturnContainsPoolRef |
 | TIER-013 | PoolConstructedOutsideBlock |
 | TIER-014 | OwnershipWrapperOutsideLowTier |
+| TIER-015 | StaticAccessOutsideHigh |
 
 Physically split out of `TypeError` — see §9. Variant names and
 meaning are unchanged from their `TYPE-2xx` days; only the enum and
@@ -351,7 +353,7 @@ larger effort, not started.
 - `PARSE-001` `UnexpectedToken` — *Error*. "unexpected `found` while parsing context, expected: ...". Suggestion only when exactly one token was expected ("try replacing `found` with expected").
 - `PARSE-002` `UnexpectedEof` — *Error*. "unexpected end of file while parsing context, expected: ...". No suggestion.
 - `PARSE-003` `UnclosedDelimiter` — *Error*. "unclosed `delim` — found `x` instead" or "...reached end of file" if nothing closed it. Suggestion: add the matching closing delimiter.
-- `PARSE-004` `IllegalInContext` — *Error*. "`what` is not allowed here: reason". Suggestion passed through verbatim when the caller supplies one. Also raised for a return type annotation on a lambda.
+- `PARSE-004` `IllegalInContext` — *Error*. "`what` is not allowed here: reason". Suggestion passed through verbatim when the caller supplies one. Also raised for a return type annotation on a lambda, for a `@tier(...)` written on a `const` (a const is readable from every tier, so the annotation would have no effect), and for `@tier(mid)` or `@tier(low)` written on a `static` (`@tier(high)` is accepted as a redundant spelling). A tier BLOCK around a const or static is not an own annotation and is not reported.
 - `PARSE-005` `Raw` — *Error*. Message passed through verbatim, no suggestion. Escape hatch for parser errors that don't fit the other four shapes.
 
 **NAME-0xx**
@@ -362,6 +364,7 @@ larger effort, not started.
 - `NAME-005` `SelfOutsideMethod` — *Error*. "`self` can only be used inside a method body". Suggestion: move the code into a method that takes `self`.
 - `NAME-006` `UnresolvedTypeParam` — *Error*. "unknown type parameter `x`". No suggestion.
 - `NAME-007` `AssignToConst` — *Error*. "cannot assign to constant `x`". Suggestion: constants are initialized once, use a `let` binding if the value needs to change. Fires for plain and compound assignment; a local `let` that shadows the constant's name stays assignable.
+- `NAME-008` `StaticInConst` — *Error*. "a constant cannot read the static `x`". Suggestion: make the other item a `const` too, or initialize this value from a `static`. Fires from name resolution when an identifier inside a `const` initializer resolves to a `static`: a const is evaluated once at startup (and again if it had to wait for a later constant), so it cannot depend on a mutable global's current value. A `static` initializer reading a const or another static is fine.
 
 **TYPE-1xx**
 - `TYPE-101` `TypeMismatch` — *Error*. "type mismatch: expected `x`, found `y`". No suggestion; carries a secondary span at where the expected type was established, when known.
@@ -397,6 +400,7 @@ larger effort, not started.
 - `TIER-012` `MidReturnContainsPoolRef` — *Error*. "MID-tier function's return type contains a pool-lifetime reference" — MEMORY_MODEL.md §10, generalized from `MidReturnContainsArenaRef` alongside `scope_ref_kind`. Like its arena counterpart, real consulted infrastructure that can't currently be *triggered* by any writable fixture — there's no surface syntax yet to write `Pool<T>` as an explicit return-type annotation (§10's "Known gap"), so the reachable path for this exact mistake is the escape-boundary check via assignment instead.
 - `TIER-013` `PoolConstructedOutsideBlock` — *Error*. "`Pool.new()` requires an enclosing `with pool<T>(count) { }` block" — MEMORY_MODEL.md §10. Unlike every other builtin constructor, `Pool.new()` has no generic argument of its own to infer element type or capacity from; it reads both from `current_pool()`, which is `None` outside any pool block. Suggestion: call `Pool.new()` inside a `with pool<T>(count) { }` block.
 - `TIER-014` `OwnershipWrapperOutsideLowTier` — *Error*. "`{Unique|Shared|SyncShared}.new()` is only valid in `@tier(low)`; this function is `@tier({actual})`" — MEMORY_MODEL.md §9. The deliberate *inverse* of `TIER-009`: `List`/`Dictionary`/`Queue`/`Stack` are banned *inside* LOW tier because LOW has no memory model of its own; `Unique`/`Shared`/`SyncShared` now *are* that memory model, so construction is banned everywhere *except* LOW tier. Fires at the same `Namespace.new(value)` call site `type_infer.rs` special-cases these three at, alongside the `TYPE-102` arg-count check. A HIGH/MID-tier function may still *receive* a `Unique<T>` value as a parameter — only construction is restricted. Suggestion: annotate the function `@tier(low)`, or receive the value as a parameter from LOW-tier code instead.
+- `TIER-015` `StaticAccessOutsideHigh` — *Error*. "the static `x` can only be used from `@tier(high)` code; this function is `@tier(actual)`". Suggestion: read the static in a `@tier(high)` function and pass the value in as a parameter, or return a result for a `@tier(high)` caller to store. Fires in `tier_check.rs` for every identifier that resolves to a `static` (a read, an assignment target, a `$"{x}"` interpolation hole, a lambda body) inside a `@tier(mid)` or `@tier(low)` function or method. A static is a GC-tier mutable global shared by every function; arena and manual-ownership code has no sound way to hold a reference into it. A static's own initializer is checked as HIGH code.
 
 **BORROW-0xx**
 - `BORROW-001` `ConflictingAccessWhileBorrowed` — *Error*. "cannot use `place` while it is mutably borrowed" — MEMORY_MODEL.md §9, `sema/borrow_check.rs` (Phase D). Fires when a `&mut` loan's `bound_place` (the local it's assigned to, e.g. `p` in `let p = &mut n`) is still *live* — will be read again later, per backward liveness over the CFG — at the point some other statement conflictingly reads or re-borrows the loan's place. Liveness-gated deliberately: a conflicting read after the loan's carrier has already had its last use is NOT flagged (see `ok_borrow_dead_after_last_use.ubl`) — that's the actual non-lexical-scope behavior this checker is built around, not a naive "any candidate is an error" rule. Secondary span points at the loan's own `&mut` site ("mutable borrow occurs here"). Suggestion: move the conflicting use before the borrow's last use, or restructure so the borrow doesn't need to outlive it. Scope, today: only mutable loans are checked (two shared loans never conflict with each other, and this checker doesn't yet distinguish "plain read" from "new borrow" among conflicting accesses precisely enough to safely check the shared-then-mutable-elsewhere direction — real, separate follow-up); only loans bound to a traceable local are checked (a borrow consumed inline, e.g. a bare call argument, has no carrier that could still be "live" later); intra-statement conflicts (two loans issued at the very same point, e.g. `f(&n, &mut n)`) are excluded upstream by `facts::collect` itself and never reach this check at all — a distinct, separate, not-yet-built piece of work.

@@ -53,6 +53,15 @@ verified safe.
   accepted while a genuine second move is still rejected
 - Global `const` items are evaluated before `main` runs, in any
   declaration order, and assigning to one is a compile error
+- Mutable globals: `static NAME: Type = expr` (the type is required, and
+  `pub static` exports once modules exist). A static is one value shared
+  by every function: assign to it in one function and read it in another.
+  It lives in the HIGH tier, so only `@tier(high)` code can read or write
+  it, a `const` cannot read it, and a local or parameter of the same name
+  shadows it. Pass the value into a MID or LOW function as a parameter
+  instead. Initializers run once before `main`, in any declaration order,
+  and the declared type types a bare literal (`static HP: u8 = 250`). A
+  `@tier(...)` written on a `const` is now an error rather than ignored
 - Nested generic arguments (`List<List<int>>`,
   `Dictionary<string, List<int>>`) parse, and annotated dictionaries
   type-check
@@ -85,8 +94,6 @@ verified safe.
 - The trait system: `trait` declarations and `impl Trait for Type`
   blocks parse, but trait method dispatch, `dyn Trait`, and bound
   enforcement are not built and still need a design pass
-- Decided, not yet built: mutable globals arrive as `static` items in
-  the HIGH tier only
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to
@@ -106,9 +113,9 @@ verified safe.
   time and panics when the program runs
 - Calling a function stored in a struct field (`config.callback(4)`) is
   reported as an unknown method
-- `pub` and `@tier(...)` written on a `const` or `type` item are parsed
-  and then ignored; constants are global to the file and readable from
-  every tier
+- `pub` written on a `const` or `type` item, and `@tier(...)` written on
+  a `type` item, are parsed and then ignored; constants are global to
+  the file and readable from every tier
 - The interpreter runs every tier on the same reference-counted values;
   `with arena` blocks are validated by the tier checker but do not yet
   allocate or free real memory, that lands with the LLVM backend

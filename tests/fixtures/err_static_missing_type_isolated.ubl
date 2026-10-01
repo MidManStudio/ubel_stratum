@@ -1,0 +1,12 @@
+// tests/fixtures/err_static_missing_type_isolated.ubl
+// A static's type annotation is required: many functions assign to it, so
+// its type must not depend on which body is inferred first. The missing
+// `:` is reported once, and the rest of the declaration is skipped
+// instead of being parsed again as a stray top-level item.
+// Expected: parse FAIL (UnexpectedToken, PARSE-001, exactly one).
+
+static COUNT = 5
+
+fn main() void {
+    println($"{COUNT}")
+}

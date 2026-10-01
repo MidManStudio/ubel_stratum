@@ -25,6 +25,13 @@ traits, impls, parameters).
 - No `default` field on `Discard`. A caller-omittable default is about
   what callers can skip supplying; that is orthogonal to whether the
   callee can read the parameter, so pairing the two did not make sense.
+- New `StaticDecl { attributes, visibility, name, ty, value, span }` and
+  `Item::Static` for `static NAME: T = expr`. `ty` is a required
+  `&Type`, not an `Option` like `ConstDecl::ty`: the parser rejects a
+  static with no annotation. `StaticDecl` carries `visibility`, which
+  `ConstDecl` still does not. It carries no tier: a static is always HIGH,
+  and the only tier that can exist is an own `@tier(...)` attribute, which
+  the parser checks.
 
 **Tests:** see `sema/tests.rs`, referenced under `sema/name_resolution.rs`
 and `sema/type_infer.rs` below.
@@ -34,8 +41,20 @@ and `sema/type_infer.rs` below.
 **What it does:** Pass 1 of semantic analysis. Builds the symbol table
 and resolves every name reference to a definition.
 
+**Decisions (`static` items):**
+- New `DefKind::Static` (`symbol_table.rs`), declared top-level with the
+  item's own `visibility`, so `pub static` is `Public` and the default is
+  `Private`. It is not `DefKind::Const`, so the `NAME-007` assignment check
+  does not apply: a static is assignable.
+- `Resolver::in_const_initializer` is set while a `const` initializer is
+  resolved. `resolve_name` reports `NAME-008` (`StaticInConst`) when an
+  identifier inside it resolves to a `DefKind::Static`. A static
+  initializer is resolved with the flag clear, so it may read constants and
+  other statics.
+
 **Tests:** `sema/tests.rs`,
-`test_sema_discard_param_on_free_function_does_not_report_self_outside_method`.
+`test_sema_discard_param_on_free_function_does_not_report_self_outside_method`;
+`crates/rd_parser/tests/statics.rs` for `static`.
 
 ### `sema/type_infer.rs`
 
@@ -80,6 +99,14 @@ sites.
   `f32`/`f64`, and an open literal variable, so `a < b` on two `u32`
   values is no longer `TYPE-118`.
 - `display_type` shows an open literal variable as `{integer}`.
+
+**Decisions (`static` items):**
+- `collect_static_sig` records the declared type before any body is
+  inferred (the parser guarantees one exists), and `infer_static_body`
+  unifies the initializer with it and then calls `finish_int_literals`,
+  exactly as a const does, so `static HP: u8 = 250` types its literal as a
+  `u8`. Assignments to a static go through the ordinary `Assign` path, so
+  the declared type is enforced at every one of them.
 
 **Tests:** `crates/rd_parser/tests/int_literal_typing.rs`, the eight
 `ok_int_literal_*` and five `err_int_literal_*` fixtures under
@@ -446,6 +473,8 @@ tier wrappers off a receiver type before matching it against a kind.
 
 ### `ast/visitor.rs`
 
+- `visit_static_decl` / `walk_static_decl` added for `Item::Static`; the
+  walker visits the initializer expression.
 - `walk_arg_kind` bumped from private to `pub(crate)` so
   `sema/move_facts.rs` could call the exact same two-line arg-walking
   logic `ast::visitor::walk_expr`'s own `Call` handling already uses,
@@ -514,6 +543,10 @@ plus its `Display` impl (used for "expected X, found Y" parser error
 messages).
 
 **Decisions:**
+- `Static` added next to `Const` in the enum and the `Display` impl, and
+  to the `KEYWORDS` phf map and `LogosToken` (`logos_lexer.rs`). `static`
+  is now a reserved word; no existing fixture or example used it as an
+  identifier.
 - `Hash` added alongside `At` in both the enum and the `Display` impl
   (`write!(f, "#")`), completing the new token from `logos_lexer.rs`
   above. `cargo build` catches a missing enum variant everywhere a
@@ -556,6 +589,25 @@ the driver loop that walks the parsed program before execution starts.
 - `match_literal` (`eval/pattern.rs`) compares an unsuffixed integer
   literal pattern against every sized-integer variant through `i128`, so
   `match byte { 255 => .. }` works on a `u8`.
+- New `statics: HashMap<String, Value>` field for `static` items. It is
+  deliberately NOT part of `env`: `call_function` replaces `self.env` with a
+  clone of the function's closure for every call (and `Environment::
+  snapshot` is a plain clone), so a global kept in a scope is copied in,
+  assigned to, and discarded when the call returns, and no other function
+  ever sees the change. `lookup` consults `env` first and then `statics`;
+  `write_lvalue` (`eval/expr.rs`) does `env.set`, then the static slot, and
+  defines a new local only if the name is neither. That order is what makes
+  a local or a parameter shadow a static. Heap values are shared by
+  reference as elsewhere, so `STATE.hits += 1` and `LIST.push(x)` need no
+  special handling, and a lambda needs none either since it never captured
+  the static in the first place.
+- The startup retry loop that evaluates constants now carries
+  `(name, value expr, is_static)` triples, so a static can refer to a
+  constant or to another static declared later in the file, and a cycle is
+  reported as `initializing static`/`constant` with the name. Constants
+  still go to `env` (and are backfilled into every closure); statics go to
+  `statics`, which needs no backfill. The `ConstDecl` import is gone since
+  the loop no longer holds one.
 - `register_fn`/`register_method` now build their `params: Vec<String>`
   list with `enumerate()` and a synthesized `$discardN` name for each
   `ParamKind::Discard` slot, instead of dropping it. That list is later
@@ -571,6 +623,23 @@ the driver loop that walks the parsed program before execution starts.
   shared with the interpreter. See `Value::Struct::field_order`'s own
   doc comment (`interpreter/value.rs`) for why this matters for
   `partial_cmp`/`compute_hash` specifically.
+
+### `error_management/errors/naming/mod.rs`, `tier/mod.rs`, `parse/mod.rs`
+
+**What it does:** `NameError` (NAME-0xx), `TierError` (TIER-0xx) and
+`ParseError`/`ParseContext` (PARSE-0xx).
+
+**Decisions (`static` items):**
+- `NameError::StaticInConst` (`NAME-008`): an identifier inside a `const`
+  initializer resolved to a `static`.
+- `TierError::StaticAccessOutsideHigh` (`TIER-015`): a `static` was read or
+  written from a `@tier(mid)` or `@tier(low)` function. TIER-007 stays
+  retired; 015 is the next free code after 014.
+- No new `ParseError` variant. A tier annotation on a `const` or a wrong
+  one on a `static` reuses `IllegalInContext` (`PARSE-004`), which already
+  exists for "valid token, illegal here". `ParseContext::StaticDecl`
+  ("static declaration") was added for `PARSE-001` raised inside
+  `parse_static_decl`.
 
 ### `error_management/errors/types/mod.rs`
 
@@ -923,3 +992,17 @@ the parser's `cursor.rs`, `parse_type.rs`, `parse_expr.rs` and
 delivery had written (the `move_facts.rs` module doc and a
 `MEMORY_MODEL.md` sentence) that this delivery made stale. Same
 discipline: checked every line this delivery wrote or rewrote.
+
+A ninth delivery (the two decisions recorded as "Decided, not yet built"
+after the tooling stubs: context-driven integer literal typing, then
+mutable globals as `static` items) touched `sema/type_infer.rs`,
+`sema/sema_context.rs`, `sema/name_resolution.rs`, `sema/tier_check.rs`,
+`sema/symbol_table.rs`, the interpreter's `eval/mod.rs`, `eval/expr.rs` and
+`eval/pattern.rs`, the lexer, the AST, the visitor, three error modules,
+the parser's `parse_decl.rs` and sync sets, the `ubel` CLI, the examples
+and wasm playground, plus `PARSER_RULES.md` section 5.7a,
+`DIAGNOSTICS_RULES.md`, `TESTING_RULES.md`, `PARKED_IDEAS.md`,
+`ubel.ebnf`, both crate docs and the public `project-status.md`. The
+literal typing half shipped first as its own bundle; the `static` half is
+cumulative on top of it. Same discipline: checked every line this delivery
+wrote or rewrote for em dashes and first or second person.

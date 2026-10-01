@@ -21,7 +21,7 @@ use ubel_stratum::{
         declarations::{
             ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload, ExtendDecl,
             FieldDecl, FunctionDecl, ImplBlock, MethodDecl, MethodSig,
-            Param, ParamKind, PropertyDecl, ReturnType, StructDecl,
+            Param, ParamKind, PropertyDecl, ReturnType, StaticDecl, StructDecl,
             StructMember, TraitDecl, TraitItem, TypeAlias,
         },
         root::{Item, Import, ImportItems, ImportKind, PackageDecl},
@@ -104,14 +104,20 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.parse_impl_block(attrs).map(Item::Impl),
             TokenType::Extend =>
                 self.parse_extend_decl(attrs).map(Item::Extend),
-            TokenType::Const =>
-                self.parse_const_decl(attrs).map(Item::Const),
+            TokenType::Const => {
+                self.reject_own_tier_on_const(attrs);
+                self.parse_const_decl(attrs).map(Item::Const)
+            }
+            TokenType::Static => {
+                self.require_high_tier_on_static(attrs, tier_opt);
+                self.parse_static_decl(attrs, vis).map(Item::Static)
+            }
             TokenType::TypeKw =>
                 self.parse_type_alias(attrs).map(Item::TypeAlias),
             _ => {
                 self.expected(&[
                     "'fn'", "'struct'", "'enum'", "'trait'",
-                    "'impl'", "'extend'", "'const'", "'type'",
+                    "'impl'", "'extend'", "'const'", "'static'", "'type'",
                 ]);
                 self.recover_to_decl();
                 None
@@ -128,7 +134,8 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 if !self.cursor.is_eof() && !matches!(self.cursor.peek(),
                     TokenType::Fn | TokenType::Struct | TokenType::Enum |
                     TokenType::Trait | TokenType::Impl | TokenType::Extend |
-                    TokenType::Const | TokenType::TypeKw | TokenType::Pub |
+                    TokenType::Const | TokenType::Static | TokenType::TypeKw |
+                    TokenType::Pub |
                     TokenType::At | TokenType::Edge | TokenType::RightBrace |
                     TokenType::Eof
                 ) {
@@ -176,6 +183,11 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             }
             Item::Extend(mut e)    => { e.attributes = merge_attrs(e.attributes); Item::Extend(e) }
             Item::Const(mut c)     => { c.attributes = merge_attrs(c.attributes); Item::Const(c) }
+            // A block's `@tier` is deliberately not applied to a static
+            // (always HIGH) or a const (tier-agnostic), only its generic
+            // attributes, so `@tier(low) { const N = 1  fn f() {} }` stays
+            // legal. See `parse_item_or_block` for the direct-annotation check.
+            Item::Static(mut s)    => { s.attributes = merge_attrs(s.attributes); Item::Static(s) }
             Item::TypeAlias(mut t) => { t.attributes = merge_attrs(t.attributes); Item::TypeAlias(t) }
         }
     }
@@ -929,6 +941,103 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.leave(prev);
 
         Some(ConstDecl { attributes: attrs, name, ty, value, span })
+    }
+
+    // ── Static declaration ────────────────────────────────────────────────────
+
+    /// `[pub] static NAME: Type = expr`. The type annotation is required:
+    /// every function that assigns to the static would otherwise take part
+    /// in deciding its type, and which body is inferred first must never
+    /// change the answer. Missing `:` is an ordinary "expected ':'" error.
+    pub(crate) fn parse_static_decl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+        vis:   Visibility,
+    ) -> Option<StaticDecl<'ast>> {
+        let prev = self.enter(ParseContext::StaticDecl);
+        let lo   = self.span();
+
+        // Every failure below has already emitted its diagnostic. Skip to
+        // the next item boundary before returning, otherwise the leftover
+        // tokens of this declaration (`= 5` after a missing `:`) would be
+        // parsed as a top-level item and reported a second time.
+        self.cursor.advance(); // consume `static`
+        let Some((name, _)) = self.expect_ident() else {
+            self.recover_to_decl();
+            self.leave(prev);
+            return None;
+        };
+
+        if let Err(e) = self.cursor.expect(&TokenType::Colon) {
+            self.emit(crate::error::from_cursor(e, ParseContext::StaticDecl));
+            self.recover_to_decl();
+            self.leave(prev);
+            return None;
+        }
+        let Some(ty) = self.parse_type_expr() else {
+            self.recover_to_decl();
+            self.leave(prev);
+            return None;
+        };
+
+        if let Err(e) = self.cursor.expect(&TokenType::Equal) {
+            self.emit(crate::error::from_cursor(e, ParseContext::StaticDecl));
+            self.recover_to_decl();
+            self.leave(prev);
+            return None;
+        }
+
+        let Some(value) = self.parse_expr_or_none() else {
+            self.recover_to_decl();
+            self.leave(prev);
+            return None;
+        };
+        let span = lo.merge(&value.span);
+        self.eat_sep();
+        self.leave(prev);
+
+        Some(StaticDecl { attributes: attrs, visibility: vis, name, ty, value, span })
+    }
+
+    /// The span of the item's own `@tier(...)` attribute, if it wrote one.
+    fn own_tier_attr_span(attrs: &'ast [Attribute<'ast>]) -> Option<Span> {
+        attrs.iter().find(|a| a.name == "tier").map(|a| a.span)
+    }
+
+    /// A `const` is tier-agnostic (every tier may read it), so an explicit
+    /// `@tier(...)` on the item itself would be silently ignored. Report it
+    /// instead. A surrounding `@tier(...) { }` block is fine and is not an
+    /// own attribute: `apply_block_attrs` never gives a const a tier.
+    fn reject_own_tier_on_const(&mut self, attrs: &'ast [Attribute<'ast>]) {
+        if let Some(span) = Self::own_tier_attr_span(attrs) {
+            self.emit(ubel_stratum::error_management::errors::ParseError::IllegalInContext {
+                what:       "a tier annotation on a const".to_string(),
+                reason:     "a const can be read from every tier, so the annotation would have no effect".to_string(),
+                span,
+                suggestion: Some("remove the `@tier(...)` annotation".to_string()),
+            });
+        }
+    }
+
+    /// A `static` lives in the HIGH tier, so `@tier(high)` is accepted as a
+    /// redundant spelling and `@tier(mid)` / `@tier(low)` are errors.
+    fn require_high_tier_on_static(
+        &mut self,
+        attrs:    &'ast [Attribute<'ast>],
+        tier_opt: Option<TierAnnotation>,
+    ) {
+        let Some(t) = tier_opt else { return; };
+        if t == TierAnnotation::High { return; }
+        let span = Self::own_tier_attr_span(attrs).unwrap_or_else(|| self.span());
+        self.emit(ubel_stratum::error_management::errors::ParseError::IllegalInContext {
+            what:       format!(
+                "`@tier({})` on a static",
+                if t == TierAnnotation::Mid { "mid" } else { "low" },
+            ),
+            reason:     "a static lives in the HIGH tier and can only be used from `@tier(high)` code".to_string(),
+            span,
+            suggestion: Some("remove the annotation or write `@tier(high)`".to_string()),
+        });
     }
 
     // ── Type alias ────────────────────────────────────────────────────────────

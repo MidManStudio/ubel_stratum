@@ -1,0 +1,15 @@
+// tests/fixtures/err_static_outside_high_isolated.ubl
+// A static can only be read or written from `@tier(high)` code. Reading
+// it from a LOW function is TIER-015.
+// Expected: sema FAIL (StaticAccessOutsideHigh, TIER-015).
+
+static TOTAL: int = 0
+
+@tier(low)
+fn low_reader() int {
+    return TOTAL
+}
+
+fn main() void {
+    println($"{low_reader()}")
+}

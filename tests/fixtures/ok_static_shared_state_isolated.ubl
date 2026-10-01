@@ -1,0 +1,39 @@
+// tests/fixtures/ok_static_shared_state_isolated.ubl
+// A `static` is a mutable module-level global: every function reads and
+// writes the SAME value. This is the property that needs a store outside
+// the interpreter's per-call environment, because each call runs against
+// a fresh copy of its closure's scope, so a global kept in that scope
+// would be assigned to and then thrown away when the call returned.
+// Plain assignment and compound assignment, from main and from other
+// functions, all land in one place.
+// Expected: sema OK, interpret OK.
+
+static COUNTER: int = 0
+
+fn bump() void {
+    COUNTER += 1
+}
+
+fn bump_by(n: int) void {
+    COUNTER = COUNTER + n
+}
+
+fn read() int {
+    return COUNTER
+}
+
+fn main() void {
+    assert(COUNTER == 0, "starts at its initializer")
+    bump()
+    bump()
+    bump()
+    assert(read() == 3, "three bumps are visible through another function")
+    assert(COUNTER == 3, "and from main")
+
+    bump_by(10)
+    assert(read() == 13, "assignment inside a function is visible everywhere")
+
+    COUNTER = 100
+    assert(read() == 100, "assignment from main is visible to a function")
+    assert(COUNTER == 100, "and back in main")
+}

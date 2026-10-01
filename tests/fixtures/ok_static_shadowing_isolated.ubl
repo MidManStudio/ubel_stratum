@@ -1,0 +1,29 @@
+// tests/fixtures/ok_static_shadowing_isolated.ubl
+// A local binding or a parameter with the same name as a static shadows
+// it, the way it shadows a const. Assigning to the local must not touch
+// the static, and the static is intact once the local goes out of scope.
+// Expected: sema OK, interpret OK.
+
+static LEVEL: int = 7
+
+fn shadow_with_let() int {
+    let LEVEL = 100
+    LEVEL = LEVEL + 1
+    return LEVEL
+}
+
+fn shadow_with_param(LEVEL: int) int {
+    return LEVEL * 2
+}
+
+fn main() void {
+    assert(shadow_with_let() == 101, "a local let shadows the static")
+    assert(LEVEL == 7, "the static is untouched by assignment to the local")
+
+    assert(shadow_with_param(5) == 10, "a parameter shadows the static")
+    assert(LEVEL == 7, "still untouched")
+
+    LEVEL = 8
+    assert(shadow_with_let() == 101, "shadowing still wins after the static changed")
+    assert(LEVEL == 8, "and the static kept its new value")
+}

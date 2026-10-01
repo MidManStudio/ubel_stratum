@@ -647,6 +647,38 @@ index into a still-growing `Vec` mid-loop.
 
 ---
 
+### 5.7a `static` items: required type, recovery, own-tier checks
+
+`static NAME: Type = expr` is a declaration keyword, so it needs no
+disambiguation, but three rules in `parse_static_decl` and the
+dispatcher are worth stating:
+
+- **The type annotation is required.** A missing `:` is an ordinary
+  `UnexpectedToken` (`PARSE-001`, context `StaticDecl`). Many functions
+  assign to a static, so its type must not be decided by whichever body
+  is inferred first.
+- **Every failure recovers to the next item boundary.** After a missing
+  `:` the cursor is still sitting on `= 5`; returning `None` without
+  skipping lets the top-level loop parse `= 5` as an item and report a
+  second, misleading error. Each early return in `parse_static_decl`
+  calls `recover_to_decl()` after emitting (section 9). The test is
+  `a_missing_type_annotation_is_one_diagnostic`.
+- **Own-tier checks look at the item's own attributes, not the merged
+  ones.** `apply_block_attrs` appends a block's attributes (including its
+  `@tier`) to every inner item, so a check on the merged list would
+  reject `@tier(low) { const N = 1 }`. The check runs in
+  `parse_item_or_block` on the attributes parsed directly in front of
+  the item: `@tier(...)` on a `const` is `PARSE-004`, and `@tier(mid)` /
+  `@tier(low)` on a `static` is `PARSE-004` (`@tier(high)` is accepted).
+  The diagnostic points at the attribute, found by name in `attrs`.
+
+`TokenType::Static` is in all three sync sets (`DECL_SYNC`, the
+top-level skip list in `parse_program.rs`, and the force-advance guard in
+`parse_item_or_block`) so recovery stops at a `static` the same way it
+stops at a `const`.
+
+---
+
 ### 5.8 `{` after a bare identifier — Struct Literal vs Block
 
 Found via exploratory testing (nested `while` loops doing a diagonal

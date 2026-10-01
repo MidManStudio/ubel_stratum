@@ -6,7 +6,7 @@
 use crate::ast::common::Span;
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, ExtendDecl, FunctionDecl,
-    ImplBlock, StructDecl, TraitDecl, TypeAlias,
+    ImplBlock, StaticDecl, StructDecl, TraitDecl, TypeAlias,
 };
 
 /// The root node returned by the parser for one `.ubl` source file.
@@ -79,6 +79,7 @@ pub enum Item<'ast> {
     Impl(ImplBlock<'ast>),
     Extend(ExtendDecl<'ast>),
     Const(ConstDecl<'ast>),
+    Static(StaticDecl<'ast>),
     TypeAlias(TypeAlias<'ast>),
 }
 
@@ -93,6 +94,7 @@ impl<'ast> Item<'ast> {
             Item::Impl(i)      => i.span,
             Item::Extend(e)    => e.span,
             Item::Const(c)     => c.span,
+            Item::Static(s)    => s.span,
             Item::TypeAlias(a) => a.span,
         }
     }
@@ -107,6 +109,7 @@ impl<'ast> Item<'ast> {
             Item::Impl(_)      => "impl block",
             Item::Extend(_)    => "extend declaration",
             Item::Const(_)     => "constant",
+            Item::Static(_)    => "static",
             Item::TypeAlias(_) => "type alias",
         }
     }

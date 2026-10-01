@@ -9,6 +9,7 @@ pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "let"        => TokenType::Let,
     "mut"        => TokenType::Mut,
     "const"      => TokenType::Const,
+    "static"     => TokenType::Static,
     "if"         => TokenType::If,
     "elif"       => TokenType::Elif,
     "else"       => TokenType::Else,

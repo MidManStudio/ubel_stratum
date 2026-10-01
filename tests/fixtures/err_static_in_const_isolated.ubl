@@ -1,0 +1,12 @@
+// tests/fixtures/err_static_in_const_isolated.ubl
+// A const initializer cannot read a static: a const is evaluated once
+// at startup (and again if it had to wait for a later constant), so it
+// cannot depend on a mutable global's current value. NAME-008.
+// Expected: sema FAIL (StaticInConst, NAME-008).
+
+static BASE: int = 4
+const DOUBLE: int = BASE * 2
+
+fn main() void {
+    println($"{DOUBLE}")
+}

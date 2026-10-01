@@ -20,7 +20,7 @@ use std::rc::Rc;
 use crate::ast::arena::AstArena;
 use crate::ast::common::{Span, TierAnnotation};
 use crate::ast::literals::IntSuffix;
-use crate::ast::declarations::{ConstDecl, FunctionDecl, MethodDecl, ParamKind, StructMember};
+use crate::ast::declarations::{FunctionDecl, MethodDecl, ParamKind, StructMember};
 use crate::ast::expressions::Expr;
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::Block;
@@ -131,6 +131,14 @@ pub struct Interpreter<'ast> {
     /// leaves every literal a plain `int` -- exactly the behavior of a
     /// program run without sema, as the interpreter's own unit tests do.
     pub(crate) int_literal_types: HashMap<Span, IntSuffix>,
+    /// Module-level `static` globals, by name. They live here and not in
+    /// `env` on purpose: `call_function` replaces `env` with a clone of the
+    /// function's closure for the duration of every call, so a global kept
+    /// in a scope would be copied in, assigned to, and thrown away again on
+    /// return. This table is the single shared store every function reads
+    /// and writes. Locals still shadow a static, because `lookup` and
+    /// `write_lvalue` consult `env` first.
+    pub(crate) statics: HashMap<String, Value>,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -145,6 +153,7 @@ impl<'ast> Interpreter<'ast> {
             arena,
             pool_capacity_stack: Vec::new(),
             int_literal_types: HashMap::new(),
+            statics: HashMap::new(),
         };
         interp.register_builtins();
         interp
@@ -376,38 +385,49 @@ impl<'ast> Interpreter<'ast> {
         // also what reports a constant cycle, at startup rather than at
         // sema. Initializers are expected to be pure, since one that
         // deferred is evaluated again.
-        let mut pending: Vec<ConstDecl<'ast>> = program.items.iter().copied()
+        //
+        // `static` items go through the same loop, so a static may refer to
+        // a constant or to another static declared later in the file, and a
+        // cycle among them is reported the same way. A constant is defined
+        // in `env`; a static goes to `self.statics` (see its field doc).
+        // The `bool` is `true` for a static.
+        let mut pending: Vec<(&'ast str, &'ast Expr<'ast>, bool)> = program.items.iter().copied()
             .filter_map(|item| match item {
-                Item::Const(c) => Some(c),
+                Item::Const(c)  => Some((c.name, c.value, false)),
+                Item::Static(s) => Some((s.name, s.value, true)),
                 _ => None,
             })
             .collect();
         if !pending.is_empty() {
             let mut last_undefined = String::new();
             while !pending.is_empty() {
-                let mut deferred: Vec<ConstDecl<'ast>> = Vec::with_capacity(pending.len());
-                for c in pending.iter().copied() {
-                    match expr::eval_expr(self, c.value) {
-                        Ok(v) => self.env.define(c.name, v),
+                let mut deferred: Vec<(&'ast str, &'ast Expr<'ast>, bool)> =
+                    Vec::with_capacity(pending.len());
+                for (name, value, is_static) in pending.iter().copied() {
+                    let what = if is_static { "static" } else { "constant" };
+                    match expr::eval_expr(self, value) {
+                        Ok(v) if is_static => { self.statics.insert(name.to_string(), v); }
+                        Ok(v)              => self.env.define(name, v),
                         Err(Signal::Panic(msg)) if msg.starts_with("undefined name '") => {
                             last_undefined = msg;
-                            deferred.push(c);
+                            deferred.push((name, value, is_static));
                         }
                         Err(Signal::Panic(msg)) => {
-                            return Err(format!("panic: {} (initializing constant `{}`)", msg, c.name));
+                            return Err(format!("panic: {} (initializing {} `{}`)", msg, what, name));
                         }
                         Err(Signal::Fail(v)) => {
-                            return Err(format!("unhandled fail: {} (initializing constant `{}`)", v, c.name));
+                            return Err(format!("unhandled fail: {} (initializing {} `{}`)", v, what, name));
                         }
                         Err(_) => {
-                            return Err(format!("invalid control flow initializing constant `{}`", c.name));
+                            return Err(format!("invalid control flow initializing {} `{}`", what, name));
                         }
                     }
                 }
                 if deferred.len() == pending.len() {
+                    let what = if deferred[0].2 { "static" } else { "constant" };
                     return Err(format!(
-                        "panic: {} (initializing constant `{}`; the constants involved refer to each other or to a name that is never defined)",
-                        last_undefined, deferred[0].name
+                        "panic: {} (initializing {} `{}`; the constants and statics involved refer to each other or to a name that is never defined)",
+                        last_undefined, what, deferred[0].0
                     ));
                 }
                 pending = deferred;
@@ -553,6 +573,7 @@ impl<'ast> Interpreter<'ast> {
 
     pub fn lookup(&self, name: &str) -> EvalResult {
         self.env.get(name)
+            .or_else(|| self.statics.get(name))
             .cloned()
             .ok_or_else(|| Signal::Panic(format!("undefined name '{}'", name)))
     }

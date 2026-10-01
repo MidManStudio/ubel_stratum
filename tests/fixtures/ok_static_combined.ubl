@@ -1,0 +1,37 @@
+// tests/fixtures/ok_static_combined.ubl
+// Statics together with the features they have to live beside: `pub`,
+// a redundant `@tier(high)` annotation, a tier BLOCK around a const and a
+// static (a block's tier is for the functions in it, it never reaches a
+// const or a static), a MID-tier function that is handed the value as a
+// parameter instead of reading the static, a static read in an
+// interpolation hole, and context-driven literal typing against the
+// declared type.
+// Expected: sema OK, interpret OK.
+
+pub static VERSION: string = "1.2"
+
+@tier(high)
+static BUDGET: u16 = 65530
+
+@tier(low) {
+    const SPARE: int = 4
+    static ATTEMPTS: int = 0
+}
+
+@tier(mid)
+fn doubled(value: int) int {
+    return value * 2
+}
+
+fn spend(n: u16) void {
+    BUDGET += n
+    ATTEMPTS += 1
+}
+
+fn main() void {
+    spend(10)
+    assert(BUDGET == 4, "u16 static wraps: 65530 + 10 = 65540, minus 65536")
+    assert(ATTEMPTS == 1, "a static declared inside a tier block")
+    assert(doubled(ATTEMPTS + SPARE) == 10, "the value is passed to the MID function")
+    assert($"v{VERSION}" == "v1.2", "a static read in an interpolation hole")
+}

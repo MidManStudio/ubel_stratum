@@ -927,9 +927,15 @@ fn write_lvalue<'ast>(
 ) -> EvalResult {
     match &target.kind {
         ExprKind::Ident(name) => {
-            // Try to update existing binding; define if it doesn't exist.
+            // Update an existing local first (a local shadows a static of
+            // the same name), then a static, and only define a new binding
+            // if the name is neither.
             if !interp.env.set(name, value.clone()) {
-                interp.env.define(name, value);
+                if let Some(slot) = interp.statics.get_mut(*name) {
+                    *slot = value;
+                } else {
+                    interp.env.define(name, value);
+                }
             }
             Ok(Value::Void)
         }

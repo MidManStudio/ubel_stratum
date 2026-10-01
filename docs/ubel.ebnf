@@ -38,6 +38,7 @@ Item          ::= FunctionDecl
                 | ImplBlock
                 | ExtendDecl
                 | ConstDecl
+                | StaticDecl
                 | TypeAlias
 
 (* ============================================================ *)
@@ -140,8 +141,18 @@ ImplItem      ::= MethodDecl
 ExtendDecl    ::= "extend" TypeExpr ("{" ExtendItem* "}")?
 ExtendItem    ::= MethodDecl
 
-(* ── Constants and Type Aliases ── *)
+(* ── Constants, Statics and Type Aliases ── *)
 ConstDecl     ::= "const" Ident TypeAnnotation? "=" Expr
+
+(* A mutable module-level global. The type annotation is REQUIRED, so
+   that no function body takes part in deciding it. A static lives in
+   the HIGH tier: only `@tier(high)` code may read or write it
+   (TIER-015), no `@tier(mid|low)` may be written on the item itself
+   (PARSE-004), and a `const` initializer may not read one (NAME-008).
+   `pub` is recorded and takes effect once `summon` lands. The
+   initializer runs once, before `main`, and may refer to constants and
+   statics declared later in the file. *)
+StaticDecl    ::= "static" Ident ":" TypeExpr "=" Expr
 TypeAlias     ::= "type" Ident GenericParams? "=" TypeExpr
 
 (* ============================================================ *)

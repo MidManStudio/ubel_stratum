@@ -1,0 +1,23 @@
+// tests/fixtures/ok_static_initialization_order_isolated.ubl
+// Initializers run once, before `main`, in the same retry loop as
+// constants: a static may refer to a constant or another static that is
+// declared LATER in the file, and may call a function. Source order of
+// the declarations does not matter.
+// Expected: sema OK, interpret OK.
+
+static FIRST: int = SECOND + 1
+static SECOND: int = LIMIT * 2
+const LIMIT: int = 3
+
+fn double(n: int) int {
+    return n * 2
+}
+
+static THIRD: int = double(FIRST)
+
+fn main() void {
+    assert(LIMIT == 3, "the constant")
+    assert(SECOND == 6, "a static that reads a later constant")
+    assert(FIRST == 7, "a static that reads a later static")
+    assert(THIRD == 14, "a static whose initializer calls a function")
+}

@@ -29,7 +29,9 @@ reported twice, say) is covered by
 text through lex, parse and sema and asserts exact counts.
 `crates/rd_parser/tests/int_literal_typing.rs` does the same for integer
 literal typing and also runs programs through the interpreter, since
-that feature spans sema and runtime.
+that feature spans sema and runtime. `crates/rd_parser/tests/statics.rs`
+does it for `static` items, where the runtime half (one value shared by
+every function) is the property most likely to regress silently.
 
 ## 2. Mix features together, not just in isolation
 

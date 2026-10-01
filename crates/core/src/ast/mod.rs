@@ -70,7 +70,7 @@ pub use declarations::{
     ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload,
     ExtendDecl, FieldDecl, FunctionDecl, ImplBlock,
     MethodDecl, MethodSig, Param, ParamKind, PropertyDecl,
-    ReturnType, StructDecl, StructMember, TraitDecl, TraitItem,
+    ReturnType, StaticDecl, StructDecl, StructMember, TraitDecl, TraitItem,
     TypeAlias,
 };
 

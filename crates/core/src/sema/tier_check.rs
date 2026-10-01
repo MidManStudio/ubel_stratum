@@ -35,6 +35,8 @@
 //! - `@tier(mid)` → `@tier(high)` call: forbidden
 //! - `@tier(low)` → `@tier(high)` call: forbidden
 //! - `@tier(low)` → `@tier(mid)` call: forbidden
+//! - a `static` may only be read or written from `@tier(high)` code
+//!   (`TIER-015`)
 
 #![allow(dead_code)]
 
@@ -46,6 +48,7 @@ use crate::ast::expressions::{
     ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody,
     MatchArmBody, OrElseFallback,
 };
+use crate::ast::literals::{InterpolationPart, Literal};
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::{AllocatorKind, Block, Stmt, StmtKind};
 use crate::error_management::{ErrorManager, errors::TierError};
@@ -101,6 +104,14 @@ impl<'a> TierChecker<'a> {
                         self.check_method(m);
                     }
                 }
+            }
+            // A static's initializer runs at startup in the HIGH tier, so
+            // it may read other statics; check it as HIGH code.
+            Item::Static(s) => {
+                let prev = self.current_tier;
+                self.current_tier = TierAnnotation::High;
+                self.check_expr(s.value);
+                self.current_tier = prev;
             }
             _ => {}
         }
@@ -318,7 +329,32 @@ impl<'a> TierChecker<'a> {
             }
 
             // ── Leaf / structural traversal ────────────────────────
-            ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::SelfExpr => {}
+            // Reading or writing a static (an assignment target is an
+            // ordinary `Ident` expression) is HIGH-tier only.
+            ExprKind::Ident(name) => {
+                if self.current_tier != TierAnnotation::High {
+                    if let Some(id) = self.ctx.resolutions.get(expr.span) {
+                        if matches!(self.ctx.symbols.lookup(id).kind, DefKind::Static) {
+                            self.errors.add_tier_error(TierError::StaticAccessOutsideHigh {
+                                name:   name.to_string(),
+                                actual: self.current_tier,
+                                span:   expr.span,
+                            });
+                        }
+                    }
+                }
+            }
+            // Interpolation holes are ordinary expressions (`$"{COUNTER}"`
+            // reads a static), and were not visited before.
+            ExprKind::Lit(Literal::InterpolatedStr(parts))
+            | ExprKind::Lit(Literal::InterpolatedVerbatimStr(parts)) => {
+                for part in parts.iter() {
+                    if let InterpolationPart::Expr { expr, .. } = part {
+                        self.check_expr(expr);
+                    }
+                }
+            }
+            ExprKind::Lit(_) | ExprKind::SelfExpr => {}
             ExprKind::ShortDecl { value, .. } => self.check_expr(value),
 
             ExprKind::BinOp { lhs, rhs, .. } => {

@@ -29,7 +29,7 @@ use crate::ast::root::{Program, Item, ImportKind, ImportItems};
 use crate::ast::declarations::{
     FunctionDecl, StructDecl, StructMember, EnumDecl,
     TraitDecl, TraitItem, ImplBlock, ExtendDecl,
-    ConstDecl, TypeAlias, MethodDecl, Param, ParamKind,
+    ConstDecl, StaticDecl, TypeAlias, MethodDecl, Param, ParamKind,
 };
 use crate::ast::statements::{Block, Stmt, StmtKind, UsingBinding};
 use crate::ast::expressions::{Expr, ExprKind};
@@ -60,11 +60,14 @@ struct Resolver<'a> {
     in_method: bool,
     /// The `DefId` of the function / method currently being resolved.
     current_fn: Option<DefId>,
+    /// Whether the expression being resolved is a `const` initializer. A
+    /// `static` read there is `NAME-008`.
+    in_const_initializer: bool,
 }
 
 impl<'a> Resolver<'a> {
     fn new(ctx: &'a mut SemaContext, errors: &'a mut ErrorManager) -> Self {
-        let mut r = Resolver { ctx, errors, scopes: ScopeStack::new(), in_method: false, current_fn: None };
+        let mut r = Resolver { ctx, errors, scopes: ScopeStack::new(), in_method: false, current_fn: None, in_const_initializer: false };
         // Push the module (top-level) scope.
         r.scopes.push();
         r.declare_builtins();
@@ -174,6 +177,9 @@ impl<'a> Resolver<'a> {
             Item::Const(c) => {
                 self.declare_top_level(c.name.to_string(), DefKind::Const, c.span, Visibility::Private);
             }
+            Item::Static(s) => {
+                self.declare_top_level(s.name.to_string(), DefKind::Static, s.span, s.visibility);
+            }
             Item::TypeAlias(a) => {
                 self.declare_top_level(a.name.to_string(), DefKind::TypeAlias, a.span, Visibility::Private);
             }
@@ -207,6 +213,7 @@ impl<'a> Resolver<'a> {
             Item::Impl(i)      => self.resolve_impl(i),
             Item::Extend(x)    => self.resolve_extend(x),
             Item::Const(c)     => self.resolve_const(c),
+            Item::Static(s)    => self.resolve_static(s),
             Item::TypeAlias(a) => self.resolve_type_alias(a),
         }
     }
@@ -358,7 +365,17 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_const<'ast>(&mut self, c: &ConstDecl<'ast>) {
+        // A const initializer is evaluated once at startup and, when it
+        // refers to a later constant, re-evaluated, so it must not read a
+        // mutable global. `in_const_initializer` lets the `Ident` arm of
+        // `resolve_expr` report that (`NAME-008`).
+        let prev = std::mem::replace(&mut self.in_const_initializer, true);
         self.resolve_expr(c.value);
+        self.in_const_initializer = prev;
+    }
+
+    fn resolve_static<'ast>(&mut self, s: &StaticDecl<'ast>) {
+        self.resolve_expr(s.value);
     }
 
     fn resolve_type_alias<'ast>(&mut self, _a: &TypeAlias<'ast>) {
@@ -814,6 +831,14 @@ fn resolve_qual_path(&mut self, path: &[&str], span: Span) {
 fn resolve_name(&mut self, name: &str, span: Span) {
     if let Some(id) = self.scopes.resolve(name) {
         self.ctx.resolutions.record(span, id);
+        if self.in_const_initializer
+            && matches!(self.ctx.symbols.lookup(id).kind, DefKind::Static)
+        {
+            self.errors.add_name_error(NameError::StaticInConst {
+                name: name.to_string(),
+                span,
+            });
+        }
     } else {
         let suggestion = self.find_similar(name);
         self.errors.add_name_error(NameError::UndefinedName {

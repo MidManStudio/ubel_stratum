@@ -1,0 +1,17 @@
+// tests/fixtures/err_const_tier_annotation_isolated.ubl
+// A const is tier-agnostic: every tier can read it. A `@tier(...)` on the
+// const itself used to be parsed and silently dropped; it is now an
+// error. A tier BLOCK around a const is still fine, since the block's
+// tier is for the functions in it. Exactly one diagnostic.
+// Expected: parse FAIL (IllegalInContext, PARSE-004).
+
+@tier(mid)
+const LIMIT: int = 3
+
+@tier(low) {
+    const INSIDE_BLOCK: int = 4
+}
+
+fn main() void {
+    println($"{LIMIT}")
+}

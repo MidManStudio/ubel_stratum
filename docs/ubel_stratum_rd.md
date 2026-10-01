@@ -27,9 +27,41 @@ methods, parameters, structs, enums, traits, impls.
 **Decisions:**
 - Added a `TokenType::Underscore` arm to `parse_param` for `_: Type`
   parameters, producing `ParamKind::Discard`.
+- `parse_static_decl` parses `[pub] static NAME: Type = expr` into
+  `Item::Static`. The type annotation is required, and every failure
+  path emits its diagnostic and then calls `recover_to_decl()` so the
+  rest of the declaration is not parsed a second time as a stray item.
+  `apply_block_attrs` merges only the generic attributes into a static,
+  never a tier. See `docs/PARSER_RULES.md`, section 5.7a.
+- `parse_item_or_block` checks the item's OWN `@tier(...)` attribute
+  (found by name in the attributes parsed directly in front of it, not the
+  block-merged list): on a `const` it is `PARSE-004`; on a `static`,
+  `@tier(mid)` and `@tier(low)` are `PARSE-004` and `@tier(high)` is
+  accepted. A tier block around either is not reported.
+- `TokenType::Static` joined the three declaration sync sets.
 
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
-`tests/fixtures/ok_callback_registry_combined.ubl`.
+`tests/fixtures/ok_callback_registry_combined.ubl`; for `static`, the
+five `ok_static_*` and seven `err_*static*`/`err_const_tier_*` fixtures
+and `tests/statics.rs` below.
+
+### `tests/statics.rs`
+
+**What it does:** Integration tests for `static` items. Source goes
+through `check_source` for the stage and diagnostic codes, and through
+the interpreter (sema first, then `set_int_literal_types`, then
+`run_program`) where a test needs runtime values.
+
+**Decisions:**
+- Pins what fixtures cannot see: the exact code and count per rule
+  (`TIER-015`, `NAME-008`, `PARSE-004`, `PARSE-001`), that a malformed
+  declaration is reported once, that a tier block around a const or
+  static is not an own annotation, and the runtime contract that a
+  static is one value shared by every function.
+- Mutation-checked: disabling the static branch of `write_lvalue` fails
+  exactly `a_static_is_one_value_shared_by_every_function`,
+  `assignment_in_main_is_visible_to_a_function_and_back` and
+  `a_closure_writes_the_shared_static`.
 
 ### `tests/int_literal_typing.rs`
 
