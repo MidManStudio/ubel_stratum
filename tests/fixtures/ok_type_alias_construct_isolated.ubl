@@ -1,0 +1,68 @@
+// tests/fixtures/ok_type_alias_construct_isolated.ubl
+// An alias to a struct or enum works everywhere the real name does, not
+// only in a type annotation: a struct literal (`P { x = 1 }`), an
+// associated function call (`P.origin()`), enum variant construction of
+// every payload shape (`C.Red`, `C.Rgb(1, 2, 3)`, `C.Named { .. }`), a
+// struct pattern and an enum pattern written with the alias, and an
+// alias of an alias. The values these build carry the REAL type name, so
+// an instance method written on `Point` finds a value built through `P`.
+// Expected: sema OK, interpret OK.
+
+enum Color {
+    Red,
+    Green,
+    Rgb(int, int, int),
+    Named { label: string },
+}
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+type C = Color
+type P = Point
+type Q = P
+
+extend Point {
+    fn origin() Point {
+        return Point { x = 0, y = 0 }
+    }
+
+    fn sum(self) int {
+        return self.x + self.y
+    }
+}
+
+fn describe(c: C) string {
+    match c {
+        C.Red => { return "red" }
+        C.Rgb(r, g, b) => { return $"rgb {r + g + b}" }
+        C.Named { label } => { return label }
+        _ => { return "other" }
+    }
+}
+
+fn corner(p: Q) string {
+    match p {
+        P { x, y } => { return $"{x},{y}" }
+    }
+}
+
+fn main() void {
+    let q = P { x = 3, y = 4 }
+    assert(q.sum() == 7, "struct literal through an alias, method on the real type")
+
+    let o = P.origin()
+    assert(o.sum() == 0, "associated function through an alias")
+
+    let two = Q { x = 5, y = 6 }
+    assert(two.sum() == 11, "alias of an alias in a struct literal")
+
+    assert(describe(C.Red) == "red", "unit variant through an alias")
+    assert(describe(C.Rgb(1, 2, 3)) == "rgb 6", "tuple variant through an alias")
+    assert(describe(C.Named { label = "teal" }) == "teal", "struct variant through an alias")
+    assert(describe(Color.Green) == "other", "the real name still works beside the alias")
+
+    assert(corner(q) == "3,4", "a struct pattern written with an alias matches the real struct")
+}

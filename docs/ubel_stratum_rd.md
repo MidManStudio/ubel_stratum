@@ -45,6 +45,34 @@ methods, parameters, structs, enums, traits, impls.
 five `ok_static_*` and seven `err_*static*`/`err_const_tier_*` fixtures
 and `tests/statics.rs` below.
 
+### `tests/type_aliases.rs`, `tests/member_calls.rs`, `tests/diagnostic_spans.rs`
+
+**What it does:** Integration tests for the four confirmed bugs taken
+down together (`docs/PARKED_IDEAS.md`, "Taking down the confirmed bugs").
+Each goes through `check_source` for the stage and codes, and through the
+interpreter (sema, then `set_int_literal_types`, then `run_program`) where
+a test needs runtime values.
+
+**Decisions:**
+- `type_aliases.rs` (20): transparency in type position for every alias
+  shape, `TYPE-121` once per alias in a cycle and not for an unrelated
+  alias beside it, no cascade from a cyclic alias, `TYPE-108` for a wrong
+  generic count, and the expression and pattern positions (struct literal,
+  associated call, every enum variant shape, struct and enum patterns), with
+  values asserted to carry the real type name.
+- `member_calls.rs` (17): an unknown method on a plain enum and on an enum
+  with an `extend` block, one `UnknownVariant` per typo (not two), enum
+  methods running on unit and payload variants, associated functions on an
+  enum, and function-typed fields (called, closures, generic holders, a
+  method winning over a field, wrong argument type, wrong return type, a
+  non-function field, an unknown name).
+- `diagnostic_spans.rs` (3): asserts the LINE of a nested generic mismatch,
+  which a count-only test cannot see.
+- Mutation-checked: reverting the span fix fails exactly the three span
+  tests; removing enum dispatch fails exactly the four enum-runtime tests;
+  making aliases nominal again fails 15 of the 20 alias tests (the other 5
+  exercise the separate `type_def_of` construction path).
+
 ### `tests/statics.rs`
 
 **What it does:** Integration tests for `static` items. Source goes

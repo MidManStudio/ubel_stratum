@@ -139,6 +139,13 @@ pub struct Interpreter<'ast> {
     /// and writes. Locals still shadow a static, because `lookup` and
     /// `write_lvalue` consult `env` first.
     pub(crate) statics: HashMap<String, Value>,
+    /// `type` alias name -> the struct or enum name it stands for, for the
+    /// aliases whose target is a named type. A `type` alias is just another
+    /// name for a type, so a struct literal, a static call, an enum variant
+    /// and a struct pattern written with the alias must behave exactly as
+    /// the real name does, and the values they build carry the REAL type
+    /// name (never the alias). Empty for a program with no such alias.
+    pub(crate) type_aliases: HashMap<String, String>,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -154,6 +161,7 @@ impl<'ast> Interpreter<'ast> {
             pool_capacity_stack: Vec::new(),
             int_literal_types: HashMap::new(),
             statics: HashMap::new(),
+            type_aliases: HashMap::new(),
         };
         interp.register_builtins();
         interp
@@ -293,6 +301,16 @@ impl<'ast> Interpreter<'ast> {
                     let id = self.register_fn(f);
                     self.env.define(f.name, Value::Function(id));
                     top_level_fns.push(id);
+                }
+                Item::TypeAlias(a) => {
+                    // Only an alias whose target is a named type can be
+                    // constructed or called through; `type Score = int`
+                    // has nothing to canonicalize to.
+                    if let TypeKind::Named { path, .. } = a.ty.kind {
+                        if let Some(target) = path.last() {
+                            self.type_aliases.insert(a.name.to_string(), target.to_string());
+                        }
+                    }
                 }
                 Item::Struct(s) => {
                     // Sema (TYPE-116) already rejected anything but
@@ -569,6 +587,22 @@ impl<'ast> Interpreter<'ast> {
                 }
             }
         }
+    }
+
+    /// The real type name behind `name`: follows `type` aliases to a
+    /// struct or enum, and returns `name` itself when it is not an alias.
+    /// The hop limit is only a guard for the interpreter's own unit tests,
+    /// which run without sema (sema rejects an alias cycle).
+    pub(crate) fn canonical_type<'a>(&'a self, name: &'a str) -> &'a str {
+        if self.type_aliases.is_empty() { return name; }
+        let mut cur = name;
+        for _ in 0..64 {
+            match self.type_aliases.get(cur) {
+                Some(next) => cur = next.as_str(),
+                None       => break,
+            }
+        }
+        cur
     }
 
     pub fn lookup(&self, name: &str) -> EvalResult {

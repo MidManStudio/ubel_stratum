@@ -1,0 +1,46 @@
+// tests/fixtures/ok_struct_function_field_isolated.ubl
+// A struct field of function type can be CALLED directly: `c.cb(4)`.
+// That used to be reported as NoSuchMethod. It works for a plain field, a
+// generic holder, and a field assigned a closure that captures a local.
+// A real method with the same name as a field still wins, since a method
+// is looked up first, in sema and in the interpreter alike. Reading the
+// field as a plain value (`let f = c.cb`) is unchanged.
+// Expected: sema OK, interpret OK.
+
+struct Config {
+    cb:   fn(int) int,
+    name: string,
+}
+
+struct Holder<T> {
+    f:   fn(T) T,
+    tag: string,
+}
+
+struct Both {
+    run: fn(int) int,
+}
+
+extend Both {
+    fn run(self, n: int) int {
+        return n + 1000
+    }
+}
+
+fn main() void {
+    let c = Config { cb = fn(x: int) x * 2, name = "n" }
+    assert(c.cb(4) == 8, "call a function-typed field")
+
+    let h = Holder { f = fn(x: int) x + 1, tag = "t" }
+    assert(h.f(4) == 5, "call a function field of a generic struct")
+
+    let f = h.f
+    assert(f(9) == 10, "the field read as a value is still callable")
+
+    let offset = 100
+    let k = Config { cb = fn(x: int) x + offset, name = "k" }
+    assert(k.cb(5) == 105, "a field holding a closure that captures a local")
+
+    let b = Both { run = fn(x: int) x * 2 }
+    assert(b.run(4) == 1004, "a real method wins over a field of the same name")
+}

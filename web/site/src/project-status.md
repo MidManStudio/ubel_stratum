@@ -53,6 +53,20 @@ verified safe.
   accepted while a genuine second move is still rejected
 - Global `const` items are evaluated before `main` runs, in any
   declaration order, and assigning to one is a compile error
+- `type` aliases are transparent: with `type Score = int`, a `Score` and
+  an `int` are the same type, with no cast. That holds for aliases to
+  primitives, collections, generic struct instances and function types,
+  for generic aliases (`type Wrapped<T> = Box<T>`), for an alias of an
+  alias, and for an alias declared after its use. An alias to a struct or
+  enum also works where the name is built or matched (`P { x = 1 }`,
+  `P.origin()`, `C.Red`, patterns), and an alias cycle is an error
+- Methods on enums: an `extend` block on an enum adds instance methods and
+  associated functions (`Color.make()`), an unknown method on an enum value
+  is a compile error, and a struct field of function type can be called
+  directly (`config.callback(4)`)
+- A type mismatch inside a generic type (`List<int>` against
+  `List<string>`) now points at the offending expression instead of the
+  top of the file
 - Mutable globals: `static NAME: Type = expr` (the type is required, and
   `pub static` exports once modules exist). A static is one value shared
   by every function: assign to it in one function and read it in another.
@@ -107,12 +121,9 @@ verified safe.
 - Format specs for sign, zero padding and numeric base (`{x:+}`,
   `{x:05}`, `{x:x}`) work on plain `int` only, not on the fixed-width
   integers
-- `type` aliases are not yet transparent: with `type Score = int`, a
-  `Score` and an `int` do not unify without an explicit cast
-- An unknown method called on an enum value is not caught at compile
-  time and panics when the program runs
-- Calling a function stored in a struct field (`config.callback(4)`) is
-  reported as an unknown method
+- Constructing through an alias to a type that is not a struct or enum
+  (`type Score = int`, then `Score { x = 1 }`) is not rejected at compile
+  time
 - `pub` written on a `const` or `type` item, and `@tier(...)` written on
   a `type` item, are parsed and then ignored; constants are global to
   the file and readable from every tier

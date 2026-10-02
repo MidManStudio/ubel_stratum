@@ -170,11 +170,12 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             // ordinary field lookup below is unreachable in practice for
             // valid programs, not a silent behavior change.
             if let ExprKind::Ident(name) = &target.kind {
-                if let Some(variants) = interp.enum_table.get(*name) {
+                let canon = interp.canonical_type(name);
+                if let Some(variants) = interp.enum_table.get(canon) {
                     if let Some(kind) = variants.get(*field) {
                         return if *kind == crate::interpreter::eval::VariantKind::Fieldless {
                             Ok(Value::Enum {
-                                type_name: name.to_string(),
+                                type_name: canon.to_string(),
                                 variant:   field.to_string(),
                                 payload:   Box::new(crate::interpreter::value::EnumPayload::None),
                             })
@@ -304,23 +305,27 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             // segments, first one names a known enum. Sema has already
             // validated field names/types by this point.
             if path.len() >= 2 {
-                if let Some(variants) = interp.enum_table.get(path[0]) {
+                let canon_ref = interp.canonical_type(path[0]);
+                if let Some(variants) = interp.enum_table.get(canon_ref) {
                     let variant = path[path.len() - 1];
                     if variants.get(variant) == Some(&crate::interpreter::eval::VariantKind::Struct) {
+                        // Owned, so the borrow of `interp` ends before the
+                        // field values (which need `interp` mutably) run.
+                        let canon = canon_ref.to_string();
                         let mut map = HashMap::new();
                         for f in fields.iter() {
                             let v = eval_expr(interp, f.value)?;
                             map.insert(f.name.to_string(), v);
                         }
                         return Ok(Value::Enum {
-                            type_name: path[0].to_string(),
+                            type_name: canon,
                             variant:   variant.to_string(),
                             payload:   Box::new(crate::interpreter::value::EnumPayload::Struct(map)),
                         });
                     }
                 }
             }
-            let type_name = path.last().copied().unwrap_or("").to_string();
+            let type_name = interp.canonical_type(path.last().copied().unwrap_or("")).to_string();
             let mut map = HashMap::new();
             for f in fields.iter() {
                 let v = eval_expr(interp, f.value)?;
@@ -392,7 +397,10 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             let scrutinee = eval_expr(interp, m.scrutinee)?;
             for arm in m.arms.iter() {
                 interp.env.push();
-                let matched = pattern::match_pattern(&arm.pattern, &scrutinee, &mut interp.env, &interp.enum_table);
+                let matched = pattern::match_pattern(
+                    &arm.pattern, &scrutinee, &mut interp.env,
+                    pattern::PatternTables { enums: &interp.enum_table, aliases: &interp.type_aliases },
+                );
                 if matched {
                     let guard_ok = match arm.guard {
                         Some(g) => eval_expr(interp, g)?.is_truthy()?,
@@ -1098,11 +1106,13 @@ fn eval_call_with_receiver<'ast>(
         // construction. Sema has already validated arity/types by this
         // point, so this just evaluates the args and wraps them —
         // no re-checking here.
-        if let Some(variants) = interp.enum_table.get(*type_name) {
+        let canon = interp.canonical_type(type_name);
+        if let Some(variants) = interp.enum_table.get(canon) {
             if variants.get(method_name) == Some(&crate::interpreter::eval::VariantKind::Tuple) {
+                let enum_name = canon.to_string();
                 let args = eval_args(interp, raw_args)?;
                 return Ok(Value::Enum {
-                    type_name: type_name.to_string(),
+                    type_name: enum_name,
                     variant:   method_name.to_string(),
                     payload:   Box::new(crate::interpreter::value::EnumPayload::Tuple(args)),
                 });
@@ -1116,13 +1126,13 @@ fn eval_call_with_receiver<'ast>(
             let args = eval_args(interp, raw_args)?;
             return func(&args);
         }
-        if interp.method_table.contains_key(*type_name) {
+        if interp.method_table.contains_key(canon) {
             let fn_id = interp.method_table
-                .get(*type_name)
+                .get(canon)
                 .and_then(|m| m.get(method_name))
                 .copied()
                 .ok_or_else(|| Signal::Panic(format!(
-                    "no static method '{}' on '{}'", method_name, type_name
+                    "no static method '{}' on '{}'", method_name, canon
                 )))?;
             let args = eval_args(interp, raw_args)?;
             return interp.call_function(fn_id, &args);
@@ -1346,8 +1356,13 @@ fn eval_method_call(
     }
 
     // User-defined instance method on a struct.
+    //
+    // An `enum` value dispatches through the same `method_table` as a
+    // struct (`extend Color { fn is_red(self) .. }`); it has no derives, so
+    // no `.clone()` pseudo-method.
     let (type_name, derives_clone) = match &receiver {
         Value::Struct { type_name, derives_clone, .. } => (type_name.clone(), *derives_clone),
+        Value::Enum   { type_name, .. }                => (type_name.clone(), false),
         other => return Err(Signal::Panic(format!(
             "no method '{}' on {}", method_name, other.type_name()
         ))),
@@ -1358,6 +1373,15 @@ fn eval_method_call(
         .copied()
     {
         return interp.call_method(fn_id, receiver, args);
+    }
+    // `c.cb(4)` where `cb` is a struct FIELD holding a function. A real
+    // method of the same name was already tried above, the same order sema
+    // uses.
+    if let Value::Struct { fields, .. } = &receiver {
+        let field_val = fields.borrow().get(method_name).cloned();
+        if let Some(Value::Function(id)) = field_val {
+            return interp.call_function(id, args);
+        }
     }
     // `.clone()` is a derive-gated pseudo-method (`Value::deep_clone`),
     // not a real `method_table` entry, checked only once no

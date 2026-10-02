@@ -1,0 +1,14 @@
+// tests/fixtures/err_struct_function_field_call_isolated.ubl
+// Calling a function-typed field is type-checked like any other call:
+// the argument has to match the field's declared parameter type.
+// Passing a string where `fn(int) int` wants an int is one mismatch.
+// Expected: sema FAIL (TypeMismatch, TYPE-101).
+
+struct Config {
+    cb: fn(int) int,
+}
+
+fn main() void {
+    let c = Config { cb = fn(x: int) x * 2 }
+    let r = c.cb("text")
+}

@@ -159,6 +159,15 @@ pub enum TypeError {
         span:     Span,
     },
 
+    /// A `type` alias that refers to itself, directly (`type A = A`) or
+    /// through other aliases (`type A = B  type B = A`), so it has no
+    /// finite expansion. Also reported for an alias that depends on one
+    /// that does, since it cannot be expanded either.
+    TypeAliasCycle {
+        name: String,
+        span: Span,
+    },
+
     /// A type could not be inferred — too ambiguous.
     CannotInferType {
         span:       Span,
@@ -240,6 +249,7 @@ impl TypeError {
             TypeError::DeriveRequiresOther          { span, .. } => *span,
             TypeError::TypeNotOrderable             { span, .. } => *span,
             TypeError::IntLiteralOutOfRange        { span, .. } => *span,
+            TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
             TypeError::UnknownVariant             { span, .. } => *span,
@@ -291,6 +301,9 @@ impl TypeError {
 
             TypeError::TypeNotOrderable { on_type, .. } =>
                 format!("type `{}` doesn't support ordering comparisons", on_type),
+
+            TypeError::TypeAliasCycle { name, .. } =>
+                format!("type alias `{}` refers to itself, directly or through other aliases", name),
 
             TypeError::IntLiteralOutOfRange { suffix, raw, negative, inferred, .. } => {
                 let sign = if *negative { "-" } else { "" };
@@ -378,6 +391,9 @@ impl TypeError {
             TypeError::TypeNotOrderable { .. } =>
                 Some("add `@derive(PartialOrd)` (or `@derive(Ord)`) to the struct, or compare a different field".to_string()),
 
+            TypeError::TypeAliasCycle { .. } =>
+                Some("an alias is just another name for a type, so it must end in a type that is not itself an alias of the same chain".to_string()),
+
             TypeError::IntLiteralOutOfRange { suffix, inferred, .. } =>
                 Some(if *inferred {
                     format!("use a value that fits `{}`, or give the binding a wider type", suffix)
@@ -424,6 +440,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::DeriveRequiresOther { .. }           => "TYPE-117",
             TypeError::TypeNotOrderable { .. }              => "TYPE-118",
             TypeError::IntLiteralOutOfRange { .. }          => "TYPE-120",
+            TypeError::TypeAliasCycle { .. }                => "TYPE-121",
         }
     }
     fn span(&self) -> Span { self.span() }

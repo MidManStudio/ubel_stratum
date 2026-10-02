@@ -1,0 +1,20 @@
+// tests/fixtures/err_generic_argument_mismatch_isolated.ubl
+// Two instantiations of one generic type with different arguments do not
+// unify, and the diagnostic points at the offending expression. It used
+// to carry offset 0 (the top of the file), because the structural
+// comparison of generic arguments had no span to report with. The span is
+// asserted in crates/rd_parser/tests/diagnostic_spans.rs; this fixture
+// pins the mismatch itself, twice (a call argument and a let).
+// Expected: sema FAIL (TypeMismatch, TYPE-101, twice).
+
+fn first(a: List<int>, b: List<string>) void {
+}
+
+fn main() void {
+    let x: List<int> = List.new()
+    let y: List<int> = List.new()
+    first(x, y)
+
+    let m: Dictionary<string, int> = Dictionary.new()
+    let k: Dictionary<int, int> = m
+}

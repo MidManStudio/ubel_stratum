@@ -1,0 +1,53 @@
+// tests/fixtures/ok_alias_enum_function_field_combined.ubl
+// The four fixes together, plus what they have to live beside: an alias
+// to a function type used as a struct field type and called through the
+// field, an alias to an enum with an `extend` block, an alias to a
+// struct built and matched through the alias, a `static` of an aliased
+// type, and context-driven literal typing against an aliased integer.
+// Expected: sema OK, interpret OK.
+
+type Level = u8
+type Callback = fn(Level) Level
+type Mode = Setting
+
+enum Setting {
+    Fast,
+    Slow,
+    Custom(Level),
+}
+
+extend Setting {
+    fn level(self) Level {
+        match self {
+            Setting.Fast => { return 200 }
+            Setting.Slow => { return 10 }
+            Setting.Custom(n) => { return n }
+        }
+    }
+
+    fn preset() Setting {
+        return Setting.Slow
+    }
+}
+
+struct Engine {
+    tune: Callback,
+    mode: Mode,
+}
+
+static BOOSTS: Level = 250
+
+fn main() void {
+    let e = Engine { tune = fn(l: Level) l + 100, mode = Mode.Fast }
+    assert(e.tune(200) == 44, "a Callback field of an aliased u8 wraps at 8 bits")
+    assert(e.mode.level() == 200, "method on an enum field typed through an alias")
+
+    let p: Mode = Mode.preset()
+    assert(p.level() == 10, "associated function through an alias")
+
+    let custom = Mode.Custom(250)
+    assert(custom.level() + 10 == 4, "payload variant through an alias, u8 arithmetic wraps")
+
+    BOOSTS += 10
+    assert(BOOSTS == 4, "a static of an aliased integer type wraps")
+}

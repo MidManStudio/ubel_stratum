@@ -1,0 +1,15 @@
+// tests/fixtures/err_type_alias_cycle_isolated.ubl
+// An alias has to end in a real type. `type A = A` refers to itself;
+// `type B = C  type C = B` refer to each other. Neither has a finite
+// expansion, so each alias in a cycle is TYPE-121 (one diagnostic per
+// alias, three here). `D` is an ordinary alias and is not reported.
+// Expected: sema FAIL (TypeAliasCycle, TYPE-121, three times).
+
+type A = A
+type B = C
+type C = B
+type D = int
+
+fn main() void {
+    let x: D = 1
+}

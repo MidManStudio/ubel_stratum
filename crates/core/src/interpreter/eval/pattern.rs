@@ -22,6 +22,33 @@ use crate::interpreter::value::{EnumPayload, Value};
 /// binding) — see those two arms' own comments in `match_inner`.
 type EnumTable = HashMap<String, HashMap<String, VariantKind>>;
 
+/// `type` alias name -> the type it stands for (`Interpreter::type_aliases`),
+/// so a struct pattern written with an alias (`P { x, y }`) matches a value
+/// of the real struct, whose `type_name` is always the real name.
+type AliasTable = HashMap<String, String>;
+
+/// Everything a pattern needs to resolve a NAME: the enum table and the
+/// alias table, bundled so the recursive matchers take one extra parameter
+/// rather than two.
+#[derive(Clone, Copy)]
+pub struct PatternTables<'a> {
+    pub enums:   &'a EnumTable,
+    pub aliases: &'a AliasTable,
+}
+
+/// The real type name behind `name`, following aliases (hop-limited; sema
+/// rejects an alias cycle, this only guards sema-less unit tests).
+fn canonical_type<'a>(aliases: &'a AliasTable, name: &'a str) -> &'a str {
+    let mut cur = name;
+    for _ in 0..64 {
+        match aliases.get(cur) {
+            Some(next) => cur = next.as_str(),
+            None       => break,
+        }
+    }
+    cur
+}
+
 // ── Public API ────────────────────────────────────────────────────
 
 /// Try to match `value` against `pattern`, defining any bound names into `env`
@@ -34,7 +61,7 @@ pub fn match_pattern(
     pattern:    &Pattern<'_>,
     value:      &Value,
     env:        &mut Environment,
-    enum_table: &EnumTable,
+    enum_table: PatternTables<'_>,
 ) -> bool {
     match try_match(pattern, value, enum_table) {
         Some(bindings) => {
@@ -119,7 +146,7 @@ pub fn bind_destructure_pattern(
 fn try_match(
     pattern:    &Pattern<'_>,
     value:      &Value,
-    enum_table: &EnumTable,
+    enum_table: PatternTables<'_>,
 ) -> Option<Vec<(String, Value)>> {
     let mut bindings = Vec::new();
     if match_inner(pattern, value, &mut bindings, enum_table) {
@@ -135,7 +162,7 @@ fn match_inner(
     pattern:    &Pattern<'_>,
     value:      &Value,
     out:        &mut Vec<(String, Value)>,
-    enum_table: &EnumTable,
+    enum_table: PatternTables<'_>,
 ) -> bool {
     match &pattern.kind {
         // ── Wildcard `_` — always matches, binds nothing ──────────
@@ -164,7 +191,7 @@ fn match_inner(
         PatternKind::Ident { name, .. } => {
             if let Value::Enum { type_name, variant, payload } = value {
                 if matches!(payload.as_ref(), EnumPayload::None) {
-                    if let Some(kind) = enum_table.get(type_name.as_str()).and_then(|v| v.get(*name)) {
+                    if let Some(kind) = enum_table.enums.get(type_name.as_str()).and_then(|v| v.get(*name)) {
                         return *kind == VariantKind::Fieldless && variant == name;
                     }
                 }
@@ -258,7 +285,7 @@ fn match_inner(
             };
             // If the pattern names a type, check it matches.
             if let Some(n) = expected_name {
-                if *n != type_name && *n != "<anon>" { return false; }
+                if canonical_type(enum_table.aliases, n) != type_name && *n != "<anon>" { return false; }
             }
             let mut trial = Vec::new();
             for fp in fields.iter() {
@@ -289,7 +316,7 @@ fn match_inner(
                 Value::Enum { type_name, variant, payload: val_payload } => {
                     // Check type name if provided.
                     if let Some(et) = expected_type {
-                        if et != type_name.as_str() { return false; }
+                        if canonical_type(enum_table.aliases, et) != type_name.as_str() { return false; }
                     }
                     if expected_variant != variant.as_str() { return false; }
 
@@ -455,7 +482,7 @@ fn match_tuple_slice(
     pats:       &[Pattern<'_>],
     items:      &[Value],
     out:        &mut Vec<(String, Value)>,
-    enum_table: &EnumTable,
+    enum_table: PatternTables<'_>,
 ) -> bool {
     if pats.len() != items.len() { return false; }
     let mut trial = Vec::new();
@@ -472,7 +499,7 @@ fn match_struct_payload(
     fps:        &[FieldPattern<'_>],
     fields:     &HashMap<String, Value>,
     out:        &mut Vec<(String, Value)>,
-    enum_table: &EnumTable,
+    enum_table: PatternTables<'_>,
 ) -> bool {
     let mut trial = Vec::new();
     for fp in fps.iter() {

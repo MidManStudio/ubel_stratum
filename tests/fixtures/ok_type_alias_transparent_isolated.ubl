@@ -1,0 +1,66 @@
+// tests/fixtures/ok_type_alias_transparent_isolated.ubl
+// A `type` alias is just another name for a type: `Score` from
+// `type Score = int` IS `int`, so the two interchange in both directions
+// and nothing needs a cast. This holds for an alias to a primitive, to a
+// collection, to a generic struct instance, to a function type, for an
+// alias of an alias, for a generic alias with parameters, and for an
+// alias declared AFTER the code that uses it. The declared type of an
+// alias also types a bare literal, so `Byte` from `type Byte = u8`
+// wraps at 8 bits.
+// Expected: sema OK, interpret OK.
+
+struct Box<T> {
+    value: T,
+}
+
+type Score = int
+type Names = List<string>
+type Byte = u8
+type Total = Score
+type IntBox = Box<int>
+type Wrapped<T> = Box<T>
+type Pairs<K, V> = Dictionary<K, V>
+type Handler = fn(int) int
+type Late = Early
+type Early = Byte
+
+fn bump(s: Score) Score {
+    return s + 1
+}
+
+fn open(b: IntBox) int {
+    return b.value
+}
+
+fn apply(h: Handler, n: int) int {
+    return h(n)
+}
+
+fn main() void {
+    let a: Score = 5
+    let b: int = a
+    let c: Score = b
+    assert(bump(a) == 6, "alias as a parameter and a return type")
+    assert(b == 5 and c == 5, "an alias and its target interchange both ways")
+
+    let n: Names = List.new()
+    n.push("x")
+    assert(n.len() == 1, "alias to a collection")
+
+    let t: Total = 7
+    assert(t == 7, "alias of an alias")
+
+    let wrapped: Late = 250
+    assert(wrapped + 10 == 4, "an alias declared after use, typing its literal as u8")
+
+    let box: IntBox = Box { value = 4 }
+    assert(open(box) == 4, "alias to a generic struct instance")
+
+    let w: Wrapped<string> = Box { value = "s" }
+    assert(w.value == "s", "generic alias with one parameter")
+
+    let p: Pairs<string, int> = Dictionary.new()
+    assert(p.len() == 0, "generic alias with two parameters")
+
+    assert(apply(fn(x: int) x * 3, 4) == 12, "alias to a function type")
+}

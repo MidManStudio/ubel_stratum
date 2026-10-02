@@ -100,6 +100,32 @@ sites.
   values is no longer `TYPE-118`.
 - `display_type` shows an open literal variable as `{integer}`.
 
+**Decisions (type aliases, enum and field calls, nested spans):**
+- `collect_alias_sigs` expands every `type` alias to a fixpoint before any
+  other signature is collected (`alias_expansions: HashMap<DefId,
+  AliasExpansion { arity, target }>`, `alias_prepass`, `alias_blocked`).
+  `ast_type_to_sema`'s `Named` arm calls `expand_alias`, which substitutes
+  the use site's generic arguments into the stored target (written with
+  `Param(i)` for the alias's own generics), so an alias is replaced by its
+  target and is never a type of its own. No progress in a round means a
+  cycle: `TYPE-121` once per remaining alias, expanding to an unknown type.
+- `type_def_of(name)` is the lookup for a type NAME in expression and
+  pattern position (struct literal, associated call, enum variant path); it
+  follows an alias to a struct or enum definition. Six sites use it instead
+  of `top_level_def`.
+- The instance-method branch of the `Call` arm treats a user struct OR enum
+  as "has a possibly empty methods list" (an enum only has an entry when an
+  `extend` adds a method, which is why an unknown method on a plain enum
+  used to fall through unchecked). A struct field named like the called
+  member and not shadowed by a method is called as a field
+  (`calls_a_field`): the call is typed by `call_return_type` on the field's
+  function type.
+- `has_static_method` exempts an associated function from `UnknownVariant`
+  in both the `Call` arm and the callee `Field` arm; the callee arm also
+  stays silent when it is a callee, so `Color.nothing()` is one report.
+- `structurally_compatible` takes the `span` of the outer `unify` and uses
+  it for every nested unify. Its six `Span::at(0)` are gone.
+
 **Decisions (`static` items):**
 - `collect_static_sig` records the declared type before any body is
   inferred (the parser guarantees one exists), and `infer_static_body`
@@ -586,9 +612,27 @@ the driver loop that walks the parsed program before execution starts.
   tests that skip sema. Any driver that runs a program after sema must
   call the setter before `run_program`: `ubel run`, the `pipeline` and
   `diagnose` examples, and the wasm playground do.
+- `eval/pattern.rs` takes `PatternTables { enums, aliases }` (a `Copy`
+  pair of references) instead of a bare enum table, so a struct pattern or
+  an enum path pattern written with an alias (`P { x, y }`, `C.Red`) is
+  compared against the real type name through `canonical_type`.
 - `match_literal` (`eval/pattern.rs`) compares an unsuffixed integer
   literal pattern against every sized-integer variant through `i128`, so
   `match byte { 255 => .. }` works on a `u8`.
+- New `type_aliases: HashMap<String, String>` (alias name to the struct or
+  enum name it stands for; only aliases whose target is a named type) and
+  `canonical_type`, which follows it with a hop limit (sema rejects a
+  cycle; the limit only guards sema-less unit tests). It is applied where a
+  value is BUILT or a name is DISPATCHED on (a struct literal, an enum
+  variant of every payload shape, a static call, a method-table lookup), so
+  values carry the real type name and a method written on `Point` finds a
+  value built as `P { .. }`. It returns the name unchanged without
+  allocating when the table is empty.
+- `eval_method_call` dispatches a `Value::Enum` through the same
+  `method_table` as a struct (no derives, so no `.clone()` pseudo-method),
+  and when a struct has no method of the called name but has a field of
+  that name holding a function, calls the field. A method wins over a
+  field, matching sema.
 - New `statics: HashMap<String, Value>` field for `static` items. It is
   deliberately NOT part of `env`: `call_function` replaces `self.env` with a
   clone of the function's closure for every call (and `Environment::
@@ -647,6 +691,8 @@ the driver loop that walks the parsed program before execution starts.
 type checking (TYPE-1xx range).
 
 **Decisions:**
+- `TypeError::TypeAliasCycle` (`TYPE-121`): a `type` alias that refers to
+  itself, directly or through others.
 - `TypeError::IntLiteralOutOfRange` (TYPE-120) gained `negative` and
   `inferred`: `raw` is always the magnitude, `negative` says the literal
   sat directly under unary `-`, and `inferred` marks an unsuffixed
@@ -714,6 +760,24 @@ type checking (TYPE-1xx range).
 
 ### `sema/type_infer.rs`
 
+- A `type` alias became a nominal `Named` type of its own, so `let a: Score
+  = 5` with `type Score = int` was `TYPE-101` and `Score` and `int` did not
+  unify in either direction (generic aliases were broken the same way).
+  Aliases are now expanded to their targets, see "Decisions (type
+  aliases, ...)" above and `docs/PARKED_IDEAS.md`, "Taking down the
+  confirmed bugs".
+- An unknown method on an enum value fell through unchecked unless the
+  enum had an `extend` block, and a method declared in an `extend` block
+  on an enum passed sema but panicked in the interpreter, which dispatched
+  user methods on structs only. Both fixed together, so the two sides agree.
+- Calling a function-typed struct field (`c.cb(4)`) was `NoSuchMethod`
+  because the `Call` arm only consulted `struct_methods` for a `Field`
+  callee. A field of that name is now called, after a method of that name.
+- `structurally_compatible` invented `Span::at(0)` for every nested
+  mismatch (six sites), so a diagnostic about `List<int>` against
+  `List<string>` pointed at the top of the file.
+- `Color.nothing()` reported `UnknownVariant` twice, once from the callee
+  `Field` arm and once from the `Call` arm.
 - `binop_result`'s orderable list covered `int`, `float`, `double` and
   `string` only, so `a < b` on two `u32` (or `i64`, `u8`, `f32`, and so
   on) was `TYPE-118` even though the interpreter's sized-integer
@@ -1006,3 +1070,14 @@ and wasm playground, plus `PARSER_RULES.md` section 5.7a,
 literal typing half shipped first as its own bundle; the `static` half is
 cumulative on top of it. Same discipline: checked every line this delivery
 wrote or rewrote for em dashes and first or second person.
+
+A tenth delivery (taking down the four confirmed bugs, then the traits
+design session next) touched `sema/type_infer.rs`, the interpreter's
+`eval/mod.rs`, `eval/expr.rs` and `eval/pattern.rs`, the TypeError enum,
+and added three integration test files (`type_aliases.rs`,
+`member_calls.rs`, `diagnostic_spans.rs`) and twelve fixtures. It is
+cumulative on top of the static-globals delivery. Every reproduction was
+run and its result seen before the fix, and each test file was
+mutation-checked: reverting a fix makes exactly the tests that guard it
+fail. Same discipline: every line this delivery wrote or rewrote was
+checked for em dashes and first or second person.

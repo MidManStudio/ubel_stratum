@@ -1,0 +1,18 @@
+// tests/fixtures/err_type_alias_arity_combined.ubl
+// A generic alias has to be given exactly the arguments it declares. Too
+// many (`Pair<int, int>`), too few (a bare `Pair`), and a wrong count
+// inside an alias target (`Box<int, int>`) are each one
+// GenericArgCountMismatch. Three mistakes, three diagnostics.
+// Expected: sema FAIL (GenericArgCountMismatch, TYPE-108, three times).
+
+struct Box<T> {
+    v: T,
+}
+
+type Pair<T> = List<T>
+type TooMany = Pair<int, int>
+type TooFew = Pair
+type Worse = Box<int, int>
+
+fn main() void {
+}

@@ -282,6 +282,16 @@ struct MethodShape {
     is_fallible: bool,
 }
 
+/// What a `type Name<T...> = Target` expands to. `target` is written in
+/// terms of `Param(i)` for the alias's own generic parameters, exactly
+/// like a generic struct's field types, and a use site substitutes its
+/// arguments in with `InferCtx::substitute`.
+#[derive(Clone, Copy)]
+struct AliasExpansion {
+    arity:  usize,
+    target: TypeId,
+}
+
 /// What a checked pattern definitively covers, for exhaustiveness.
 enum PatternCoverage {
     /// Matches unconditionally regardless of the scrutinee's shape —
@@ -323,6 +333,17 @@ struct InferCtx<'a> {
     /// names one of the enclosing decl's own generic params resolves to
     /// its placeholder instead of silently becoming `Unknown`.
     current_generic_params: HashMap<String, TypeId>,
+    /// The expansion of every `type` alias, filled by `collect_alias_sigs`
+    /// before any other signature is collected. An alias is transparent:
+    /// `ast_type_to_sema` replaces a use of it by its target, so `Score`
+    /// from `type Score = int` is simply `int` everywhere.
+    alias_expansions: HashMap<DefId, AliasExpansion>,
+    /// True only while `collect_alias_sigs` runs. A use of an alias that
+    /// is not expanded yet (it is declared later, or is part of a cycle)
+    /// sets `alias_blocked` so the caller retries it on the next round
+    /// instead of caching a half-resolved target.
+    alias_prepass: bool,
+    alias_blocked: bool,
     /// `self`'s type while inside a struct's own method bodies — the
     /// abstract `Named { def, args: [Param(0), Param(1), ...] }` for a
     /// generic struct, or `Named { def, args: [] }` for a non-generic
@@ -401,6 +422,9 @@ impl<'a> InferCtx<'a> {
             next_pool:        0,
             enum_variants:    HashMap::new(),
             current_generic_params: HashMap::new(),
+            alias_expansions: HashMap::new(),
+            alias_prepass:    false,
+            alias_blocked:    false,
             current_struct_type:    None,
             callee_field_pending:   false,
             struct_fields:    HashMap::new(),
@@ -921,6 +945,11 @@ impl<'a> InferCtx<'a> {
                 }
                 match self.ctx.top_level_def(root) {
                     Some(def_id) => {
+                        // A `type` alias is transparent: it is replaced by
+                        // its target, not kept as a type of its own.
+                        if matches!(self.ctx.symbols.lookup(def_id).kind, DefKind::TypeAlias) {
+                            return self.expand_alias(def_id, root, arg_ids, ty.span);
+                        }
                         if let Some(&expected) = self.generic_arity.get(&def_id) {
                             if expected != arg_ids.len() {
                                 self.errors.add_type_error(TypeError::GenericArgCountMismatch {
@@ -1017,7 +1046,133 @@ impl<'a> InferCtx<'a> {
 
     // ── Phase 2a: Signature collection ────────────────────────────
 
+    /// Expand every `type` alias to a fixpoint. Aliases may refer to each
+    /// other in any declaration order, so each round converts every alias
+    /// not yet done; one that mentions a not-yet-expanded alias is skipped
+    /// (`alias_blocked`) and retried next round. A round with no progress
+    /// means the remaining aliases can never finish: a cycle
+    /// (`TYPE-121`). They get an `Unknown` target so uses of them do not
+    /// cascade into further errors.
+    ///
+    /// Runs before any other signature is collected, so a struct field, a
+    /// function parameter or a const written with an alias already sees
+    /// the real type. Generic arities of structs and enums are registered
+    /// first so an argument-count mistake inside an alias target
+    /// (`type X = Box<int, int>`) is still reported.
+    fn collect_alias_sigs<'ast>(&mut self, program: &Program<'ast>) {
+        let aliases: Vec<&TypeAlias<'ast>> = program.items.iter()
+            .filter_map(|item| match item { Item::TypeAlias(a) => Some(a), _ => None })
+            .collect();
+        if aliases.is_empty() { return; }
+
+        for item in program.items {
+            match item {
+                Item::Struct(s) => {
+                    if let Some(id) = self.ctx.top_level_def(s.name) {
+                        self.generic_arity.insert(id, s.generic_params.len());
+                    }
+                }
+                Item::Enum(e) => {
+                    if let Some(id) = self.ctx.top_level_def(e.name) {
+                        self.generic_arity.insert(id, e.generic_params.len());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.alias_prepass = true;
+        let mut pending: Vec<&TypeAlias<'ast>> = aliases;
+        while !pending.is_empty() {
+            let mut still: Vec<&TypeAlias<'ast>> = Vec::with_capacity(pending.len());
+            for a in pending.iter().copied() {
+                let Some(def_id) = self.ctx.top_level_def(a.name) else { continue; };
+                let prev_generics = self.push_generic_scope(a.generic_params);
+                self.alias_blocked = false;
+                let target = self.ast_type_to_sema(a.ty);
+                let blocked = self.alias_blocked;
+                self.pop_generic_scope(prev_generics);
+                if blocked {
+                    still.push(a);
+                } else {
+                    self.alias_expansions.insert(
+                        def_id,
+                        AliasExpansion { arity: a.generic_params.len(), target },
+                    );
+                    self.ctx.set_def_type(def_id, target);
+                }
+            }
+            if still.len() == pending.len() {
+                for a in still {
+                    if let Some(def_id) = self.ctx.top_level_def(a.name) {
+                        self.errors.add_type_error(TypeError::TypeAliasCycle {
+                            name: a.name.to_string(),
+                            span: a.span,
+                        });
+                        let unknown = self.unknown();
+                        self.alias_expansions.insert(
+                            def_id,
+                            AliasExpansion { arity: a.generic_params.len(), target: unknown },
+                        );
+                        self.ctx.set_def_type(def_id, unknown);
+                    }
+                }
+                break;
+            }
+            pending = still;
+        }
+        self.alias_prepass = false;
+        self.alias_blocked = false;
+    }
+
+    /// Whether the struct or enum `def` declares an associated function
+    /// (a method with no `self`) called `name`.
+    fn has_static_method(&self, def: DefId, name: &str) -> bool {
+        self.struct_methods.get(&def)
+            .is_some_and(|ms| ms.iter().any(|(n, m)| n == name && !m.has_self))
+    }
+
+    /// The definition a type NAME written in an expression or pattern
+    /// (`P { x = 1 }`, `P.origin()`, `C.Red`, `Message.Move { .. }`) stands
+    /// for. An alias to a struct or enum is transparent there too, so it
+    /// yields the struct or enum's own definition. An alias to anything
+    /// else (an `int`, a `List<T>`) keeps the alias's definition, which
+    /// has no struct fields, methods or variants, so every lookup keyed by
+    /// it misses exactly as it would for any other non-struct name.
+    fn type_def_of(&self, name: &str) -> Option<DefId> {
+        let id = self.ctx.top_level_def(name)?;
+        if matches!(self.ctx.symbols.lookup(id).kind, DefKind::TypeAlias) {
+            if let Some(exp) = self.alias_expansions.get(&id) {
+                if let SemaType::Named { def, .. } = self.ctx.types.get(exp.target) {
+                    return Some(*def);
+                }
+            }
+        }
+        Some(id)
+    }
+
+    /// A use of a `type` alias: its target with the use site's generic
+    /// arguments substituted in. During the alias pre-pass an alias that
+    /// is not expanded yet blocks the alias being converted.
+    fn expand_alias(&mut self, def_id: DefId, name: &str, args: Vec<TypeId>, span: Span) -> TypeId {
+        let Some(exp) = self.alias_expansions.get(&def_id).copied() else {
+            if self.alias_prepass { self.alias_blocked = true; }
+            return self.unknown();
+        };
+        if exp.arity != args.len() {
+            self.errors.add_type_error(TypeError::GenericArgCountMismatch {
+                type_name: name.to_string(),
+                expected:  exp.arity,
+                found:     args.len(),
+                span,
+            });
+            return self.unknown();
+        }
+        self.substitute(exp.target, &args)
+    }
+
     fn collect_signatures<'ast>(&mut self, program: &Program<'ast>) {
+        self.collect_alias_sigs(program);
         for item in program.items {
             match item {
                 Item::Function(f) => { self.collect_fn_sig(f); }
@@ -1064,7 +1219,7 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                 }
-                Item::TypeAlias(_) => {} // alias expansion deferred
+                Item::TypeAlias(_) => {} // expanded up front by `collect_alias_sigs`
             }
         }
         self.register_extend_impl_methods(program);
@@ -2514,7 +2669,7 @@ impl<'a> InferCtx<'a> {
                 // surface syntax, already routed there by the parser.
                 if let ExprKind::Field { target, field } = callee.kind {
                     if let ExprKind::Ident(ns) = target.kind {
-                        if let Some(def_id) = self.ctx.top_level_def(ns) {
+                        if let Some(def_id) = self.type_def_of(ns) {
                             if let Some(shapes) = self.enum_variants.get(&def_id) {
                                 let shapes  = shapes.clone();
                                 // GENERICS_RULES.md — a fresh instantiation
@@ -2551,7 +2706,12 @@ impl<'a> InferCtx<'a> {
                                         }
                                         return self.maybe_arena_ref(enum_ty);
                                     }
-                                } else {
+                                } else if !self.has_static_method(def_id, field) {
+                                    // Not a variant, and not an associated
+                                    // fn declared in an `extend`/`impl`
+                                    // block either (`Color.make()`): that
+                                    // case falls through to the
+                                    // associated-call branch below.
                                     self.errors.add_type_error(TypeError::UnknownVariant {
                                         enum_name:    ns.to_string(),
                                         variant_name: field.to_string(),
@@ -2574,7 +2734,7 @@ impl<'a> InferCtx<'a> {
                 // rather than a bare type name.
                 if let ExprKind::Field { target, field } = callee.kind {
                     if let ExprKind::Ident(ns) = target.kind {
-                        if let Some(def_id) = self.ctx.top_level_def(ns) {
+                        if let Some(def_id) = self.type_def_of(ns) {
                             if let Some(methods) = self.struct_methods.get(&def_id).cloned() {
                                 if let Some((_, m)) = methods.iter().find(|(n, m)| n == field && !m.has_self) {
                                     let m = m.clone();
@@ -2754,8 +2914,31 @@ impl<'a> InferCtx<'a> {
                         if let SemaType::Named { def, args: recv_args } =
                             self.ctx.types.get(struct_recv_ty).clone()
                         {
-                            if let Some(methods) = self.struct_methods.get(&def).cloned() {
-                                return match methods.iter().find(|(n, m)| n == field && m.has_self) {
+                            // A struct always has a methods entry (possibly
+                            // empty), but an enum only gets one when an
+                            // `extend`/`impl` block adds a method. Without
+                            // this an unknown method on a plain enum value
+                            // fell straight through to an unchecked call and
+                            // panicked at runtime. Only a user struct or enum
+                            // is treated as "has a (possibly empty) method
+                            // list"; any other `Named` keeps the old path.
+                            let is_user_type = matches!(
+                                self.ctx.symbols.lookup(def).kind,
+                                DefKind::Enum | DefKind::Struct { .. }
+                            );
+                            let methods_opt = self.struct_methods.get(&def).cloned()
+                                .or_else(|| if is_user_type { Some(Vec::new()) } else { None });
+                            if let Some(methods) = methods_opt {
+                                // `c.cb(4)` where `cb` is a struct FIELD of
+                                // function type, not a method. A real method
+                                // of the same name wins (found first), the
+                                // interpreter checks in the same order.
+                                let found_method = methods.iter()
+                                    .find(|(n, m)| n == field && m.has_self).cloned();
+                                let calls_a_field = found_method.is_none()
+                                    && self.struct_fields.get(&def)
+                                        .is_some_and(|fs| fs.iter().any(|(n, _)| n == field));
+                                if !calls_a_field { return match found_method {
                                     Some((_, m)) => {
                                         let m = m.clone();
                                         let params: Vec<TypeId> = m.params.iter()
@@ -2816,7 +2999,7 @@ impl<'a> InferCtx<'a> {
                                         });
                                         self.unknown()
                                     }
-                                };
+                                }; }
                             }
                         }
                     }
@@ -2837,7 +3020,7 @@ impl<'a> InferCtx<'a> {
                 // case: recognized syntactically here rather than via
                 // the general field table, which doesn't exist yet.
                 if let ExprKind::Ident(name) = &target.kind {
-                    if let Some(def_id) = self.ctx.top_level_def(name) {
+                    if let Some(def_id) = self.type_def_of(name) {
                         if let Some(shapes) = self.enum_variants.get(&def_id) {
                             let shapes = shapes.clone();
                             if let Some((_, shape)) = shapes.iter().find(|(n, _)| n == field) {
@@ -2854,12 +3037,19 @@ impl<'a> InferCtx<'a> {
                                     let enum_ty = self.instantiate(def_id);
                                     return self.maybe_arena_ref(enum_ty);
                                 }
-                            } else {
-                                self.errors.add_type_error(TypeError::UnknownVariant {
-                                    enum_name:    name.to_string(),
-                                    variant_name: field.to_string(),
-                                    span:         expr.span,
-                                });
+                            } else if !self.has_static_method(def_id, field) {
+                                // When this is the callee of a call
+                                // (`Color.nothing()`), the `Call` arm reports
+                                // the same unknown name against the whole
+                                // call, so reporting it here too is one typo
+                                // shown twice.
+                                if !is_call_callee {
+                                    self.errors.add_type_error(TypeError::UnknownVariant {
+                                        enum_name:    name.to_string(),
+                                        variant_name: field.to_string(),
+                                        span:         expr.span,
+                                    });
+                                }
                                 return self.unknown();
                             }
                         }
@@ -3006,7 +3196,7 @@ impl<'a> InferCtx<'a> {
                 // existing, unvalidated behavior below — general struct-
                 // field checking isn't part of this section's scope.
                 if path.len() >= 2 {
-                    if let Some(def_id) = self.ctx.top_level_def(path[0]) {
+                    if let Some(def_id) = self.type_def_of(path[0]) {
                         if let Some(shapes) = self.enum_variants.get(&def_id) {
                             let shapes    = shapes.clone();
                             // GENERICS_RULES.md — same fresh-per-call-site
@@ -3074,7 +3264,7 @@ impl<'a> InferCtx<'a> {
                 // provided field's value is what the struct's own generic
                 // args (if any) get inferred from.
                 let root = path.first().copied().unwrap_or("");
-                if let Some(def_id) = self.ctx.top_level_def(root) {
+                if let Some(def_id) = self.type_def_of(root) {
                     if let Some(decl_fields) = self.struct_fields.get(&def_id).cloned() {
                         let struct_ty  = self.instantiate(def_id);
                         let inst_args: Vec<TypeId> = match self.ctx.types.get(struct_ty).clone() {
@@ -3101,7 +3291,7 @@ impl<'a> InferCtx<'a> {
                     }
                 }
                 for f in fields.iter() { self.infer_expr(f.value); }
-                let struct_ty = self.ctx.top_level_def(root)
+                let struct_ty = self.type_def_of(root)
                     .and_then(|id| self.ctx.def_type(id))
                     .unwrap_or_else(|| self.unknown());
                 self.maybe_arena_ref(struct_ty)
@@ -3831,7 +4021,7 @@ impl<'a> InferCtx<'a> {
         if a_unk || b_unk { return; }
         if a == TypeId::ERROR || b == TypeId::ERROR { return; }
 
-        if self.structurally_compatible(a, b) { return; }
+        if self.structurally_compatible(a, b, span) { return; }
 
         // GAP 2 — an ArenaRef/PoolRef meeting an incompatible context (a
         // different scope, or a context with no scope at all — e.g. a
@@ -3874,7 +4064,13 @@ impl<'a> InferCtx<'a> {
     /// Returns true if two concrete types are structurally compatible,
     /// recursively unifying their type arguments. Extracts inner TypeIds
     /// (which are Copy) before calling unify to avoid borrow conflicts.
-    fn structurally_compatible(&mut self, a: TypeId, b: TypeId) -> bool {
+    ///
+    /// `span` is where the outer unification happened. Every nested unify
+    /// (a function's parameters and return type, a generic's arguments, a
+    /// dictionary's key and value, an inner element type) reports at that
+    /// span, so a mismatch deep inside `List<int>` against `List<string>`
+    /// points at the offending expression instead of at offset 0.
+    fn structurally_compatible(&mut self, a: TypeId, b: TypeId, span: Span) -> bool {
         // GENERICS_RULES.md — `fn(..)` type compatibility, e.g. checking
         // a lambda/closure argument's inferred type against a declared
         // `fn(int) int`-shaped param. Multi-pair (each param position,
@@ -3899,9 +4095,9 @@ impl<'a> InferCtx<'a> {
         if let Some((pa, ra, pb, rb)) = fn_pair {
             if pa.len() != pb.len() { return false; }
             for (ia, ib) in pa.iter().zip(pb.iter()) {
-                self.unify(*ia, *ib, Span::at(0));
+                self.unify(*ia, *ib, span);
             }
-            self.unify(ra, rb, Span::at(0));
+            self.unify(ra, rb, span);
             return true;
         }
 
@@ -3927,7 +4123,7 @@ impl<'a> InferCtx<'a> {
             if da != db { return false; }
             if aa.len() != ab.len() { return false; } // same def => should never differ; defensive
             for (ia, ib) in aa.iter().zip(ab.iter()) {
-                self.unify(*ia, *ib, Span::at(0));
+                self.unify(*ia, *ib, span);
             }
             return true;
         }
@@ -3947,8 +4143,8 @@ impl<'a> InferCtx<'a> {
             }
         };
         if let Some((ka, va, kb, vb)) = dict_pair {
-            self.unify(ka, kb, Span::at(0));
-            self.unify(va, vb, Span::at(0));
+            self.unify(ka, kb, span);
+            self.unify(va, vb, span);
             return true;
         }
 
@@ -4073,7 +4269,7 @@ impl<'a> InferCtx<'a> {
             }
         }; // immutable borrow released here
         if let Some((ia, ib)) = inner {
-            self.unify(ia, ib, Span::at(0));
+            self.unify(ia, ib, span);
             true
         } else {
             false

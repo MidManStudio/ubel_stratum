@@ -1,0 +1,56 @@
+// tests/fixtures/ok_enum_methods_isolated.ubl
+// An `extend` block on an enum adds methods: instance methods (with
+// `self`) callable on every variant shape, including a payload variant,
+// and associated functions (no `self`) called as `Color.make()`. These
+// used to pass sema and then panic at runtime ("no method 'is_red' on
+// enum"), and `Color.make()` was rejected as an unknown variant.
+// Expected: sema OK, interpret OK.
+
+enum Color {
+    Red,
+    Green,
+    Rgb(int, int, int),
+}
+
+extend Color {
+    fn is_red(self) bool {
+        match self {
+            Color.Red => { return true }
+            _ => { return false }
+        }
+    }
+
+    fn brightness(self) int {
+        match self {
+            Color.Rgb(r, g, b) => { return r + g + b }
+            Color.Red => { return 255 }
+            _ => { return 0 }
+        }
+    }
+
+    fn louder(self, by: int) int {
+        return self.brightness() + by
+    }
+
+    fn make() Color {
+        return Color.Green
+    }
+
+    fn rgb(r: int, g: int, b: int) Color {
+        return Color.Rgb(r, g, b)
+    }
+}
+
+fn main() void {
+    let c = Color.Red
+    assert(c.is_red(), "instance method on a unit variant")
+    assert(not Color.Green.is_red(), "instance method on another variant")
+
+    let r = Color.Rgb(1, 2, 3)
+    assert(r.brightness() == 6, "instance method on a payload variant")
+    assert(r.louder(10) == 16, "a method with an argument that calls another method")
+
+    let g = Color.make()
+    assert(not g.is_red(), "associated function on an enum")
+    assert(Color.rgb(4, 5, 6).brightness() == 15, "associated function that builds a payload variant")
+}

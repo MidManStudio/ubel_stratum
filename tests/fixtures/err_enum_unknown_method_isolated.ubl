@@ -1,0 +1,15 @@
+// tests/fixtures/err_enum_unknown_method_isolated.ubl
+// An unknown method called on an enum value is NoSuchMethod at compile
+// time. It used to pass sema for an enum with no `extend` block and then
+// panic at runtime ("no method 'shade' on enum").
+// Expected: sema FAIL (NoSuchMethod, TYPE-104).
+
+enum Color {
+    Red,
+    Green,
+}
+
+fn main() void {
+    let c = Color.Red
+    println(c.shade())
+}

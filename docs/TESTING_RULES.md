@@ -32,6 +32,10 @@ literal typing and also runs programs through the interpreter, since
 that feature spans sema and runtime. `crates/rd_parser/tests/statics.rs`
 does it for `static` items, where the runtime half (one value shared by
 every function) is the property most likely to regress silently.
+`type_aliases.rs`, `member_calls.rs` and `diagnostic_spans.rs` cover the
+alias, enum-method, function-field and nested-span fixes; the last asserts
+a diagnostic's LINE because a count cannot show that it pointed at the top
+of the file.
 
 ## 2. Mix features together, not just in isolation
 

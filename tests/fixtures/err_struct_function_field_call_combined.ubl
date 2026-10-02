@@ -1,0 +1,21 @@
+// tests/fixtures/err_struct_function_field_call_combined.ubl
+// Only a field of FUNCTION type is callable. Calling a string field is
+// an error, a wrong argument type is an error, the result of a call is
+// typed from the field's return type, and a name that is neither a
+// method nor a field is still NoSuchMethod. Four mistakes, four
+// diagnostics.
+// Expected: sema FAIL (NoSuchMethod TYPE-104, TypeMismatch TYPE-101 twice,
+// NoSuchMethod TYPE-104).
+
+struct Config {
+    cb:   fn(int) int,
+    name: string,
+}
+
+fn main() void {
+    let c = Config { cb = fn(x: int) x * 2, name = "n" }
+    let a = c.name(3)
+    let b = c.cb("text")
+    let r: string = c.cb(4)
+    let n = c.missing()
+}

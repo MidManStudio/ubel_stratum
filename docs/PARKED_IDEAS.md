@@ -482,23 +482,22 @@ it actually turned up:
 - ~~A bare unsuffixed literal into a sized-integer field or `let`
   (`P { n = 10 }` with `n: u32`) is still `TYPE-101`.~~ Fixed by
   context-driven literal typing, see "Built" below.
-- `type` aliases are not transparent: with `type Score = int`,
-  `let a: Score = 5` is `TYPE-101`, and `Score` and `int` do not unify
-  in either direction. `type NodeId = u64` only worked in the
-  transcript because the value went through `as NodeId`.
-- An unknown method called on an `enum` value passes sema and panics at
-  runtime (`no method 'shade' on enum`); `NoSuchMethod` is only
-  reported for struct receivers.
-- Calling a function-typed struct field (`c.cb(4)` where `cb: fn(int)
-  int`) is reported as `NoSuchMethod`, because the `Call` arm only
-  consults `struct_methods` for a `Field` callee.
+- ~~`type` aliases are not transparent~~, ~~an unknown method on an
+  `enum` value passes sema and panics at runtime~~, ~~calling a
+  function-typed struct field is `NoSuchMethod`~~ and ~~a `TypeMismatch`
+  from unifying generic arguments carries `Span::at(0)`~~: all four fixed,
+  see "Built" below.
+- Constructing through an alias to a type that is not a struct or enum
+  passes sema: `type Score = int` then `Score { x = 1 }` is accepted and
+  `Score.new()` panics at runtime (`undefined name 'Score'`). A struct
+  literal or an associated call naming a type that has no such members is
+  not checked for any non-struct name, alias or not; only the alias route
+  is new reachable surface.
 - `pub` written on a `const` or `type` item, and `@tier(...)` written on
   a `type` item, parse and are silently dropped: `ConstDecl` and
   `TypeAlias` carry no visibility or tier, and name resolution declares
   both `Private`. (`@tier(...)` on a `const` is now `PARSE-004`, see
   "Mutable globals" under "Built".)
-- A `TypeMismatch` raised while unifying the arguments of two generic
-  types carries `Span::at(0)`, so the diagnostic points at line 0.
 - Struct field default values (`n: u32 = 5u32`) do not parse. A
   top-level `let` is a parse error; use `static` for a mutable global.
 
@@ -640,6 +639,84 @@ loop as constants, so a static can refer to a constant or another static
 declared later in the file, and a cycle is reported the same way
 (the message reads "initializing static `P`"). Initializers are assumed pure, since a
 deferred one is evaluated again.
+
+**Taking down the confirmed bugs.** Four bugs from the "Still open,
+confirmed by execution" list, each reproduced before it was touched, plus
+three problems found on the way because they sat in the same code.
+
+1. **`type` aliases are transparent.** `type Score = int` makes `Score`
+   and `int` the same type, in both directions, with no cast. An alias to
+   a primitive, a collection, a generic struct instance, a function type,
+   an alias of an alias, a generic alias (`type Wrapped<T> = Box<T>`), and
+   an alias declared after its use all work, and the alias's target types a
+   bare literal (`type Byte = u8` wraps at 8 bits).
+   - `collect_alias_sigs` expands every alias to a fixpoint BEFORE any other
+     signature is collected, so a struct field, a parameter or a const
+     written with an alias already sees the real type. Each round converts
+     the aliases not yet done; one that mentions a not-yet-expanded alias is
+     skipped (`alias_blocked`) and retried. A round with no progress means a
+     cycle, reported as the new `TYPE-121` (`TypeAliasCycle`) once per alias
+     in it, with an `Unknown` target so uses do not cascade.
+   - An alias target is stored in terms of `Param(i)` for the alias's own
+     generics and substituted per use (`expand_alias`), the same mechanism a
+     generic struct's field types use. A wrong argument count is
+     `GenericArgCountMismatch` (`TYPE-108`). Struct and enum generic
+     arities are registered first so a wrong count inside an alias target is
+     caught too.
+   - It had to go further than type annotations. A struct literal
+     (`P { x = 1 }`), an associated call (`P.origin()`), an enum variant of
+     any payload shape (`C.Red`, `C.Rgb(1, 2, 3)`, `C.Named { .. }`) and a
+     struct or enum PATTERN written with the alias must behave as the real
+     name does. Sema routes those lookups through `type_def_of`, which
+     follows an alias to the struct or enum definition. The interpreter has
+     `Interpreter::type_aliases` (alias name to target name, built at
+     startup) and `canonical_type`, so the values built through an alias
+     carry the REAL type name and a method written on `Point` finds a value
+     built as `P { .. }`. Patterns take the same table through the new
+     `PatternTables { enums, aliases }`. Before this, `P { x = 3, y = 4 }`
+     passed sema and the interpreter panicked (`no method 'sum' on 'P'`).
+2. **Methods on an enum value.** Two defects, one cause. An unknown
+   method on an enum with no `extend` block passed sema, because an enum
+   only got a methods table when an `extend` added a method, and nothing
+   was checked without one; it now yields `NoSuchMethod` (`TYPE-104`), as
+   a struct does. And a VALID method declared in `extend Color { .. }`
+   passed sema and then panicked (`no method 'is_red' on enum`), because
+   the interpreter dispatched user methods on structs only. Enum values now
+   dispatch through the same `method_table`. An associated function on an
+   enum (`Color.make()`) was rejected as an unknown variant; a name that is
+   not a variant but is an associated function now falls through to the
+   associated-call path.
+3. **A function-typed struct field is callable.** `c.cb(4)` where
+   `cb: fn(int) int` is type-checked as a call of the field (arguments
+   against the field's parameter types, the result typed from its return
+   type) in sema and runs in the interpreter. A real method with the same
+   name wins over a field, in both, since a method is looked up first.
+   Calling a field that is not a function is still an error, and a name
+   that is neither a method nor a field is still `NoSuchMethod`.
+4. **Nested mismatches point at the expression.** `structurally_compatible`
+   had no span, so every nested comparison (a function's parameters and
+   return type, a generic's arguments, a dictionary's key and value, an
+   inner element type) invented `Span::at(0)`. It now takes the span of the
+   outer `unify`, which fixes all six sites at once.
+
+Found on the way:
+
+- `Color.nothing()` reported `UnknownVariant` twice, once for the callee
+  `Field` and once for the `Call`. The callee no longer reports it.
+- A wrong generic argument count inside an alias target
+  (`type Worse = Box<int, int>`) is reported at the alias itself, not
+  left to surface at some use of it.
+- Every doc that listed the four bugs as open (this file and the public
+  project status page) now records them as fixed.
+
+Known gaps of the bug work, recorded rather than hidden:
+
+- Constructing through an alias to a NON-struct (`type Score = int`, then
+  `Score { x = 1 }` or `Score.new()`) is not checked, see the open list.
+- A struct literal through an alias to a generic struct with arguments
+  (`type IntBox = Box<int>`, then `IntBox { value = 4 }`) infers
+  `Box<?T>` and relies on the surrounding context to fix `T`.
+- An alias's own `pub` is still parsed and dropped, as for a `const`.
 
 Known gaps of the static work, recorded rather than hidden:
 

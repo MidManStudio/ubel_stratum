@@ -1,0 +1,32 @@
+// tests/fixtures/err_enum_unknown_members_combined.ubl
+// Every wrong way to name something on an enum is reported exactly once:
+// an unknown variant, an unknown associated function written as a call
+// (which used to be reported twice, once for the callee and once for the
+// call), an unknown instance method on an enum that HAS an `extend`
+// block, and a known method called with the wrong number of arguments.
+// Four mistakes, four diagnostics.
+// Expected: sema FAIL (UnknownVariant TYPE-109 twice, NoSuchMethod TYPE-104,
+// ArgumentCountMismatch TYPE-102).
+
+enum Color {
+    Red,
+    Green,
+}
+
+extend Color {
+    fn is_red(self) bool {
+        return true
+    }
+
+    fn make() Color {
+        return Color.Green
+    }
+}
+
+fn main() void {
+    let a = Color.Blue
+    let b = Color.nothing()
+    let c = Color.Red
+    let d = c.shade()
+    let e = c.is_red(1)
+}
