@@ -146,6 +146,21 @@ pub struct Interpreter<'ast> {
     /// the real name does, and the values they build carry the REAL type
     /// name (never the alias). Empty for a program with no such alias.
     pub(crate) type_aliases: HashMap<String, String>,
+    /// Every declared trait's name. A call written `Trait.method(value)` is
+    /// recognised by the first path segment being one of these.
+    pub(crate) trait_names: std::collections::HashSet<String>,
+    /// `(implementing type, trait)` -> method name -> function. Each trait
+    /// impl's methods (and the trait's default methods it did not override)
+    /// are kept here as well as in the flat `method_table`, because the flat
+    /// table holds one function per name and two traits can supply the same
+    /// name to one type. `Trait.method(value)` reads this table; sema has
+    /// already rejected an unqualified call of an ambiguous name.
+    pub(crate) trait_method_table: HashMap<(String, String), HashMap<String, FunctionId>>,
+    /// Calls sema resolved through a trait bound, by callee span, with the
+    /// trait's name (`SemaContext::trait_call_sites`). They dispatch through
+    /// `trait_method_table`, so a trait's method runs even when the concrete
+    /// type has an inherent method of the same name. Empty by default.
+    pub(crate) trait_call_sites: HashMap<Span, String>,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -162,6 +177,9 @@ impl<'ast> Interpreter<'ast> {
             int_literal_types: HashMap::new(),
             statics: HashMap::new(),
             type_aliases: HashMap::new(),
+            trait_names: std::collections::HashSet::new(),
+            trait_method_table: HashMap::new(),
+            trait_call_sites: HashMap::new(),
         };
         interp.register_builtins();
         interp
@@ -174,6 +192,15 @@ impl<'ast> Interpreter<'ast> {
     /// later `x + y` with a real `u8` panics with a type mismatch.
     pub fn set_int_literal_types(&mut self, types: HashMap<Span, IntSuffix>) {
         self.int_literal_types = types;
+    }
+
+    /// Hand the interpreter the calls sema resolved through a trait
+    /// (`SemaContext::trait_call_sites`). Call this before `run_program`
+    /// for any program that went through `sema::analyse`. Without it a
+    /// call through a trait bound runs the flat method table's entry, which
+    /// is an inherent method when the type has one of that name.
+    pub fn set_trait_call_sites(&mut self, sites: HashMap<Span, String>) {
+        self.trait_call_sites = sites;
     }
 
     // ── Registration ─────────────────────────────────────────────
@@ -277,13 +304,52 @@ impl<'ast> Interpreter<'ast> {
         top_level_fns: &mut Vec<FunctionId>,
     ) {
         let TypeKind::Named { path, .. } = target_type.kind else { return; };
-        let Some(struct_name) = path.first().copied() else { return; };
+        let Some(written) = path.first().copied() else { return; };
+        // `extend P { .. }` with `type P = Point` extends `Point`.
+        let struct_name = self.canonical_type(written).to_string();
         for m in methods.iter().copied() {
-            let id = self.register_method(struct_name, m);
+            let id = self.register_method(&struct_name, m);
             self.method_table
-                .entry(struct_name.to_string())
+                .entry(struct_name.clone())
                 .or_default()
                 .insert(m.name.to_string(), id);
+            top_level_fns.push(id);
+        }
+    }
+
+    /// `impl Trait for Type { .. }`: register the impl's methods, then the
+    /// trait's default methods the impl does not override. Each goes in the
+    /// per-trait table (`trait_method_table`) and, unless the type already
+    /// has a method of that name, in the flat `method_table`. An inherent
+    /// method registered LATER overwrites the flat entry, so an inherent
+    /// method wins whichever order they were declared in, matching sema.
+    fn register_trait_impl_methods(
+        &mut self,
+        imp:           crate::ast::declarations::ImplBlock<'ast>,
+        trait_defaults: &HashMap<&'ast str, Vec<MethodDecl<'ast>>>,
+        top_level_fns: &mut Vec<FunctionId>,
+    ) {
+        let TypeKind::Named { path, .. } = imp.target_type.kind else { return; };
+        let Some(written) = path.first().copied() else { return; };
+        let Some(trait_name) = imp.trait_path.and_then(|p| p.last().copied()) else { return; };
+        let type_name = self.canonical_type(written).to_string();
+
+        let defaults: &[MethodDecl<'ast>] = trait_defaults
+            .get(trait_name).map(|v| v.as_slice()).unwrap_or(&[]);
+        let inherited = defaults.iter().copied()
+            .filter(|d| !imp.methods.iter().any(|m| m.name == d.name));
+
+        for m in imp.methods.iter().copied().chain(inherited) {
+            let id = self.register_method(&type_name, m);
+            self.trait_method_table
+                .entry((type_name.clone(), trait_name.to_string()))
+                .or_default()
+                .insert(m.name.to_string(), id);
+            self.method_table
+                .entry(type_name.clone())
+                .or_default()
+                .entry(m.name.to_string())
+                .or_insert(id);
             top_level_fns.push(id);
         }
     }
@@ -294,6 +360,33 @@ impl<'ast> Interpreter<'ast> {
         // Pre-declare pass: register everything before running any body so
         // forward references and mutual recursion work.
         let mut top_level_fns: Vec<FunctionId> = Vec::new();
+
+        // Aliases and traits first. A `type` alias must be known before an
+        // `extend`/`impl` that targets it is registered, and a trait's
+        // default methods must be at hand when an `impl` of it is reached,
+        // whatever order the items appear in the file.
+        let mut trait_defaults: HashMap<&'ast str, Vec<MethodDecl<'ast>>> = HashMap::new();
+        for item in program.items.iter().copied() {
+            match item {
+                Item::TypeAlias(a) => {
+                    if let TypeKind::Named { path, .. } = a.ty.kind {
+                        if let Some(target) = path.last() {
+                            self.type_aliases.insert(a.name.to_string(), target.to_string());
+                        }
+                    }
+                }
+                Item::Trait(t) => {
+                    self.trait_names.insert(t.name.to_string());
+                    let defaults: Vec<MethodDecl<'ast>> = t.items.iter().filter_map(|it| match it {
+                        crate::ast::declarations::TraitItem::DefaultMethod(m) => Some(*m),
+                        _ => None,
+                    }).collect();
+                    trait_defaults.insert(t.name, defaults);
+                }
+                _ => {}
+            }
+        }
+
         for item in program.items.iter().copied() {
             match item {
                 Item::Function(f) => {
@@ -371,6 +464,9 @@ impl<'ast> Interpreter<'ast> {
                 }
                 Item::Impl(i) if i.trait_path.is_none() => {
                     self.register_extend_or_impl_methods(i.target_type, i.methods, &mut top_level_fns);
+                }
+                Item::Impl(i) => {
+                    self.register_trait_impl_methods(i, &trait_defaults, &mut top_level_fns);
                 }
                 _ => {}
             }

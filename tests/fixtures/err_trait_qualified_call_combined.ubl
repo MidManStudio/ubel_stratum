@@ -1,0 +1,28 @@
+// tests/fixtures/err_trait_qualified_call_combined.ubl
+// A qualified call `Trait.method(value, ..)` is checked: the value's type
+// has to implement the trait (TYPE-126), the method has to exist in the
+// trait (TYPE-104), and the arguments have to be complete (TYPE-102). Three
+// mistakes, three diagnostics.
+// Expected: sema FAIL (UnsatisfiedBound TYPE-126, NoSuchMethod TYPE-104,
+// ArgumentCountMismatch TYPE-102).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+struct Other {
+    x: int,
+}
+
+impl Shape for Sq { fn area(self) int { return 1 } }
+
+fn main() void {
+    let o = Other { x = 1 }
+    let a = Shape.area(o)
+    let b = Shape.nothing(Sq { s = 1 })
+    let c = Shape.area()
+}

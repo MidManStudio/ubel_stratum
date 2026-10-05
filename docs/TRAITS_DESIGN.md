@@ -1,7 +1,8 @@
 # Traits: Design Options
 
-> **Status: options for decision. Nothing in this document is built.**
-> Written for the dedicated traits design session that `docs/PARKED_IDEAS.md`
+> **Status: decisions made 2026-10-03; slice S1a built (section 0).**
+> Sections 1 to 5 are the options as presented, kept as the record of what
+> was weighed. Written for the dedicated traits design session that `docs/PARKED_IDEAS.md`
 > ("Traits / interface system") called for. That section holds the
 > reference-language survey and the evaluation of an outside synthesis; this
 > document does not repeat them. It records what the compiler does with a
@@ -13,7 +14,71 @@
 
 ---
 
-## 1. Where things stand
+## 0. Decisions and progress
+
+### Decisions (2026-10-03)
+
+| Decision | Chosen |
+|---|---|
+| **D1** kind of trait | **A**, nominal traits with explicit `impl Trait for Type`. |
+| **D2** dispatch | **Both** static and dynamic. Static first (S1), `dyn Trait` in the last slice (S6). Whether `dyn` is `HIGH` only (B) or every tier (C) is settled when S6 starts. |
+| **D3** coherence | The recommended v1 answers: one impl per trait and type, overlap is an error, an inherent method beats a trait method, two traits supplying one name is an error at an unqualified call and is resolved with `Trait.method(value)`. The orphan rule, blanket impls and C#-style explicit implementation are **deferred** until there is more context. |
+| **D4** trait contents | **All four levels**: methods and defaults, generic traits and supertraits, associated types, required fields and associated constants. Built in stages (S1, S3, and a later slice for the last level, which needs its field-layout interaction with ECS and arenas checked first). |
+| **D5** built-in protocols | The recommendation: lift the six derives into prelude traits (S2); `Display`/`Debug`, `Iterable`, operators one at a time, each its own decision (S5). |
+| **D6** bounds | The recommendation: enforce at call sites and through generic bodies, and make a method call on an unbounded type parameter an error (S1b); `where` clauses and bounds with arguments later. |
+| **D7** tiers | A **hybrid** of options a and b: a trait can set a default tier for all its methods, each method can carry its own tier, an implementer must match the tier of the method it implements, and a specific method can override to change the tier. Flagged as complex and to be handled flawlessly, so it gets its own specification before any code (S4, below). |
+| **D8** keywords | The recommendation: `extend` inherent only, `impl Trait for Type` the trait form, plain `impl Type { }` still accepted. |
+
+### Slice S1 is split in two
+
+| Slice | Status | Contents |
+|---|---|---|
+| **S1a** | **Built** | Trait impls registered in sema and interpreter dispatch; conformance checks (missing method, method not in the trait, signature mismatch with `Self`); default methods inherited or overridden; `Self` in signatures and default bodies; overlap; inherent-first; ambiguity and the qualified call `Trait.method(value)`; calls made through a trait run the trait's method; every trait feature not built yet reported as `TYPE-129` instead of ignored. |
+| **S1b** | Next | Bounds: declared bounds validated, bound obligations checked at call sites, method calls on a type parameter resolved through its bounds, a method call on an unbounded type parameter an error. |
+| S2 to S6 | Planned | As in section 4. |
+
+### What S1a settled that the options did not
+
+- **A call made through a trait runs the trait's method.** Inside a default
+  method `self.area()` is resolved through the trait (inherent methods are not
+  visible through a bound), so it must run the trait's `area` even when the
+  concrete type also has an inherent `area`. Sema records each such call
+  (`SemaContext::trait_call_sites`) and the interpreter dispatches those
+  through its per-trait table, the same way it already takes
+  `int_literal_types`. S1b reuses this for every call through a declared bound.
+- **`Self`** is the implementing type inside an `impl`, `extend` or struct,
+  and an abstract parameter inside a trait. The abstract `Self` is the
+  reserved `Param` index equal to the trait's generic arity, so one
+  `substitute` call replaces the trait's own arguments and `Self` together
+  once generic traits exist.
+- **Not yet checkable:** an impl for a built-in type, a generic trait and an
+  associated type are each reported as `TYPE-129` (`UnsupportedTraitFeature`),
+  so none is silently ignored. Impls for built-in types arrive with S2, generic
+  traits with S3.
+
+### D7: what has to be specified before S4
+
+Two facts found while building S1a bear on the tier design.
+
+1. **A method call on a receiver is not tier-checked at all today.** The
+   cross-tier call rule runs only for calls whose callee resolves to a
+   definition (a plain function name). `recv.method()` has no such
+   resolution, so a `MID` function can call a `HIGH` method on a value with
+   no error. Putting a tier on trait methods is meaningless until method
+   calls are checked, so S4 starts there.
+2. **What "override to change the tier" lets an implementer do needs an exact
+   rule.** Under the existing rule a callee must be at the caller's tier or
+   lower. A call through a bound is checked against the tier the TRAIT
+   declares, because the impl is not known. An impl method at a tier **at or
+   below** the declared one can never make such a call unsound. An impl
+   method **above** the declared tier can, unless every instantiation is
+   checked separately. The S4 specification chooses between: exact match only;
+   match or lower (sound with the existing rule); or arbitrary override with
+   per-instantiation checking. It is written and agreed before S4 is built.
+
+---
+
+## 1. Where things stand (at the start of the design session)
 
 Verified by reading the source and by running small programs, not taken from
 the older notes.

@@ -82,6 +82,11 @@ about using it as a plain dependency.
 
 ## Traits / interface system
 
+> **The traits design lives in `docs/TRAITS_DESIGN.md`**, with the options as
+> presented, the decisions made on 2026-10-03, the slice plan and its
+> progress. This section keeps the reference-language survey and the
+> evaluation of the outside synthesis that fed that session.
+
 Raised as "did we ever actually discuss traits?" — checked the real
 answer against the source rather than guess. Short version: **no, not
 as a design decision.** What exists is parser/AST/name-resolution
@@ -493,6 +498,17 @@ it actually turned up:
   literal or an associated call naming a type that has no such members is
   not checked for any non-struct name, alias or not; only the alias route
   is new reachable surface.
+- Method calls on a receiver are not tier-checked at all. The cross-tier
+  call rule runs only for calls whose callee resolves to a definition (a
+  plain function name); `recv.method()` has no such resolution, so a `MID`
+  function can call a `HIGH` method with no error. Found while building
+  traits; slice S4 (tiers on trait methods) starts by fixing it.
+- Struct printing is nondeterministic. The default `$"{p}"` of a struct
+  walks a `HashMap`, so field order varies between runs (`P {x: 1, y: 2}`
+  or `P {y: 2, x: 1}`); `Value::Struct` already carries `field_order`.
+- `for x in value` over a user type and arithmetic operators on user types
+  are accepted by sema and panic at runtime. The language-item traits of
+  slice S5 give them a type error.
 - `pub` written on a `const` or `type` item, and `@tier(...)` written on
   a `type` item, parse and are silently dropped: `ConstDecl` and
   `TypeAlias` carry no visibility or tier, and name resolution declares
@@ -728,7 +744,54 @@ Known gaps of the static work, recorded rather than hidden:
   initializers are pure is the one constants already carry.
 - `pub` on a static is recorded but has no effect until `summon` lands.
 
+**Traits, slice S1a.** `impl Trait for Type` is usable and checked. See
+`docs/TRAITS_DESIGN.md`, section 0, for the decisions and the slice plan.
+
+- Before this, every impl that named a trait was skipped by sema and by the
+  interpreter, so `impl Shape for Sq { fn area .. }` followed by `q.area()`
+  was `NoSuchMethod`: a trait impl could not be used at all.
+- Sema collects each trait (`collect_trait_info`) with its signatures
+  written against an abstract `Self` (a reserved `Param`), and checks every
+  impl against it in `register_trait_impls`: a missing method (`TYPE-123`), a
+  method the trait lacks (`TYPE-124`), a signature mismatch with `Self`
+  replaced by the implementing type (`TYPE-125`), an overlapping impl
+  (`TYPE-128`), and a name after `impl` that is not a trait (`TYPE-122`). A
+  default method is inherited when the impl omits it.
+- Dispatch: the impl's methods go into the type's method table with an
+  inherent method winning, in either declaration order; a name two traits
+  supply with no inherent method is ambiguous (`TYPE-127`) and is resolved
+  with `Trait.method(value)`, which also reaches a trait method an inherent
+  one shadows. The interpreter keeps a per-trait table
+  (`trait_method_table`) beside the flat `method_table`.
+- A call made THROUGH a trait (`self.area()` in a default method) runs the
+  trait's method. Sema records those calls in `SemaContext::trait_call_sites`
+  and the interpreter dispatches them through the per-trait table, so an
+  inherent method of the same name is never reached through a bound.
+- `Self` now resolves everywhere: the implementing type in an `impl`,
+  `extend` or struct, the abstract `Self` in a trait. An `impl` or `extend`
+  whose target is a type alias applies to the real struct.
+- Reported instead of ignored (`TYPE-129`): an impl for a built-in type, a
+  generic trait, an associated type, an impl for a generic type.
+
+Known gaps of S1a, recorded rather than hidden:
+
+- Bounds are still not enforced (slice S1b): `fn f<T: Shape>(x: T)` is
+  accepted for any `T`, and a method call on an unbounded type parameter is
+  still unchecked.
+- Tiers on trait methods are not built (slice S4); every trait method is
+  `HIGH`, the default.
+
 ## Decided, not yet built
+
+**Traits, slices S1b to S6.** Decided 2026-10-03, built one delivery at a
+time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
+v1 coherence rules with the orphan rule, blanket impls and explicit
+implementation deferred; D4 all four levels of trait contents; D5 the six
+derives as prelude traits, then the language-item traits one at a time; D6
+bounds enforced through bodies; D7 a tier hybrid (trait-level default tier,
+per-method tier, implementers match it, a method can override), specified
+before S4; D8 `extend` inherent only and `impl Trait for Type` for traits.
+See `docs/TRAITS_DESIGN.md`.
 
 Design questions that were presented as options and answered. Each gets
 its own delivery with fixtures; the choice is recorded here so it is not

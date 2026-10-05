@@ -64,6 +64,7 @@ pub fn run_file(path: &Path) -> Result<RunOutcome, CliError> {
 
     let mut interp = Interpreter::new(&arena);
     interp.set_int_literal_types(sema_ctx.int_literal_types);
+    interp.set_trait_call_sites(sema_ctx.trait_call_sites);
     match interp.run_program(&program) {
         Ok(())  => Ok(RunOutcome::Finished),
         Err(e)  => Ok(RunOutcome::RuntimeError(format!("{e}"))),

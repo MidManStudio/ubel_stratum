@@ -16,6 +16,7 @@
 //! | `expr_types`       | `Span`     | `TypeId`           | type_infer       |
 //! | `binding_types`    | `Span`     | `TypeId`           | type_infer       |
 //! | `int_literal_types`| `Span`     | `IntSuffix`        | type_infer       |
+//! | `trait_call_sites` | `Span`     | `String` (trait)   | type_infer       |
 //! | `symbols`          | —          | `SymbolTable`      | name_resolution  |
 //! | `types`            | —          | `TypeTable`        | type_infer       |
 
@@ -56,6 +57,16 @@ pub struct SemaContext {
     /// that `5` in `let x: u8 = 5` is a `u8` (docs/PARKED_IDEAS.md,
     /// "Unsuffixed integer literals").
     pub int_literal_types: HashMap<Span, IntSuffix>,
+
+    /// Method calls that sema resolved THROUGH A TRAIT (a call on a type
+    /// parameter bounded by a trait, or on the abstract `Self` inside a
+    /// trait's default method), keyed by the callee's `Span`, with the
+    /// trait's name. Through a bound only the trait's methods are visible,
+    /// so the call must run the trait's method even when the concrete type
+    /// also has an inherent method of the same name. The interpreter looks
+    /// the concrete type up in its per-trait table for these calls instead
+    /// of the flat table where an inherent method wins.
+    pub trait_call_sites: HashMap<Span, String>,
 
     /// Module-level (top-level item) name -> DefId, populated during
     /// name resolution's pre-declare step. Used by type_infer to resolve

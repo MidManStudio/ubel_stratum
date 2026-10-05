@@ -1,0 +1,46 @@
+// tests/fixtures/ok_trait_impl_dispatch_isolated.ubl
+// A trait declares required methods and `impl Trait for Type` provides
+// them. Before this, an impl of a trait parsed and then could not be used
+// at all: sema skipped every impl with a trait path, so `q.area()` was
+// NoSuchMethod. Two types implement one trait, each with its own body,
+// and a method with an argument and a method returning a different type
+// both dispatch to the right impl.
+// Expected: sema OK, interpret OK.
+
+trait Shape {
+    fn area(self) int
+    fn scaled(self, k: int) int
+    fn label(self) string
+}
+
+struct Sq {
+    s: int,
+}
+
+struct Circle {
+    r: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int { return self.s * self.s }
+    fn scaled(self, k: int) int { return self.s * k }
+    fn label(self) string { return "square" }
+}
+
+impl Shape for Circle {
+    fn area(self) int { return 3 * self.r * self.r }
+    fn scaled(self, k: int) int { return self.r * k }
+    fn label(self) string { return "circle" }
+}
+
+fn main() void {
+    let q = Sq { s = 3 }
+    let c = Circle { r = 2 }
+
+    assert(q.area() == 9, "Sq's own area")
+    assert(c.area() == 12, "Circle's own area, same trait")
+    assert(q.scaled(4) == 12, "a method with an argument")
+    assert(c.scaled(5) == 10, "a different body for the same signature")
+    assert(q.label() == "square", "a method returning a string")
+    assert(c.label() == "circle", "and for the other type")
+}

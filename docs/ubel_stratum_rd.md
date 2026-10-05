@@ -73,6 +73,24 @@ a test needs runtime values.
   making aliases nominal again fails 15 of the 20 alias tests (the other 5
   exercise the separate `type_def_of` construction path).
 
+### `tests/traits.rs`
+
+**What it does:** Integration tests for nominal traits, slice S1a (42
+tests). Source goes through `check_source` for the stage and codes, and
+through the interpreter (sema, then both setters, then `run_program`) where a
+test needs runtime values.
+
+**Decisions:**
+- Pins exact codes and counts for `TYPE-122` to `TYPE-129`, the exact text
+  of the signature-mismatch and ambiguity messages, declaration-order
+  independence, inherent-before-trait in both block orders, and the runtime
+  contract that a call made through a trait runs the trait's method. One
+  test runs without `set_trait_call_sites` to document why that table exists.
+- Mutation-checked: removing the call-site recording fails the one test that
+  expects the trait's method (18, not 14); removing the signature comparison
+  fails the three `TYPE-125` tests; the original inherent-versus-two-traits
+  bug fails two tests.
+
 ### `tests/statics.rs`
 
 **What it does:** Integration tests for `static` items. Source goes

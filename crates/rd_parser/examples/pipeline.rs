@@ -100,6 +100,7 @@ fn main() {
 
         let mut interp = ubel_stratum::interpreter::Interpreter::new(&arena);
         interp.set_int_literal_types(sema_ctx.int_literal_types);
+        interp.set_trait_call_sites(sema_ctx.trait_call_sites);
         match interp.run_program(&program) {
             Ok(()) => {
                 println!("[FULL-PIPELINE-OK] {name}");

@@ -1,0 +1,45 @@
+// tests/fixtures/ok_trait_default_methods_isolated.ubl
+// A trait method with a body is a default. An impl that omits it inherits
+// it, an impl that provides it overrides it, and inside a default `self`
+// is the abstract `Self` bounded by the trait, so `self.other()` resolves
+// through the trait and runs whatever the implementing type provides. That
+// includes a default calling a REQUIRED method, a default calling another
+// default that was overridden, and an associated default with no `self`.
+// Expected: sema OK, interpret OK.
+
+trait Animal {
+    fn name(self) string
+    fn sound(self) string { return "..." }
+    fn speak(self) string { return $"{self.name()} says {self.sound()}" }
+    fn kind() string { return "animal" }
+}
+
+struct Dog {
+    id: int,
+}
+
+struct Fish {
+    id: int,
+}
+
+impl Animal for Dog {
+    fn name(self) string { return "dog" }
+    fn sound(self) string { return "woof" }
+    fn kind() string { return "mammal" }
+}
+
+impl Animal for Fish {
+    fn name(self) string { return "fish" }
+}
+
+fn main() void {
+    let d = Dog { id = 1 }
+    let f = Fish { id = 2 }
+
+    assert(f.sound() == "...", "a default inherited unchanged")
+    assert(d.sound() == "woof", "a default overridden by the impl")
+    assert(d.speak() == "dog says woof", "a default calling a required method and an overridden default")
+    assert(f.speak() == "fish says ...", "the same default with the inherited one")
+    assert(Fish.kind() == "animal", "an associated default with no self, inherited")
+    assert(Dog.kind() == "mammal", "an associated default, overridden")
+}

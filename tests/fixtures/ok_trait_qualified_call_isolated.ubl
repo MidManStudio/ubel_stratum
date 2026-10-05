@@ -1,0 +1,37 @@
+// tests/fixtures/ok_trait_qualified_call_isolated.ubl
+// Two traits can supply a method of the same name to one type. The
+// unqualified call `t.go()` is then ambiguous (see the err_ fixture), and
+// `A.go(t)` / `B.go(t)` name the trait and pick the right body. The
+// receiver is the first argument, the rest follow, and the result is typed
+// from the trait's signature.
+// Expected: sema OK, interpret OK.
+
+trait A {
+    fn go(self) int
+    fn add(self, n: int) int
+}
+
+trait B {
+    fn go(self) int
+}
+
+struct T {
+    v: int,
+}
+
+impl A for T {
+    fn go(self) int { return 1 }
+    fn add(self, n: int) int { return self.v + n }
+}
+
+impl B for T {
+    fn go(self) int { return 2 }
+}
+
+fn main() void {
+    let t = T { v = 10 }
+
+    assert(A.go(t) == 1, "the first trait's method")
+    assert(B.go(t) == 2, "the second trait's method")
+    assert(A.add(t, 5) == 15, "a qualified call with an argument")
+}

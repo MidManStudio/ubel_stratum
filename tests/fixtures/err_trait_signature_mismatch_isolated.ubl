@@ -1,0 +1,20 @@
+// tests/fixtures/err_trait_signature_mismatch_isolated.ubl
+// An impl method has to match the trait's signature once `Self` is
+// replaced by the implementing type. A different return type is
+// TYPE-125, and the message shows both signatures.
+// Expected: sema FAIL (TraitMethodSignatureMismatch, TYPE-125).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+impl Shape for Sq {
+    fn area(self) string { return "x" }
+}
+
+fn main() void {
+}

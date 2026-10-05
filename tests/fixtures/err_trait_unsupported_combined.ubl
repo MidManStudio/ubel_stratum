@@ -1,0 +1,26 @@
+// tests/fixtures/err_trait_unsupported_combined.ubl
+// Trait features that parse but are not built yet are reported, never
+// silently ignored: an impl for a built-in type, a generic trait, and an
+// associated type. Each is one TYPE-129 for now; the later delivery that
+// builds each one removes it from this list. Three diagnostics.
+// Expected: sema FAIL (UnsupportedTraitFeature, TYPE-129, three times).
+
+trait Shape {
+    fn area(self) int
+}
+
+impl Shape for int {
+    fn area(self) int { return 1 }
+}
+
+trait Conv<T> {
+    fn conv(self) T
+}
+
+trait Holder {
+    type Item
+    fn get(self) int
+}
+
+fn main() void {
+}

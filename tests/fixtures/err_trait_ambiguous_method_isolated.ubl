@@ -1,0 +1,25 @@
+// tests/fixtures/err_trait_ambiguous_method_isolated.ubl
+// Two traits supply `go` to one type and the type has no inherent `go`,
+// so `t.go()` could mean either. It is TYPE-127, and the suggestion shows
+// the qualified form. The fix is `A.go(t)` or `B.go(t)`.
+// Expected: sema FAIL (AmbiguousTraitMethod, TYPE-127).
+
+trait A {
+    fn go(self) int
+}
+
+trait B {
+    fn go(self) int
+}
+
+struct T {
+    v: int,
+}
+
+impl A for T { fn go(self) int { return 1 } }
+impl B for T { fn go(self) int { return 2 } }
+
+fn main() void {
+    let t = T { v = 0 }
+    println(t.go())
+}

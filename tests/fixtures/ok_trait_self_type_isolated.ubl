@@ -1,0 +1,34 @@
+// tests/fixtures/ok_trait_self_type_isolated.ubl
+// `Self` in a trait's method signatures stands for the implementing type:
+// an associated function that returns `Self`, a method that returns `Self`.
+// An impl that targets a type ALIAS implements the trait for the real
+// struct, and values built through the alias use it.
+// Expected: sema OK, interpret OK.
+
+trait Maker {
+    fn make() Self
+    fn dup(self) Self
+    fn id(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+type Square = Sq
+
+impl Maker for Square {
+    fn make() Sq { return Sq { s = 1 } }
+    fn dup(self) Sq { return Sq { s = self.s + 1 } }
+    fn id(self) int { return self.s }
+}
+
+fn main() void {
+    let a = Sq.make()
+    let b = a.dup()
+    assert(a.id() == 1, "an associated function returning Self")
+    assert(b.id() == 2, "a method returning Self")
+
+    let c = Square { s = 40 }
+    assert(c.dup().id() == 41, "a value built through the alias uses the impl")
+}

@@ -1,0 +1,33 @@
+// tests/fixtures/ok_trait_inherent_first_isolated.ubl
+// When a type has an inherent method and a trait method of the same name,
+// a call on the TYPE runs the inherent one, in whichever order the blocks
+// are declared. The trait's method is still reachable, written with the
+// trait: `Shape.area(q)`. And a default method that calls `self.area()`
+// goes through the TRAIT, so it runs the trait's `area` and never the
+// inherent one, because inherent methods are not visible through a bound.
+// Expected: sema OK, interpret OK.
+
+impl Shape for Sq {
+    fn area(self) int { return self.s * self.s }
+}
+
+struct Sq {
+    s: int,
+}
+
+extend Sq {
+    fn area(self) int { return 7 }
+}
+
+trait Shape {
+    fn area(self) int
+    fn twice(self) int { return self.area() * 2 }
+}
+
+fn main() void {
+    let q = Sq { s = 3 }
+
+    assert(q.area() == 7, "the inherent method wins on a call on the type")
+    assert(Shape.area(q) == 9, "the trait's method, named through the trait")
+    assert(q.twice() == 18, "a default reaches the trait's area (9), not the inherent one (7)")
+}

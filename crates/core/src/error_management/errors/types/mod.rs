@@ -159,6 +159,78 @@ pub enum TypeError {
         span:     Span,
     },
 
+    /// A name written where a trait is required (`impl Name for T`, or a
+    /// bound `T: Name`) that is not a trait: either nothing is declared by
+    /// that name (`found: None`) or it names something else (`found:
+    /// Some("struct")`).
+    NotATrait {
+        name:  String,
+        found: Option<&'static str>,
+        span:  Span,
+    },
+
+    /// An `impl Trait for Type` that lacks a method the trait requires and
+    /// gives no default for.
+    TraitMethodMissing {
+        trait_name: String,
+        method:     String,
+        type_name:  String,
+        span:       Span,
+    },
+
+    /// An `impl Trait for Type` with a method the trait does not declare.
+    UnknownTraitMethod {
+        trait_name: String,
+        method:     String,
+        span:       Span,
+    },
+
+    /// An impl method whose signature differs from the trait's, after
+    /// `Self` is replaced by the implementing type. `expected` and `found`
+    /// are rendered signatures (`fn(int) int`).
+    TraitMethodSignatureMismatch {
+        trait_name: String,
+        method:     String,
+        expected:   String,
+        found:      String,
+        span:       Span,
+    },
+
+    /// A type that does not implement a trait it is required to: a
+    /// qualified call `Trait.method(value)` on a value whose type has no
+    /// `impl Trait`, or (with bounds enforcement) a generic argument that
+    /// fails its bound.
+    UnsatisfiedBound {
+        type_name:  String,
+        trait_name: String,
+        span:       Span,
+    },
+
+    /// An unqualified method call that two traits implemented by one type
+    /// both supply, with no inherent method of that name to win. Written
+    /// with the trait instead: `Trait.method(value)`.
+    AmbiguousTraitMethod {
+        method:    String,
+        traits:    Vec<String>,
+        type_name: String,
+        span:      Span,
+    },
+
+    /// Two `impl`s of one trait for one type.
+    OverlappingImpl {
+        trait_name: String,
+        type_name:  String,
+        span:       Span,
+    },
+
+    /// A trait-system construct that parses but is not built yet (an
+    /// impl for a built-in type, a generic trait, an associated type).
+    /// Reported explicitly so it is never silently ignored.
+    UnsupportedTraitFeature {
+        feature: &'static str,
+        span:    Span,
+    },
+
     /// A `type` alias that refers to itself, directly (`type A = A`) or
     /// through other aliases (`type A = B  type B = A`), so it has no
     /// finite expansion. Also reported for an alias that depends on one
@@ -249,6 +321,14 @@ impl TypeError {
             TypeError::DeriveRequiresOther          { span, .. } => *span,
             TypeError::TypeNotOrderable             { span, .. } => *span,
             TypeError::IntLiteralOutOfRange        { span, .. } => *span,
+            TypeError::NotATrait                   { span, .. } => *span,
+            TypeError::TraitMethodMissing          { span, .. } => *span,
+            TypeError::UnknownTraitMethod          { span, .. } => *span,
+            TypeError::TraitMethodSignatureMismatch { span, .. } => *span,
+            TypeError::UnsatisfiedBound            { span, .. } => *span,
+            TypeError::AmbiguousTraitMethod        { span, .. } => *span,
+            TypeError::OverlappingImpl             { span, .. } => *span,
+            TypeError::UnsupportedTraitFeature     { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -301,6 +381,35 @@ impl TypeError {
 
             TypeError::TypeNotOrderable { on_type, .. } =>
                 format!("type `{}` doesn't support ordering comparisons", on_type),
+
+            TypeError::NotATrait { name, found, .. } => match found {
+                None       => format!("unknown trait `{}`", name),
+                Some(kind) => format!("`{}` is a {}, not a trait", name, kind),
+            },
+
+            TypeError::TraitMethodMissing { trait_name, method, type_name, .. } =>
+                format!("`{}` does not implement `{}`, which trait `{}` requires", type_name, method, trait_name),
+
+            TypeError::UnknownTraitMethod { trait_name, method, .. } =>
+                format!("`{}` is not a method of trait `{}`", method, trait_name),
+
+            TypeError::TraitMethodSignatureMismatch { trait_name, method, expected, found, .. } =>
+                format!("method `{}` does not match trait `{}`: expected `{}`, found `{}`",
+                        method, trait_name, expected, found),
+
+            TypeError::UnsatisfiedBound { type_name, trait_name, .. } =>
+                format!("the trait `{}` is not implemented for `{}`", trait_name, type_name),
+
+            TypeError::AmbiguousTraitMethod { method, traits, type_name, .. } =>
+                format!("method `{}` on `{}` is supplied by more than one trait ({})",
+                        method, type_name,
+                        traits.iter().map(|t| format!("`{}`", t)).collect::<Vec<_>>().join(", ")),
+
+            TypeError::OverlappingImpl { trait_name, type_name, .. } =>
+                format!("`{}` is implemented for `{}` more than once", trait_name, type_name),
+
+            TypeError::UnsupportedTraitFeature { feature, .. } =>
+                format!("{} is not supported yet", feature),
 
             TypeError::TypeAliasCycle { name, .. } =>
                 format!("type alias `{}` refers to itself, directly or through other aliases", name),
@@ -391,6 +500,21 @@ impl TypeError {
             TypeError::TypeNotOrderable { .. } =>
                 Some("add `@derive(PartialOrd)` (or `@derive(Ord)`) to the struct, or compare a different field".to_string()),
 
+            TypeError::NotATrait { found: None, .. } =>
+                Some("declare it with `trait Name { .. }`, or check the spelling".to_string()),
+
+            TypeError::TraitMethodMissing { method, .. } =>
+                Some(format!("add `fn {}(..)` to the impl, or give the method a default body in the trait", method)),
+
+            TypeError::UnknownTraitMethod { .. } =>
+                Some("move it to an inherent `extend` block, or declare it in the trait".to_string()),
+
+            TypeError::UnsatisfiedBound { type_name, trait_name, .. } =>
+                Some(format!("add `impl {} for {} {{ .. }}`", trait_name, type_name)),
+
+            TypeError::AmbiguousTraitMethod { method, traits, .. } =>
+                Some(format!("name the trait: `{}.{}(value)`", traits.first().map(String::as_str).unwrap_or("Trait"), method)),
+
             TypeError::TypeAliasCycle { .. } =>
                 Some("an alias is just another name for a type, so it must end in a type that is not itself an alias of the same chain".to_string()),
 
@@ -441,6 +565,14 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::TypeNotOrderable { .. }              => "TYPE-118",
             TypeError::IntLiteralOutOfRange { .. }          => "TYPE-120",
             TypeError::TypeAliasCycle { .. }                => "TYPE-121",
+            TypeError::NotATrait { .. }                     => "TYPE-122",
+            TypeError::TraitMethodMissing { .. }            => "TYPE-123",
+            TypeError::UnknownTraitMethod { .. }            => "TYPE-124",
+            TypeError::TraitMethodSignatureMismatch { .. } => "TYPE-125",
+            TypeError::UnsatisfiedBound { .. }              => "TYPE-126",
+            TypeError::AmbiguousTraitMethod { .. }          => "TYPE-127",
+            TypeError::OverlappingImpl { .. }               => "TYPE-128",
+            TypeError::UnsupportedTraitFeature { .. }       => "TYPE-129",
         }
     }
     fn span(&self) -> Span { self.span() }

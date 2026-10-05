@@ -1,0 +1,26 @@
+// tests/fixtures/err_trait_impl_names_combined.ubl
+// The name after `impl` has to be a trait, and a trait is implemented
+// for a type once. A second impl of the same trait for the same type is
+// TYPE-128; a name that is declared nowhere and a name that is a struct are
+// both TYPE-122. Three mistakes, three diagnostics.
+// Expected: sema FAIL (OverlappingImpl TYPE-128, NotATrait TYPE-122 twice).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+struct P {
+    x: int,
+}
+
+impl Shape for Sq { fn area(self) int { return 1 } }
+impl Shape for Sq { fn area(self) int { return 2 } }
+impl Missing for P { fn m(self) int { return 1 } }
+impl P for Sq { fn m(self) int { return 1 } }
+
+fn main() void {
+}

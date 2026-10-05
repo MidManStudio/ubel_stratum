@@ -1,0 +1,64 @@
+// tests/fixtures/ok_trait_combined.ubl
+// Traits together with the features they have to live beside: a `static`
+// global updated from a trait method, an enum and a struct implementing the
+// same trait, a default that wraps a required method, a literal typed by a
+// trait method's declared return type (`u8` wraps), a function-typed field,
+// and the explicit qualified call.
+// Expected: sema OK, interpret OK.
+
+trait Counter {
+    fn step(self) u8
+    fn run(self, times: int) u8 {
+        let total: u8 = 0
+        let i = 0
+        while i < times {
+            total += self.step()
+            i += 1
+        }
+        return total
+    }
+}
+
+static CALLS: int = 0
+
+struct Fast {
+    by: u8,
+}
+
+enum Slow {
+    Fixed,
+    Custom(u8),
+}
+
+struct Hook {
+    cb: fn(int) int,
+}
+
+impl Counter for Fast {
+    fn step(self) u8 {
+        CALLS += 1
+        return self.by
+    }
+}
+
+impl Counter for Slow {
+    fn step(self) u8 {
+        match self {
+            Slow.Fixed => { return 100 }
+            Slow.Custom(n) => { return n }
+        }
+    }
+}
+
+fn main() void {
+    let f = Fast { by = 200 }
+    assert(f.run(2) == 144, "a default loop over a required method: 200 + 200 wraps as u8")
+    assert(CALLS == 2, "the static was updated from inside the trait method")
+
+    assert(Slow.Fixed.run(3) == 44, "an enum implementing the same trait: 300 wraps as u8")
+    assert(Slow.Custom(5).run(4) == 20, "a payload variant")
+    assert(Counter.step(Slow.Custom(9)) == 9, "the qualified call on the enum")
+
+    let h = Hook { cb = fn(x: int) x + 1 }
+    assert(h.cb(1) == 2, "a function-typed field beside traits")
+}

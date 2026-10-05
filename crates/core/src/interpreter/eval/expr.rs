@@ -141,7 +141,7 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         ExprKind::Call { callee, args } => {
             // Check for method or static call: receiver.method(args)
             if let ExprKind::Field { target: recv_expr, field: method_name } = &callee.kind {
-                return eval_call_with_receiver(interp, recv_expr, method_name, args);
+                return eval_call_with_receiver(interp, recv_expr, method_name, args, callee.span);
             }
 
             // Regular function call.
@@ -1084,6 +1084,7 @@ fn eval_call_with_receiver<'ast>(
     recv_expr:    &'ast Expr<'ast>,
     method_name:  &str,
     raw_args:     &'ast [crate::ast::expressions::Arg<'ast>],
+    callee_span:  crate::ast::common::Span,
 ) -> EvalResult {
     // Case 1: static call — receiver is a bare identifier naming a type.
     if let ExprKind::Ident(type_name) = &recv_expr.kind {
@@ -1106,6 +1107,10 @@ fn eval_call_with_receiver<'ast>(
         // construction. Sema has already validated arity/types by this
         // point, so this just evaluates the args and wraps them —
         // no re-checking here.
+        // `Trait.method(value, ..)`: the explicit trait-qualified call.
+        if interp.trait_names.contains(*type_name) {
+            return eval_qualified_trait_call(interp, type_name, method_name, raw_args);
+        }
         let canon = interp.canonical_type(type_name);
         if let Some(variants) = interp.enum_table.get(canon) {
             if variants.get(method_name) == Some(&crate::interpreter::eval::VariantKind::Tuple) {
@@ -1142,6 +1147,25 @@ fn eval_call_with_receiver<'ast>(
     // Case 2 & 3: evaluate the receiver, then dispatch.
     let receiver = eval_expr(interp, recv_expr)?;
     let args     = eval_args(interp, raw_args)?;
+
+    // A call sema resolved THROUGH A TRAIT (a bound, or `Self` in a default
+    // method) runs the trait's method for the receiver's type, never an
+    // inherent method of the same name that only the concrete type sees.
+    if let Some(trait_name) = interp.trait_call_sites.get(&callee_span) {
+        let type_name = match &receiver {
+            Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => Some(type_name.clone()),
+            _ => None,
+        };
+        if let Some(type_name) = type_name {
+            let fn_id = interp.trait_method_table
+                .get(&(type_name, trait_name.clone()))
+                .and_then(|m| m.get(method_name))
+                .copied();
+            if let Some(fn_id) = fn_id {
+                return interp.call_method(fn_id, receiver, &args);
+            }
+        }
+    }
     eval_method_call(interp, receiver, method_name, &args)
 }
 
@@ -1398,6 +1422,39 @@ fn eval_method_call(
 }
 
 // ── Evaluate argument list ────────────────────────────────────────
+
+/// `Trait.method(value, args..)`: the first argument is the receiver, and
+/// the method is looked up in the per-trait table for the receiver's type,
+/// so it picks the right function even when two traits supply the same name.
+fn eval_qualified_trait_call<'ast>(
+    interp:     &mut Interpreter<'ast>,
+    trait_name: &str,
+    method:     &str,
+    raw_args:   &'ast [crate::ast::expressions::Arg<'ast>],
+) -> EvalResult {
+    let mut values = eval_args(interp, raw_args)?;
+    if values.is_empty() {
+        return Err(Signal::Panic(format!(
+            "{}.{}(..) needs a receiver as its first argument", trait_name, method
+        )));
+    }
+    let receiver = values.remove(0);
+    let type_name = match &receiver {
+        Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => type_name.clone(),
+        other => return Err(Signal::Panic(format!(
+            "{}.{}(..) on {}, which implements no trait", trait_name, method, other.type_name()
+        ))),
+    };
+    let fn_id = interp.trait_method_table
+        .get(&(type_name.clone(), trait_name.to_string()))
+        .and_then(|m| m.get(method))
+        .copied()
+        .ok_or_else(|| Signal::Panic(format!(
+            "'{}' does not implement trait '{}' (or the trait has no method '{}')",
+            type_name, trait_name, method
+        )))?;
+    interp.call_method(fn_id, receiver, &values)
+}
 
 fn eval_args<'ast>(
     interp: &mut Interpreter<'ast>,

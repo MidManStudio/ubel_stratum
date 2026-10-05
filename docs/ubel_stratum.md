@@ -100,6 +100,27 @@ sites.
   values is no longer `TYPE-118`.
 - `display_type` shows an open literal variable as `{integer}`.
 
+**Decisions (traits, slice S1a):**
+- `traits: HashMap<DefId, TraitInfo>` is filled by `collect_trait_info`:
+  every required signature and default method, written against the abstract
+  `Self`, the reserved `Param` whose index equals the trait's generic arity.
+  `register_trait_impls` checks each `impl Trait for Type` against it
+  (`TYPE-122` to `TYPE-129`) and registers the impl's methods, and the
+  defaults it does not override, into `struct_methods`.
+- `add_trait_method` keeps one table entry per `(type, name)`: an inherent
+  method wins (`trait_entries` records which entries a trait put there), and a
+  second trait supplying the name marks it in `ambiguous_methods`.
+  `method_origins` lists the supplying traits for the message.
+- `self_type` is what the written type `Self` means (the implementing type, or
+  the abstract `Self` in a trait); `current_bounds` maps a type parameter to
+  its trait bounds (today only the abstract `Self`, bounded by its own trait
+  in a default body). `call_through_bounds` resolves `x.m()` on such a
+  receiver through the bounds and records the callee span in
+  `SemaContext::trait_call_sites`. `infer_qualified_trait_call` handles
+  `Trait.m(value, ..)`.
+- `register_generic_arities` now runs unconditionally first, and
+  `target_type_def_id` follows a type alias.
+
 **Decisions (type aliases, enum and field calls, nested spans):**
 - `collect_alias_sigs` expands every `type` alias to a fixpoint before any
   other signature is collected (`alias_expansions: HashMap<DefId,
@@ -619,6 +640,16 @@ the driver loop that walks the parsed program before execution starts.
 - `match_literal` (`eval/pattern.rs`) compares an unsuffixed integer
   literal pattern against every sized-integer variant through `i128`, so
   `match byte { 255 => .. }` works on a `u8`.
+- Traits: `trait_names`, `trait_method_table` (`(type, trait)` to method to
+  function) and `trait_call_sites` (callee span to trait, from sema, set with
+  `set_trait_call_sites`). `register_trait_impl_methods` registers an impl's
+  methods and the trait's defaults it does not override into both the
+  per-trait table and, with `or_insert`, the flat `method_table`, so an
+  inherent method wins in either order. A call in `trait_call_sites`, and a
+  written `Trait.m(value)`, dispatch through the per-trait table. Aliases and
+  trait defaults are collected before the main registration loop, so
+  declaration order does not matter, and `extend P` on an alias extends the
+  real struct.
 - New `type_aliases: HashMap<String, String>` (alias name to the struct or
   enum name it stands for; only aliases whose target is a named type) and
   `canonical_type`, which follows it with a hop limit (sema rejects a
@@ -691,6 +722,11 @@ the driver loop that walks the parsed program before execution starts.
 type checking (TYPE-1xx range).
 
 **Decisions:**
+- `TypeError::NotATrait` (`TYPE-122`), `TraitMethodMissing` (`TYPE-123`),
+  `UnknownTraitMethod` (`TYPE-124`), `TraitMethodSignatureMismatch`
+  (`TYPE-125`), `UnsatisfiedBound` (`TYPE-126`), `AmbiguousTraitMethod`
+  (`TYPE-127`), `OverlappingImpl` (`TYPE-128`) and `UnsupportedTraitFeature`
+  (`TYPE-129`): see `docs/DIAGNOSTICS_RULES.md`.
 - `TypeError::TypeAliasCycle` (`TYPE-121`): a `type` alias that refers to
   itself, directly or through others.
 - `TypeError::IntLiteralOutOfRange` (TYPE-120) gained `negative` and
@@ -1081,3 +1117,10 @@ run and its result seen before the fix, and each test file was
 mutation-checked: reverting a fix makes exactly the tests that guard it
 fail. Same discipline: every line this delivery wrote or rewrote was
 checked for em dashes and first or second person.
+
+An eleventh delivery (traits slice S1a) touched `sema/type_infer.rs`,
+`sema/sema_context.rs`, the interpreter's `eval/mod.rs` and `eval/expr.rs`,
+the TypeError enum, the `ubel` CLI, both examples and the wasm playground
+(each now passes `trait_call_sites`), and added `tests/traits.rs` and sixteen
+fixtures. It is cumulative on the confirmed-bugs delivery. Same discipline:
+every line it wrote was checked for em dashes and first or second person.

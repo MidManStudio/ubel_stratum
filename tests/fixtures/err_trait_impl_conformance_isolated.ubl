@@ -1,0 +1,23 @@
+// tests/fixtures/err_trait_impl_conformance_isolated.ubl
+// An impl has to provide every required method and nothing else. A
+// missing method (`perimeter`, no default) is TYPE-123, reported once at
+// the impl; a method the trait does not declare (`extra`) is TYPE-124,
+// reported at that method. Two mistakes, two diagnostics.
+// Expected: sema FAIL (TraitMethodMissing TYPE-123, UnknownTraitMethod TYPE-124).
+
+trait Shape {
+    fn area(self) int
+    fn perimeter(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int { return 1 }
+    fn extra(self) int { return 2 }
+}
+
+fn main() void {
+}

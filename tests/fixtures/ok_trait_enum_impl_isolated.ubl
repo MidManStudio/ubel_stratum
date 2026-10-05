@@ -1,0 +1,33 @@
+// tests/fixtures/ok_trait_enum_impl_isolated.ubl
+// An enum implements a trait the way a struct does: required methods that
+// match on `self`, and a default method that calls them, on unit variants
+// and on payload variants alike.
+// Expected: sema OK, interpret OK.
+
+enum Color {
+    Red,
+    Green,
+    Rgb(int, int, int),
+}
+
+trait Describe {
+    fn label(self) string
+    fn shout(self) string { return $"{self.label()}!" }
+}
+
+impl Describe for Color {
+    fn label(self) string {
+        match self {
+            Color.Red => { return "red" }
+            Color.Rgb(r, g, b) => { return $"rgb{r + g + b}" }
+            _ => { return "other" }
+        }
+    }
+}
+
+fn main() void {
+    assert(Color.Red.label() == "red", "a unit variant")
+    assert(Color.Rgb(1, 2, 3).label() == "rgb6", "a payload variant")
+    assert(Color.Rgb(1, 2, 3).shout() == "rgb6!", "a default over a payload variant")
+    assert(Color.Green.shout() == "other!", "a default over another variant")
+}

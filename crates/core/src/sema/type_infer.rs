@@ -106,7 +106,7 @@ use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, UnaryOp, Att
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock, StaticDecl,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
-    TraitItem, TypeAlias, MethodSig,
+    TraitDecl, TraitItem, TypeAlias, MethodSig,
 };
 use crate::ast::expressions::{
     Arg, ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody,
@@ -266,6 +266,13 @@ enum VariantShape {
 
 // ── Struct member metadata (GENERICS_RULES.md) ──────────────────────
 
+/// Whether a parameter list starts with `self`, `mut self`, `&self` or
+/// `&mut self`.
+fn has_self_param(params: &[Param<'_>]) -> bool {
+    params.first().is_some_and(|p| matches!(p.kind,
+        ParamKind::SelfVal | ParamKind::SelfMut | ParamKind::SelfRef | ParamKind::SelfRefMut))
+}
+
 /// One method's signature, computed once during `collect_struct_sig` and
 /// consulted at every call site — mirrors `VariantShape`'s role for enums.
 /// `params`/`return_type` may contain `Param` placeholders for a generic
@@ -290,6 +297,24 @@ struct MethodShape {
 struct AliasExpansion {
     arity:  usize,
     target: TypeId,
+}
+
+/// One method of a trait as sema sees it. The shape is written in terms of
+/// the abstract `Self` (`Param(n)`, n = the trait's generic arity, so `0`
+/// until generic traits exist) and is instantiated per implementing type.
+#[derive(Clone)]
+struct TraitMethodInfo {
+    name:        String,
+    shape:       MethodShape,
+    /// A default body exists, so an impl may omit the method.
+    has_default: bool,
+}
+
+/// A trait collected by `collect_trait_info`. See docs/TRAITS_DESIGN.md.
+#[derive(Clone)]
+struct TraitInfo {
+    name:    String,
+    methods: Vec<TraitMethodInfo>,
 }
 
 /// What a checked pattern definitively covers, for exhaustiveness.
@@ -344,6 +369,33 @@ struct InferCtx<'a> {
     /// instead of caching a half-resolved target.
     alias_prepass: bool,
     alias_blocked: bool,
+    /// Every trait, by definition. Filled by `collect_trait_info` before any
+    /// impl is checked.
+    traits:           HashMap<DefId, TraitInfo>,
+    /// `(trait, implementing type)` -> the span of its `impl`. Exactly one
+    /// impl per pair is allowed (`TYPE-128`).
+    trait_impls:      HashMap<(DefId, DefId), Span>,
+    /// `(type, method name)` -> the traits that supply a method of that
+    /// name to the type. Only trait-supplied methods are listed; an
+    /// inherent method is recognised by being in `struct_methods` with no
+    /// entry here.
+    method_origins:   HashMap<(DefId, String), Vec<DefId>>,
+    /// `(type, method name)` pairs two or more traits supply with no
+    /// inherent method to win. An unqualified call of one is `TYPE-127`.
+    ambiguous_methods: HashSet<(DefId, String)>,
+    /// `(type, method name)` pairs whose entry in `struct_methods` was put
+    /// there by a TRAIT impl. Anything else in the table is inherent, which
+    /// is how `add_trait_method` tells an inherent method from the first
+    /// trait's entry.
+    trait_entries:    HashSet<(DefId, String)>,
+    /// What the written type `Self` means right now: the implementing type
+    /// inside an `impl`/`extend`/struct, the abstract `Self` parameter
+    /// inside a trait. `None` outside all of them.
+    self_type:        Option<TypeId>,
+    /// Trait bounds of the type parameters in scope, by the parameter's
+    /// `TypeId`. Inside a trait's default method the abstract `Self` is
+    /// bounded by the trait itself, so `self.other()` resolves through it.
+    current_bounds:   HashMap<TypeId, Vec<DefId>>,
     /// `self`'s type while inside a struct's own method bodies — the
     /// abstract `Named { def, args: [Param(0), Param(1), ...] }` for a
     /// generic struct, or `Named { def, args: [] }` for a non-generic
@@ -425,6 +477,13 @@ impl<'a> InferCtx<'a> {
             alias_expansions: HashMap::new(),
             alias_prepass:    false,
             alias_blocked:    false,
+            traits:            HashMap::new(),
+            trait_impls:       HashMap::new(),
+            method_origins:    HashMap::new(),
+            ambiguous_methods: HashSet::new(),
+            trait_entries:     HashSet::new(),
+            self_type:         None,
+            current_bounds:    HashMap::new(),
             current_struct_type:    None,
             callee_field_pending:   false,
             struct_fields:    HashMap::new(),
@@ -906,6 +965,13 @@ impl<'a> InferCtx<'a> {
                 // lookup. Checked before `top_level_def` so a generic
                 // param can't be shadowed by an unrelated top-level type
                 // of the same name.
+                // `Self`: the implementing type inside an `impl`, `extend` or
+                // struct, the abstract `Self` parameter inside a trait.
+                // Outside all of them it falls through to the ordinary
+                // lookup and stays unresolved, as before.
+                if path.len() == 1 && args.is_empty() && root == "Self" {
+                    if let Some(t) = self.self_type { return t; }
+                }
                 if path.len() == 1 && args.is_empty() {
                     if let Some(&param_ty) = self.current_generic_params.get(root) {
                         return param_ty;
@@ -1046,6 +1112,441 @@ impl<'a> InferCtx<'a> {
 
     // ── Phase 2a: Signature collection ────────────────────────────
 
+    // ── Traits (docs/TRAITS_DESIGN.md, slice S1a) ────────────────────
+    //
+    // A trait is collected once (`collect_trait_info`), each `impl Trait for
+    // Type` is then checked against it and its methods are registered into
+    // the type's dispatch table (`register_trait_impls`), and a call is
+    // resolved through that table, through a bound on a type parameter, or
+    // through an explicit `Trait.method(value)`.
+
+    /// Register every struct and enum's generic arity up front, so a
+    /// signature that mentions one (an impl's `Self`, an alias target) is
+    /// built correctly whatever order the declarations appear in.
+    fn register_generic_arities<'ast>(&mut self, program: &Program<'ast>) {
+        for item in program.items {
+            let (name, arity) = match item {
+                Item::Struct(s) => (s.name, s.generic_params.len()),
+                Item::Enum(e)   => (e.name, e.generic_params.len()),
+                _ => continue,
+            };
+            if let Some(id) = self.ctx.top_level_def(name) {
+                self.generic_arity.insert(id, arity);
+            }
+        }
+    }
+
+    /// `Self` for an `impl`/`extend` block: the target type with its own
+    /// generic parameters as `Param`s, or `None` when the target is not a
+    /// plain named type.
+    fn self_type_for_target<'ast>(&mut self, target: &Type<'ast>) -> Option<TypeId> {
+        let def = self.target_type_def_id(target)?;
+        let arity = self.generic_arity.get(&def).copied().unwrap_or(0);
+        let args: Vec<TypeId> = (0..arity)
+            .map(|i| self.ctx.types.intern(SemaType::Param(i)))
+            .collect();
+        Some(self.ctx.types.insert(SemaType::Named { def, args }))
+    }
+
+    /// How a name used where a trait is required resolves: the trait's
+    /// definition, or what the name actually is (`None` = nothing by that
+    /// name).
+    fn resolve_trait_name(&self, name: &str) -> Result<DefId, Option<&'static str>> {
+        let Some(id) = self.ctx.top_level_def(name) else { return Err(None); };
+        Err(Some(match self.ctx.symbols.lookup(id).kind {
+            DefKind::Trait             => return Ok(id),
+            DefKind::Struct { .. }     => "struct",
+            DefKind::Enum              => "enum",
+            DefKind::Function { .. }   => "function",
+            DefKind::Const             => "constant",
+            DefKind::Static            => "static",
+            DefKind::TypeAlias         => "type alias",
+            _                          => "name that is not a trait",
+        }))
+    }
+
+    fn method_shape_of_fn_type(&self, has_self: bool, fn_ty: TypeId) -> Option<MethodShape> {
+        match self.ctx.types.get(fn_ty).clone() {
+            SemaType::Function { params, return_type, is_fallible, .. } =>
+                Some(MethodShape { has_self, params, return_type, is_fallible }),
+            _ => None,
+        }
+    }
+
+    /// The shape of a required method signature (no body), with `Self`
+    /// already resolved to the trait's abstract `Self` parameter.
+    fn shape_of_sig<'ast>(&mut self, sig: &MethodSig<'ast>) -> MethodShape {
+        let params: Vec<TypeId> = sig.params.iter()
+            .filter_map(|p| match p.kind {
+                ParamKind::Named { ty, .. } | ParamKind::Discard { ty } =>
+                    ty.map(|t| self.ast_type_to_sema(t)),
+                _ => None,
+            })
+            .collect();
+        let (return_type, is_fallible) = self.return_type_to_sema(sig.return_type.as_ref());
+        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible }
+    }
+
+    /// Collect a trait: its required signatures and its default methods,
+    /// all written in terms of the abstract `Self`.
+    fn collect_trait_info<'ast>(&mut self, t: &TraitDecl<'ast>) {
+        let Some(def_id) = self.ctx.top_level_def(t.name) else { return; };
+        if !t.generic_params.is_empty() {
+            self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                feature: "a generic trait",
+                span:    t.span,
+            });
+        }
+        let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
+        let prev_self = self.self_type.replace(self_param);
+        let prev_generics = self.push_generic_scope(t.generic_params);
+
+        let mut methods: Vec<TraitMethodInfo> = Vec::with_capacity(t.items.len());
+        for it in t.items {
+            match it {
+                TraitItem::MethodSig(sig) => {
+                    let shape = self.shape_of_sig(sig);
+                    methods.push(TraitMethodInfo {
+                        name: sig.name.to_string(), shape, has_default: false,
+                    });
+                }
+                TraitItem::DefaultMethod(m) => {
+                    let fn_ty = self.collect_method_sig(m);
+                    if let Some(shape) = self.method_shape_of_fn_type(has_self_param(m.params), fn_ty) {
+                        methods.push(TraitMethodInfo {
+                            name: m.name.to_string(), shape, has_default: true,
+                        });
+                    }
+                }
+                TraitItem::AssociatedType { span, .. } => {
+                    self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                        feature: "an associated type",
+                        span:    *span,
+                    });
+                }
+            }
+        }
+
+        self.pop_generic_scope(prev_generics);
+        self.self_type = prev_self;
+        self.traits.insert(def_id, TraitInfo { name: t.name.to_string(), methods });
+    }
+
+    /// A trait's default method bodies. Inside one, `Self` is the trait's
+    /// abstract `Self` parameter and `self` has that type, bounded by the
+    /// trait itself, so `self.other_method()` resolves through the trait.
+    fn infer_trait_default_bodies<'ast>(&mut self, t: &TraitDecl<'ast>) {
+        let Some(trait_def) = self.ctx.top_level_def(t.name) else { return; };
+        let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
+        let prev_self_type = self.self_type.replace(self_param);
+        let prev_struct = self.current_struct_type.replace(self_param);
+        let mut bounds = HashMap::new();
+        bounds.insert(self_param, vec![trait_def]);
+        let prev_bounds = std::mem::replace(&mut self.current_bounds, bounds);
+        let prev_generics = self.push_generic_scope(t.generic_params);
+        for it in t.items {
+            if let TraitItem::DefaultMethod(m) = it {
+                self.infer_method_body(m);
+            }
+        }
+        self.pop_generic_scope(prev_generics);
+        self.current_bounds = prev_bounds;
+        self.current_struct_type = prev_struct;
+        self.self_type = prev_self_type;
+    }
+
+    /// A trait method's shape for one implementing type: the abstract
+    /// `Self` replaced by `self_ty`.
+    fn instantiate_trait_shape(&mut self, shape: &MethodShape, self_ty: TypeId) -> MethodShape {
+        let params: Vec<TypeId> = shape.params.iter()
+            .map(|p| self.substitute(*p, &[self_ty]))
+            .collect();
+        let return_type = self.substitute(shape.return_type, &[self_ty]);
+        MethodShape { has_self: shape.has_self, params, return_type, is_fallible: shape.is_fallible }
+    }
+
+    /// Two types are the same when they print the same; an unknown on
+    /// either side matches anything so one earlier error does not cascade.
+    fn same_type(&self, a: TypeId, b: TypeId) -> bool {
+        let (sa, sb) = (self.display_type(a), self.display_type(b));
+        sa == sb || [&sa, &sb].iter().any(|s| s.contains("<unknown>") || s.contains("<e>"))
+    }
+
+    fn shapes_match(&self, a: &MethodShape, b: &MethodShape) -> bool {
+        a.has_self == b.has_self
+            && a.is_fallible == b.is_fallible
+            && a.params.len() == b.params.len()
+            && a.params.iter().zip(&b.params).all(|(x, y)| self.same_type(*x, *y))
+            && self.same_type(a.return_type, b.return_type)
+    }
+
+    /// A signature as written in a diagnostic: `fn(self, int) string`.
+    fn shape_text(&self, s: &MethodShape) -> String {
+        let mut parts: Vec<String> = Vec::with_capacity(s.params.len() + 1);
+        if s.has_self { parts.push("self".to_string()); }
+        parts.extend(s.params.iter().map(|p| self.display_type(*p)));
+        let fallible = if s.is_fallible { " (fallible)" } else { "" };
+        format!("fn({}) {}{}", parts.join(", "), self.display_type(s.return_type), fallible)
+    }
+
+    /// Put one trait-supplied method into `target`'s dispatch table. An
+    /// inherent method of the same name wins and the trait method is then
+    /// reachable only as `Trait.method(value)`. Two traits supplying the
+    /// same name keep the first in the table and mark the name ambiguous.
+    fn add_trait_method(&mut self, target: DefId, trait_def: DefId, name: &str, shape: MethodShape) {
+        let key = (target, name.to_string());
+        let in_table = self.struct_methods.get(&target)
+            .is_some_and(|ms| ms.iter().any(|(n, _)| n == name));
+        // In the table but not put there by a trait: an inherent method.
+        let inherent = in_table && !self.trait_entries.contains(&key);
+        let origins = self.method_origins.entry(key.clone()).or_default();
+        origins.push(trait_def);
+        if inherent { return; }
+        if origins.len() > 1 {
+            self.ambiguous_methods.insert(key);
+            return;
+        }
+        self.trait_entries.insert(key);
+        self.struct_methods.entry(target).or_default().push((name.to_string(), shape));
+    }
+
+    /// Check every `impl Trait for Type` against its trait and register its
+    /// methods (and the trait's default methods it does not override) into
+    /// the type's dispatch table. Runs after the inherent registration so an
+    /// inherent method is already there to win.
+    fn register_trait_impls<'ast>(&mut self, program: &Program<'ast>) {
+        for item in program.items {
+            let Item::Impl(i) = item else { continue; };
+            let Some(path) = i.trait_path else { continue; };
+            let trait_name = path.last().copied().unwrap_or("");
+
+            let trait_def = match self.resolve_trait_name(trait_name) {
+                Ok(id) => id,
+                Err(found) => {
+                    self.errors.add_type_error(TypeError::NotATrait {
+                        name: trait_name.to_string(), found, span: i.span,
+                    });
+                    continue;
+                }
+            };
+            let target_def = self.target_type_def_id(i.target_type).filter(|d|
+                matches!(self.ctx.symbols.lookup(*d).kind, DefKind::Struct { .. } | DefKind::Enum));
+            let Some(target_def) = target_def else {
+                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                    feature: "implementing a trait for a type that is not a struct or enum",
+                    span:    i.span,
+                });
+                continue;
+            };
+            if self.generic_arity.get(&target_def).copied().unwrap_or(0) > 0 {
+                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                    feature: "implementing a trait for a generic type",
+                    span:    i.span,
+                });
+                continue;
+            }
+            let Some(info) = self.traits.get(&trait_def).cloned() else { continue; };
+            let type_name = self.ctx.symbols.lookup(target_def).name.clone();
+
+            if self.trait_impls.contains_key(&(trait_def, target_def)) {
+                self.errors.add_type_error(TypeError::OverlappingImpl {
+                    trait_name: info.name.clone(), type_name, span: i.span,
+                });
+                continue;
+            }
+            self.trait_impls.insert((trait_def, target_def), i.span);
+            let self_ty = self.ctx.types.insert(SemaType::Named { def: target_def, args: Vec::new() });
+
+            for tm in &info.methods {
+                let impl_m = i.methods.iter().find(|m| m.name == tm.name.as_str());
+                let expected = self.instantiate_trait_shape(&tm.shape, self_ty);
+                match impl_m {
+                    Some(m) => {
+                        let fn_ty = self.ctx.resolutions.get(m.span)
+                            .and_then(|d| self.ctx.def_type(d));
+                        let found = fn_ty.and_then(|t|
+                            self.method_shape_of_fn_type(has_self_param(m.params), t));
+                        if let Some(found) = found {
+                            if !self.shapes_match(&expected, &found) {
+                                self.errors.add_type_error(TypeError::TraitMethodSignatureMismatch {
+                                    trait_name: info.name.clone(),
+                                    method:     tm.name.clone(),
+                                    expected:   self.shape_text(&expected),
+                                    found:      self.shape_text(&found),
+                                    span:       m.span,
+                                });
+                            }
+                        }
+                        self.add_trait_method(target_def, trait_def, &tm.name, expected);
+                    }
+                    None if tm.has_default => {
+                        self.add_trait_method(target_def, trait_def, &tm.name, expected);
+                    }
+                    None => {
+                        self.errors.add_type_error(TypeError::TraitMethodMissing {
+                            trait_name: info.name.clone(),
+                            method:     tm.name.clone(),
+                            type_name:  type_name.clone(),
+                            span:       i.span,
+                        });
+                    }
+                }
+            }
+            for m in i.methods {
+                if !info.methods.iter().any(|tm| tm.name == m.name) {
+                    self.errors.add_type_error(TypeError::UnknownTraitMethod {
+                        trait_name: info.name.clone(),
+                        method:     m.name.to_string(),
+                        span:       m.span,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Unify a call's arguments with a method's parameter types and report
+    /// a wrong argument count. `args` are already inferred.
+    fn check_method_args<'ast>(&mut self, params: &[TypeId], args: &[Arg<'ast>], call_span: Span) {
+        if params.len() != args.len() {
+            self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                expected: params.len(),
+                found:    args.len(),
+                span:     call_span,
+            });
+        }
+        for (arg, param_ty) in args.iter().zip(params.iter()) {
+            let arg_span = match &arg.kind {
+                ArgKind::Positional(e)       => e.span,
+                ArgKind::Named { value, .. } => value.span,
+            };
+            if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
+                self.unify(*param_ty, arg_ty, arg_span);
+            }
+        }
+    }
+
+    /// A type parameter as a diagnostic names it: its written name (`T`),
+    /// or `Self` for a trait's abstract `Self`.
+    fn param_display_name(&self, ty: TypeId) -> String {
+        if self.self_type == Some(ty) { return "Self".to_string(); }
+        self.current_generic_params.iter()
+            .find(|(_, id)| **id == ty)
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| self.display_type(ty))
+    }
+
+    /// `x.method(..)` where `x` has a type-parameter type bounded by
+    /// traits (inside a trait default body, the abstract `Self` bounded by
+    /// the trait itself): the method must come from one of the bounds.
+    fn call_through_bounds<'ast>(
+        &mut self,
+        receiver_ty: TypeId,
+        bounds:      &[DefId],
+        method:      &str,
+        args:        &[Arg<'ast>],
+        callee_span: Span,
+        call_span:   Span,
+    ) -> TypeId {
+        let mut found: Vec<(String, MethodShape)> = Vec::new();
+        for b in bounds {
+            if let Some(info) = self.traits.get(b) {
+                if let Some(m) = info.methods.iter().find(|m| m.name == method && m.shape.has_self) {
+                    found.push((info.name.clone(), m.shape.clone()));
+                }
+            }
+        }
+        match found.len() {
+            0 => {
+                self.errors.add_type_error(TypeError::NoSuchMethod {
+                    method:  method.to_string(),
+                    on_type: self.param_display_name(receiver_ty),
+                    span:    callee_span,
+                });
+                self.unknown()
+            }
+            1 => {
+                let shape = self.instantiate_trait_shape(&found[0].1, receiver_ty);
+                self.check_method_args(&shape.params, args, call_span);
+                // The interpreter must run THIS trait's method for this call,
+                // not an inherent method the concrete type may also have.
+                self.ctx.trait_call_sites.insert(callee_span, found[0].0.clone());
+                shape.return_type
+            }
+            _ => {
+                self.errors.add_type_error(TypeError::AmbiguousTraitMethod {
+                    method:    method.to_string(),
+                    traits:    found.into_iter().map(|(n, _)| n).collect(),
+                    type_name: self.param_display_name(receiver_ty),
+                    span:      callee_span,
+                });
+                self.unknown()
+            }
+        }
+    }
+
+    /// `Trait.method(value, args..)`: the explicit form, which names the
+    /// trait and so never has to choose between two traits supplying the
+    /// same method. The first argument is the receiver and its type must
+    /// implement the trait.
+    fn infer_qualified_trait_call<'ast>(
+        &mut self,
+        trait_def: DefId,
+        method:    &str,
+        args:      &[Arg<'ast>],
+        span:      Span,
+    ) -> TypeId {
+        let Some(info) = self.traits.get(&trait_def).cloned() else { return self.unknown(); };
+        let Some(tm) = info.methods.iter().find(|m| m.name == method && m.shape.has_self) else {
+            self.errors.add_type_error(TypeError::NoSuchMethod {
+                method:  method.to_string(),
+                on_type: format!("trait {}", info.name),
+                span,
+            });
+            return self.unknown();
+        };
+        let Some(first) = args.first() else {
+            self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                expected: tm.shape.params.len() + 1,
+                found:    0,
+                span,
+            });
+            return self.unknown();
+        };
+        let first_span = match &first.kind {
+            ArgKind::Positional(e)       => e.span,
+            ArgKind::Named { value, .. } => value.span,
+        };
+        let Some(recv_ty) = self.ctx.expr_type(first_span).map(|t| self.apply(t)) else {
+            return self.unknown();
+        };
+        if !self.type_implements(recv_ty, trait_def) {
+            self.errors.add_type_error(TypeError::UnsatisfiedBound {
+                type_name:  self.display_type(recv_ty),
+                trait_name: info.name.clone(),
+                span:       first_span,
+            });
+            return self.unknown();
+        }
+        let shape = self.instantiate_trait_shape(&tm.shape.clone(), recv_ty);
+        self.check_method_args(&shape.params, &args[1..], span);
+        shape.return_type
+    }
+
+    /// Whether `ty` implements `trait_def`: a user struct or enum with an
+    /// `impl`, or a type parameter whose bounds include the trait. Anything
+    /// unresolved or unknown counts as implementing it, so an earlier error
+    /// does not cascade into this one.
+    fn type_implements(&self, ty: TypeId, trait_def: DefId) -> bool {
+        if ty == TypeId::ERROR { return true; }
+        match self.ctx.types.get(ty) {
+            SemaType::Named { def, .. } => self.trait_impls.contains_key(&(trait_def, *def)),
+            SemaType::Param(_) => self.current_bounds.get(&ty)
+                .is_some_and(|bs| bs.contains(&trait_def)),
+            SemaType::Unknown | SemaType::Var(_) => true,
+            _ => false,
+        }
+    }
+
     /// Expand every `type` alias to a fixpoint. Aliases may refer to each
     /// other in any declaration order, so each round converts every alias
     /// not yet done; one that mentions a not-yet-expanded alias is skipped
@@ -1172,6 +1673,7 @@ impl<'a> InferCtx<'a> {
     }
 
     fn collect_signatures<'ast>(&mut self, program: &Program<'ast>) {
+        self.register_generic_arities(program);
         self.collect_alias_sigs(program);
         for item in program.items {
             match item {
@@ -1199,30 +1701,23 @@ impl<'a> InferCtx<'a> {
                 // `extend`/`impl` block appears before or after the
                 // `struct` it targets in the source file.
                 Item::Impl(i)     => {
+                    let prev = self.self_type;
+                    self.self_type = self.self_type_for_target(i.target_type);
                     for m in i.methods { self.collect_method_sig(m); }
+                    self.self_type = prev;
                 }
                 Item::Extend(x) => {
+                    let prev = self.self_type;
+                    self.self_type = self.self_type_for_target(x.target_type);
                     for m in x.methods { self.collect_method_sig(m); }
+                    self.self_type = prev;
                 }
-                Item::Trait(t) => {
-                    // FIX: split DefaultMethod (MethodDecl) and MethodSig
-                    // into separate arms — they are different types.
-                    for it in t.items {
-                        match it {
-                            TraitItem::DefaultMethod(m) => {
-                                self.collect_method_sig(m);
-                            }
-                            TraitItem::MethodSig(sig) => {
-                                self.collect_trait_method_sig(sig);
-                            }
-                            TraitItem::AssociatedType { .. } => {}
-                        }
-                    }
-                }
+                Item::Trait(t) => self.collect_trait_info(t),
                 Item::TypeAlias(_) => {} // expanded up front by `collect_alias_sigs`
             }
         }
         self.register_extend_impl_methods(program);
+        self.register_trait_impls(program);
     }
 
     /// The root name of a `target_type` written as a plain (possibly
@@ -1239,7 +1734,9 @@ impl<'a> InferCtx<'a> {
         match ty.kind {
             TypeKind::Named { path, .. } => {
                 let root = path.first().copied()?;
-                self.ctx.top_level_def(root)
+                // An alias target (`extend P { .. }` with `type P = Point`)
+                // is the aliased struct or enum.
+                self.type_def_of(root)
             }
             _ => None,
         }
@@ -1360,26 +1857,6 @@ impl<'a> InferCtx<'a> {
         fn_ty
     }
 
-    /// Collect type for a required method signature (no body) in a trait.
-    fn collect_trait_method_sig<'ast>(&mut self, sig: &MethodSig<'ast>) {
-        let param_tys: Vec<TypeId> = sig.params.iter()
-            .filter_map(|p| match p.kind {
-                ParamKind::Named { ty, .. } | ParamKind::Discard { ty } => ty.map(|t| self.ast_type_to_sema(t)),
-                _ => None,
-            })
-            .collect();
-        let (ret_ty, is_fallible) = self.return_type_to_sema(sig.return_type.as_ref());
-        let fn_ty = self.ctx.types.insert(SemaType::Function {
-            params: param_tys,
-            return_type: ret_ty,
-            is_fallible,
-            generic_arity: sig.generic_params.len(),
-        });
-        if let Some(def_id) = self.ctx.resolutions.get(sig.span) {
-            self.ctx.set_def_type(def_id, fn_ty);
-        }
-    }
-
     fn collect_struct_sig<'ast>(&mut self, s: &StructDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(s.name) else { return; };
         self.check_derive_attrs(s.attributes, false);
@@ -1399,6 +1876,7 @@ impl<'a> InferCtx<'a> {
             .collect();
         let struct_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
         self.ctx.set_def_type(def_id, struct_ty);
+        let prev_self_type = self.self_type.replace(struct_ty);
 
         let mut fields:  Vec<(String, TypeId)>      = Vec::with_capacity(s.members.len());
         let mut methods: Vec<(String, MethodShape)> = Vec::new();
@@ -1433,6 +1911,7 @@ impl<'a> InferCtx<'a> {
 
         self.struct_fields.insert(def_id, fields);
         self.struct_methods.insert(def_id, methods);
+        self.self_type = prev_self_type;
         self.pop_generic_scope(prev_generics);
     }
 
@@ -1939,13 +2418,7 @@ impl<'a> InferCtx<'a> {
                 Item::Static(s)   => self.infer_static_body(s),
                 Item::Impl(i) => self.infer_extend_impl_bodies(i.target_type, i.methods),
                 Item::Extend(x) => self.infer_extend_impl_bodies(x.target_type, x.methods),
-                Item::Trait(t) => {
-                    for it in t.items {
-                        if let TraitItem::DefaultMethod(m) = it {
-                            self.infer_method_body(m);
-                        }
-                    }
-                }
+                Item::Trait(t) => self.infer_trait_default_bodies(t),
                 Item::Enum(_) | Item::TypeAlias(_) => {}
             }
         }
@@ -2031,11 +2504,13 @@ impl<'a> InferCtx<'a> {
             .collect();
         let self_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
         let prev_self = self.current_struct_type.replace(self_ty);
+        let prev_self_type = self.self_type.replace(self_ty);
         for member in s.members {
             if let StructMember::Method(m) = member {
                 self.infer_method_body(m);
             }
         }
+        self.self_type = prev_self_type;
         self.current_struct_type = prev_self;
         self.pop_generic_scope(prev_generics);
     }
@@ -2071,9 +2546,11 @@ impl<'a> InferCtx<'a> {
             .collect();
         let self_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
         let prev_self = self.current_struct_type.replace(self_ty);
+        let prev_self_type = self.self_type.replace(self_ty);
         for m in methods {
             self.infer_method_body(m);
         }
+        self.self_type = prev_self_type;
         self.current_struct_type = prev_self;
     }
 
@@ -2660,6 +3137,17 @@ impl<'a> InferCtx<'a> {
                     }
                 }
 
+                // `Trait.method(value, ..)`: the explicit trait-qualified call.
+                if let ExprKind::Field { target, field } = callee.kind {
+                    if let ExprKind::Ident(ns) = target.kind {
+                        if let Some(def_id) = self.ctx.top_level_def(ns) {
+                            if matches!(self.ctx.symbols.lookup(def_id).kind, DefKind::Trait) {
+                                return self.infer_qualified_trait_call(def_id, field, args, expr.span);
+                            }
+                        }
+                    }
+                }
+
                 // ENUM_RULES.md — tuple-payload variant construction,
                 // `Result.Ok(5)`. Separate check from the constructor
                 // block above (that one's gated on `field == "new"`;
@@ -2905,6 +3393,15 @@ impl<'a> InferCtx<'a> {
                         // (`interpreter/eval/expr.rs`) already peels all
                         // three unconditionally, for every receiver, not
                         // just the six builtin kinds.
+                        // The receiver is a type parameter with trait bounds
+                        // (inside a trait default body: the abstract `Self`).
+                        if matches!(self.ctx.types.get(receiver_ty), SemaType::Param(_)) {
+                            if let Some(bounds) = self.current_bounds.get(&receiver_ty).cloned() {
+                                return self.call_through_bounds(
+                                    receiver_ty, &bounds, field, args, callee.span, expr.span,
+                                );
+                            }
+                        }
                         let struct_recv_ty = match self.ctx.types.get(receiver_ty) {
                             SemaType::Unique(inner)
                             | SemaType::Shared(inner)
@@ -2933,6 +3430,23 @@ impl<'a> InferCtx<'a> {
                                 // function type, not a method. A real method
                                 // of the same name wins (found first), the
                                 // interpreter checks in the same order.
+                                // Two traits supply this name and no inherent
+                                // method does: the caller has to say which.
+                                if self.ambiguous_methods.contains(&(def, field.to_string())) {
+                                    let traits: Vec<String> = self.method_origins
+                                        .get(&(def, field.to_string()))
+                                        .map(|ts| ts.iter()
+                                            .filter_map(|t| self.traits.get(t).map(|i| i.name.clone()))
+                                            .collect())
+                                        .unwrap_or_default();
+                                    self.errors.add_type_error(TypeError::AmbiguousTraitMethod {
+                                        method:    field.to_string(),
+                                        traits,
+                                        type_name: self.display_type(struct_recv_ty),
+                                        span:      callee.span,
+                                    });
+                                    return self.unknown();
+                                }
                                 let found_method = methods.iter()
                                     .find(|(n, m)| n == field && m.has_self).cloned();
                                 let calls_a_field = found_method.is_none()

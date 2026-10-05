@@ -94,11 +94,13 @@ fn main() {
     section("SEMA");
     let sema_result = ubel_stratum::sema::analyse(&program, &arena, source.clone());
     let mut int_literal_types = std::collections::HashMap::new();
+    let mut trait_call_sites  = std::collections::HashMap::new();
     let sema_ok = match &sema_result {
         Ok(ctx) => {
             println!("status: OK");
             println!("{:#?}", ctx);
             int_literal_types = ctx.int_literal_types.clone();
+            trait_call_sites  = ctx.trait_call_sites.clone();
             true
         }
         Err(_) => false,
@@ -161,6 +163,7 @@ fn main() {
     println!("--- program stdout ---");
     let mut interp = ubel_stratum::interpreter::Interpreter::new(&arena);
     interp.set_int_literal_types(int_literal_types);
+    interp.set_trait_call_sites(trait_call_sites);
     let run_result = interp.run_program(&program);
     println!("--- end program stdout ---");
 

@@ -1,0 +1,29 @@
+// tests/fixtures/err_trait_signature_mismatch_combined.ubl
+// Every part of a signature is compared: the return type, a parameter
+// type, the parameter count, and whether the method takes `self` at all.
+// An unrelated impl method that does match is not reported. Four
+// mismatches, four TYPE-125 diagnostics, one per method.
+// Expected: sema FAIL (TraitMethodSignatureMismatch, TYPE-125, four times).
+
+trait Api {
+    fn a(self) int
+    fn b(self, n: int) int
+    fn c(self, n: int) int
+    fn d(self) int
+    fn ok(self) int
+}
+
+struct Impl {
+    v: int,
+}
+
+impl Api for Impl {
+    fn a(self) string { return "x" }
+    fn b(self, n: string) int { return 1 }
+    fn c(self) int { return 1 }
+    fn d() int { return 1 }
+    fn ok(self) int { return 1 }
+}
+
+fn main() void {
+}

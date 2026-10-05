@@ -105,9 +105,14 @@ verified safe.
 
 ## Active work
 
-- The trait system: `trait` declarations and `impl Trait for Type`
-  blocks parse, but trait method dispatch, `dyn Trait`, and bound
-  enforcement are not built and still need a design pass
+- The trait system is being built in slices (design in `docs/TRAITS_DESIGN.md`).
+  Built: `impl Trait for Type` works and is checked (missing and extra methods,
+  signature mismatches, overlap), default methods are inherited or overridden,
+  `Self` resolves, an inherent method beats a trait method, two traits
+  supplying one name are told apart with `Trait.method(value)`, and a call
+  made through a trait runs the trait's method. Next: bounds on generic
+  parameters, then built-in traits, supertraits and generic traits, tiers on
+  trait methods, language-item traits, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

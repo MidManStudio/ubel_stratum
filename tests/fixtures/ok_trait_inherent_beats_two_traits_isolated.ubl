@@ -1,0 +1,33 @@
+// tests/fixtures/ok_trait_inherent_beats_two_traits_isolated.ubl
+// Two traits supply `go` to one type, which would make `t.go()` ambiguous,
+// but the type ALSO has an inherent `go`. The inherent method wins and
+// there is no ambiguity, however many traits supply the name. Each trait's
+// method is still reachable through the trait.
+// Expected: sema OK, interpret OK.
+
+trait A {
+    fn go(self) int
+}
+
+trait B {
+    fn go(self) int
+}
+
+struct T {
+    v: int,
+}
+
+extend T {
+    fn go(self) int { return 100 }
+}
+
+impl A for T { fn go(self) int { return 1 } }
+impl B for T { fn go(self) int { return 2 } }
+
+fn main() void {
+    let t = T { v = 0 }
+
+    assert(t.go() == 100, "the inherent method wins over two traits")
+    assert(A.go(t) == 1, "the first trait, named")
+    assert(B.go(t) == 2, "the second trait, named")
+}
