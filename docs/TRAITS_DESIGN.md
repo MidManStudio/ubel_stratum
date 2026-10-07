@@ -35,7 +35,9 @@
 |---|---|---|
 | **S1a** | **Built** | Trait impls registered in sema and interpreter dispatch; conformance checks (missing method, method not in the trait, signature mismatch with `Self`); default methods inherited or overridden; `Self` in signatures and default bodies; overlap; inherent-first; ambiguity and the qualified call `Trait.method(value)`; calls made through a trait run the trait's method; every trait feature not built yet reported as `TYPE-129` instead of ignored. |
 | **S1b** | **Built** | Bounds: declared bounds validated, bound obligations checked wherever a bounded parameter is instantiated, method calls on a type parameter resolved through its bounds, a method call on an unbounded type parameter an error (`TYPE-130`). |
-| S2 to S6 | Planned | As in section 4. |
+| **S2a** | Designed, not built | Prelude traits for the six derives with real signatures, the `Ordering` enum, built-in impls, `@derive` as an impl generator, bounds and operator checks on type parameters, `Hash` and `Eq` on `Dictionary` keys. See "What S2 settled" below. |
+| **S2b** | Designed, not built | Runtime dispatch: `==`, `!=`, ordering operators, list `contains`, dictionary keys, Linqerizer ordering and `clone` call hand-written impls. |
+| S3 to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -93,6 +95,62 @@
   a violation, never reject a program that is fine.
 - **Still open:** `where` clauses and bounds with arguments (later); bounds
   naming built-in traits and impls for built-in types need S2.
+
+### What S2 settled (decided 2026-10-07)
+
+Decisions made for S2, in addition to D5 B (lift the six derives into prelude
+traits):
+
+- **Real methods, with dispatch to hand-written impls.** The six traits carry
+  methods, and `==`, `<`, hashing and `clone` call a hand-written impl when one
+  exists. This is the larger runtime change, chosen over marker traits.
+- **Floats.** `float` and `double` implement `PartialEq`, `PartialOrd` and
+  `Clone` only, not `Eq`, `Hash` or `Ord`, because of NaN.
+- **Enforcement on existing code.** `Dictionary` keys must implement `Hash` and
+  `Eq`, and `==`, `!=` and the ordering operators on a value of type-parameter
+  type require `PartialEq` or `PartialOrd` in its bounds.
+- **Method surface.**
+
+| Trait | Methods | Notes |
+|---|---|---|
+| `PartialEq` | `eq(self, other: Self) bool` | Default `ne`. |
+| `Eq` | none | Supertrait `PartialEq`. |
+| `PartialOrd` | `partial_cmp(self, other: Self) Ordering?` | Defaults `lt`, `le`, `gt`, `ge`. Supertrait `PartialEq`. |
+| `Ord` | `cmp(self, other: Self) Ordering` | Supertraits `PartialOrd` and `Eq`. |
+| `Hash` | `hash(self, state: Hasher)` | Rust style: the hasher is a parameter. |
+| `Clone` | `clone(self) Self` | |
+
+  `Ordering` is a prelude enum `{ Less, Equal, Greater }`. `Hasher` is a
+  built-in type. Its surface is proposed as `Hasher.new()` and
+  `state.finish() u64`, with each primitive's `hash` writing into the state;
+  it is confirmed when S2a starts.
+- **Two deliveries.** S2a is the static side and S2b the runtime dispatch. Until
+  S2b lands, a hand-written `impl PartialEq for X` (and the other five) is
+  `TYPE-129`, so an impl that `==` would ignore is never accepted silently.
+- **Defaults taken without objection.** `@derive(X)` registers the impl and the
+  derive prerequisite chain becomes the supertraits; lists, tuples and
+  optionals satisfy a trait when their elements do, by a built-in rule rather
+  than impl blocks; enums keep automatic `PartialEq`, `Eq` and `Hash` and gain
+  no `Ord` or `Clone` in S2; a user trait named like a prelude trait shadows it;
+  `==` on a concrete struct without `PartialEq` stays reference identity.
+
+What reading the code established before this was decided:
+
+- `Value::equals` and `Value::partial_cmp` take no interpreter and are called
+  from more than a dozen places (the binary operators, list, queue, stack and
+  inline-list `contains`, the dictionary methods, indexing, the Linqerizer
+  grouping and ordering). S2b has to give each of them a route back into the
+  interpreter.
+- `Dict` is `Vec<(Value, Value)>` searched by `equals`; hashing has no consumer
+  yet. A struct key without `PartialEq` is found by reference identity, so a
+  lookup with an equal but distinct key returns `null`.
+- Sema's maps are keyed by `Span` (four `usize` fields, `Hash` and `Eq`), so
+  prelude declarations cannot be parsed from a separate text at ordinary spans.
+  The two ways to bring the prelude traits in are a prelude written in Ubel whose
+  token spans are shifted into a reserved range, and programmatic registration
+  with natively implemented methods; diagnostics are rendered by indexing the
+  source's lines, so a label that points into the prelude would need handling in
+  the renderer. The mechanism is chosen when S2a is built and recorded here.
 
 ### D7: what has to be specified before S4
 
