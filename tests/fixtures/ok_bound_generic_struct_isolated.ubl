@@ -1,0 +1,50 @@
+// tests/fixtures/ok_bound_generic_struct_isolated.ubl
+// A generic struct and a generic enum with a bound on their parameter. A
+// method inside the struct and an extend block on it both call through
+// the bound. A variant left unconstrained is not an error.
+// Expected: sema OK, interpret OK.
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+struct Circle {
+    r: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int { return self.s * self.s }
+}
+
+impl Shape for Circle {
+    fn area(self) int { return 3 * self.r * self.r }
+}
+
+struct Holder<T: Shape> {
+    v: T,
+    fn get_area(self) int { return self.v.area() }
+}
+
+extend Holder {
+    fn twice(self) int { return self.v.area() * 2 }
+}
+
+enum Slot<T: Shape> {
+    Full(T),
+    Empty,
+}
+
+fn main() void {
+    let a = Holder { v = Sq { s = 3 } }
+    let b = Holder { v = Circle { r = 2 } }
+    println(a.get_area())
+    println(b.twice())
+    let s = Slot.Full(Sq { s = 5 })
+    let e: Slot<Sq> = Slot.Empty
+    let free = Slot.Empty
+    println(1)
+}

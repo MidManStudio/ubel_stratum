@@ -1,0 +1,42 @@
+// tests/fixtures/ok_bound_call_isolated.ubl
+// A generic function with a trait bound calls the trait's method on its
+// argument. Each argument type runs its own impl, and a call made through
+// the bound runs the TRAIT's method even when the type also has an
+// inherent method of the same name (the inherent one still wins when the
+// method is called directly on the value).
+// Expected: sema OK, interpret OK.
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+struct Circle {
+    r: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int { return self.s * self.s }
+}
+
+impl Shape for Circle {
+    fn area(self) int { return 3 * self.r * self.r }
+}
+
+extend Sq {
+    fn area(self) int { return 1 }
+}
+
+fn total<T: Shape>(x: T) int {
+    return x.area()
+}
+
+fn main() void {
+    let q = Sq { s = 3 }
+    println(total(q))
+    println(q.area())
+    println(total(Circle { r = 2 }))
+}

@@ -1,0 +1,70 @@
+// tests/fixtures/ok_bound_combined.ubl
+// Bounds together with the features they have to live beside: a `static`
+// global updated from a trait method, an enum that implements the bound
+// trait, a bounded struct holding the enum, a sized-integer return typed
+// by the trait, a MID-tier bounded function reached with an arena value,
+// and a bounded function held in a variable and called through it.
+// Expected: sema OK, interpret OK.
+
+trait Level {
+    fn power(self) u8
+}
+
+static USES: int = 0
+
+enum Mode {
+    Low,
+    High,
+}
+
+struct Unit {
+    base: u8,
+}
+
+impl Level for Mode {
+    fn power(self) u8 {
+        USES += 1
+        match self {
+            Mode.Low => { return 10 }
+            Mode.High => { return 200 }
+        }
+    }
+}
+
+impl Level for Unit {
+    fn power(self) u8 {
+        USES += 1
+        return self.base
+    }
+}
+
+struct Slot<T: Level> {
+    item: T,
+    fn boost(self) u8 { return self.item.power() }
+}
+
+fn read<T: Level>(x: T) u8 {
+    return x.power()
+}
+
+@tier(mid)
+fn read_mid<T: Level>(x: T) u8 {
+    return x.power()
+}
+
+@tier(mid)
+fn in_arena() u8 {
+    with arena(64KB) {
+        let u = Unit { base = 7 }
+        return read_mid(u)
+    }
+}
+
+fn main() void {
+    println(read(Mode.High))
+    println(Slot { item = Unit { base = 3 } }.boost())
+    println(in_arena())
+    let f = read
+    println(f(Mode.Low))
+    println(USES)
+}

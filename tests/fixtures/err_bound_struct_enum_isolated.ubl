@@ -1,0 +1,36 @@
+// tests/fixtures/err_bound_struct_enum_isolated.ubl
+// A bounded struct or enum used with a type that does not implement the
+// bound: a struct literal, a type annotation in a signature, an enum
+// variant payload, and a field of a generic struct whose own parameter
+// carries no bound.
+// Expected: sema FAIL (UnsatisfiedBound, TYPE-126, four times).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Plain {
+    p: int,
+}
+
+struct Holder<T: Shape> {
+    v: T,
+}
+
+enum Slot<T: Shape> {
+    Full(T),
+    Empty,
+}
+
+struct Wrap<T> {
+    h: Holder<T>,
+}
+
+fn show(h: Holder<Plain>) void {
+    println(1)
+}
+
+fn main() void {
+    let a = Holder { v = Plain { p = 1 } }
+    let b = Slot.Full(Plain { p = 2 })
+}

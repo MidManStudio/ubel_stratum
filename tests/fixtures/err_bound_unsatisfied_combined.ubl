@@ -1,0 +1,50 @@
+// tests/fixtures/err_bound_unsatisfied_combined.ubl
+// Unsatisfied bounds reached in the ways real code reaches them: an
+// unbounded type parameter passed on to a bounded function, an argument
+// inside a list, a bounded function held in a variable and called
+// through it, and a bounded struct built from a bounded function's
+// parameter that lacks the bound. The calls that are fine in between
+// stay fine.
+// Expected: sema FAIL (UnsatisfiedBound, TYPE-126, four times).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Sq {
+    s: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int { return self.s * self.s }
+}
+
+struct Holder<T: Shape> {
+    v: T,
+}
+
+fn total<T: Shape>(x: T) int {
+    return x.area()
+}
+
+fn count<T: Shape>(xs: List<T>) int {
+    return 0
+}
+
+fn relay<T>(x: T) int {
+    return total(x)
+}
+
+fn rebuild<T>(x: T) int {
+    let h = Holder { v = x }
+    return 0
+}
+
+fn main() void {
+    println(total(Sq { s = 2 }))
+    println(count([Sq { s = 1 }]))
+    println(count([1, 2]))
+    let f = total
+    println(f(Sq { s = 3 }))
+    println(f(7))
+}

@@ -317,6 +317,39 @@ struct TraitInfo {
     methods: Vec<TraitMethodInfo>,
 }
 
+/// A requirement that `ty` implement `trait_def`, raised where a bounded
+/// generic parameter is instantiated (a call to a generic function, a
+/// struct or enum used with arguments). Checked once the arguments are
+/// known: see `require_bound` and `check_obligations` (slice S1b).
+struct Obligation {
+    ty:        TypeId,
+    trait_def: DefId,
+    span:      Span,
+}
+
+/// The generic scope `push_generic_scope` replaced, handed back to
+/// `pop_generic_scope`: the parameter names and the trait bounds that
+/// were in force before.
+struct GenericScope {
+    names:  HashMap<String, TypeId>,
+    bounds: HashMap<TypeId, Vec<DefId>>,
+}
+
+/// The bounds (and display names) of a declaration's type parameters,
+/// installed for a body that does not make those names resolvable as
+/// types (a generic function body, an `extend` body on a generic struct)
+/// and handed back to `restore_def_scope`.
+struct BoundsScope {
+    bounds: HashMap<TypeId, Vec<DefId>>,
+    names:  HashMap<TypeId, String>,
+}
+
+/// Trait names that exist only as `@derive` names until the prelude
+/// traits arrive (slice S2). A bound written with one is reported as
+/// not built yet instead of being ignored.
+const BUILTIN_TRAIT_NAMES: [&str; 6] =
+    ["PartialEq", "Eq", "Hash", "Ord", "PartialOrd", "Clone"];
+
 /// What a checked pattern definitively covers, for exhaustiveness.
 enum PatternCoverage {
     /// Matches unconditionally regardless of the scrutinee's shape —
@@ -396,6 +429,30 @@ struct InferCtx<'a> {
     /// `TypeId`. Inside a trait's default method the abstract `Self` is
     /// bounded by the trait itself, so `self.other()` resolves through it.
     current_bounds:   HashMap<TypeId, Vec<DefId>>,
+    /// The declared bounds of each generic function, struct and enum, by
+    /// the declaration's definition and then the parameter's position.
+    /// Only declarations that have at least one bound are present.
+    generic_bounds:   HashMap<DefId, Vec<Vec<DefId>>>,
+    /// The written parameter names of each generic function, struct and
+    /// enum, by position, so a diagnostic in a body that cannot see the
+    /// declaration's own scope still says `T` rather than a type id.
+    generic_param_names: HashMap<DefId, Vec<String>>,
+    /// The function type of each bounded generic function, back to its
+    /// definition. Every function gets a type of its own, so a call
+    /// through `let f = total` still finds `total`'s bounds.
+    fn_type_defs:     HashMap<TypeId, DefId>,
+    /// Display names for the type parameters of the body being inferred
+    /// (installed by `install_def_scope`).
+    param_names:      HashMap<TypeId, String>,
+    /// Bound requirements not decided yet (the type is still an inference
+    /// variable, or trait impls are not registered yet).
+    pending_obligations: Vec<Obligation>,
+    /// Obligations already reported, so one mistake reached twice (a call
+    /// inferred more than once) is one diagnostic.
+    reported_obligations: HashSet<(Span, DefId)>,
+    /// Set once `register_trait_impls` has run: before that a named type
+    /// cannot be said to lack an impl.
+    impls_registered: bool,
     /// `self`'s type while inside a struct's own method bodies — the
     /// abstract `Named { def, args: [Param(0), Param(1), ...] }` for a
     /// generic struct, or `Named { def, args: [] }` for a non-generic
@@ -484,6 +541,13 @@ impl<'a> InferCtx<'a> {
             trait_entries:     HashSet::new(),
             self_type:         None,
             current_bounds:    HashMap::new(),
+            generic_bounds:    HashMap::new(),
+            generic_param_names: HashMap::new(),
+            fn_type_defs:      HashMap::new(),
+            param_names:       HashMap::new(),
+            pending_obligations: Vec::new(),
+            reported_obligations: HashSet::new(),
+            impls_registered:  false,
             current_struct_type:    None,
             callee_field_pending:   false,
             struct_fields:    HashMap::new(),
@@ -505,16 +569,31 @@ impl<'a> InferCtx<'a> {
     /// one declaration (e.g. `T` in both `Some(T)` and a sibling variant)
     /// resolve to the identical `TypeId` for free, since the map is only
     /// built once per `push`.
-    fn push_generic_scope(&mut self, params: &[GenericParam]) -> HashMap<String, TypeId> {
+    ///
+    /// The scope also carries each parameter's declared trait bounds
+    /// (`current_bounds`), so a method call on a value of that parameter's
+    /// type resolves through them. Bound names are resolved silently here;
+    /// `register_generic_bounds` reports the invalid ones once per
+    /// declaration. A caller that needs an extra bound in scope (a trait's
+    /// abstract `Self`) adds it after the push.
+    fn push_generic_scope(&mut self, params: &[GenericParam]) -> GenericScope {
         let mut new_map = HashMap::with_capacity(params.len());
+        let mut new_bounds: HashMap<TypeId, Vec<DefId>> = HashMap::new();
         for (i, gp) in params.iter().enumerate() {
-            new_map.insert(gp.name.to_string(), self.ctx.types.intern(SemaType::Param(i)));
+            let ty = self.ctx.types.intern(SemaType::Param(i));
+            new_map.insert(gp.name.to_string(), ty);
+            let ids = self.resolve_bound_ids(gp.bounds);
+            if !ids.is_empty() { new_bounds.insert(ty, ids); }
         }
-        std::mem::replace(&mut self.current_generic_params, new_map)
+        GenericScope {
+            names:  std::mem::replace(&mut self.current_generic_params, new_map),
+            bounds: std::mem::replace(&mut self.current_bounds, new_bounds),
+        }
     }
 
-    fn pop_generic_scope(&mut self, prev: HashMap<String, TypeId>) {
-        self.current_generic_params = prev;
+    fn pop_generic_scope(&mut self, prev: GenericScope) {
+        self.current_generic_params = prev.names;
+        self.current_bounds = prev.bounds;
     }
 
     /// Build a fresh instantiation of a struct/enum def: `Named { def,
@@ -529,12 +608,17 @@ impl<'a> InferCtx<'a> {
     /// does the rest, the same way this file's existing `fresh_var()`
     /// already resolves an untyped `[]` list literal's element type from
     /// context (GENERICS_RULES.md).
-    fn instantiate(&mut self, def_id: DefId) -> TypeId {
+    ///
+    /// `span` is where the instantiation happens: each declared bound on
+    /// the struct or enum's parameters becomes an obligation there (see
+    /// `require_def_bounds`).
+    fn instantiate(&mut self, def_id: DefId, span: Span) -> TypeId {
         let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
         if arity == 0 {
             return self.ctx.def_type(def_id).unwrap_or_else(|| self.unknown());
         }
         let args: Vec<TypeId> = (0..arity).map(|_| self.fresh_var()).collect();
+        self.require_def_bounds(def_id, &args, span);
         self.ctx.types.insert(SemaType::Named { def: def_id, args })
     }
 
@@ -1026,6 +1110,7 @@ impl<'a> InferCtx<'a> {
                                 });
                             }
                         }
+                        self.require_def_bounds(def_id, &arg_ids, ty.span);
                         self.ctx.types.insert(SemaType::Named {
                             def: def_id, args: arg_ids,
                         })
@@ -1165,6 +1250,254 @@ impl<'a> InferCtx<'a> {
         }))
     }
 
+    // ── Bounds (docs/TRAITS_DESIGN.md, slice S1b) ───────────────────
+    //
+    // `fn f<T: Shape>(x: T)`: the bound names are validated once per
+    // declaration (`register_generic_bounds`), a body sees them through
+    // `current_bounds`, and every place a bounded parameter is
+    // instantiated records an `Obligation` that the argument type
+    // implements the trait (`require_bound`, `check_obligations`).
+
+    /// The traits a list of bound names resolves to, silently: a name that
+    /// is not a trait is skipped here (it was reported at the declaration).
+    fn resolve_bound_ids(&self, names: &[&str]) -> Vec<DefId> {
+        let mut ids: Vec<DefId> = Vec::with_capacity(names.len());
+        for name in names {
+            if let Ok(id) = self.resolve_trait_name(name) {
+                if !ids.contains(&id) { ids.push(id); }
+            }
+        }
+        ids
+    }
+
+    /// Validate the bounds written on every generic function, struct and
+    /// enum and record them by declaration. Runs before any signature is
+    /// collected so a bounded parameter is known everywhere it is used.
+    fn register_generic_bounds<'ast>(&mut self, program: &Program<'ast>) {
+        for item in program.items {
+            match item {
+                Item::Function(f) => {
+                    if let Some(def) = self.ctx.top_level_def(f.name) {
+                        self.register_decl_bounds(def, f.generic_params);
+                    }
+                }
+                Item::Struct(s) => {
+                    if let Some(def) = self.ctx.top_level_def(s.name) {
+                        self.register_decl_bounds(def, s.generic_params);
+                    }
+                    for member in s.members {
+                        if let StructMember::Method(m) = member {
+                            self.reject_method_generic_bounds(m.generic_params);
+                        }
+                    }
+                }
+                Item::Impl(i) => {
+                    for m in i.methods { self.reject_method_generic_bounds(m.generic_params); }
+                }
+                Item::Extend(x) => {
+                    for m in x.methods { self.reject_method_generic_bounds(m.generic_params); }
+                }
+                Item::Trait(t) => {
+                    for it in t.items {
+                        match it {
+                            TraitItem::MethodSig(sig) => self.reject_method_generic_bounds(sig.generic_params),
+                            TraitItem::DefaultMethod(m) => self.reject_method_generic_bounds(m.generic_params),
+                            _ => {}
+                        }
+                    }
+                }
+                Item::Enum(e) => {
+                    if let Some(def) = self.ctx.top_level_def(e.name) {
+                        self.register_decl_bounds(def, e.generic_params);
+                    }
+                }
+                Item::TypeAlias(a) => {
+                    for gp in a.generic_params {
+                        if !gp.bounds.is_empty() {
+                            self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                                feature: "a bound on a type alias parameter",
+                                span:    gp.span,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A method's own generic parameters are not scoped in sema yet (their
+    /// types are unknown), so a bound written on one could not be enforced.
+    fn reject_method_generic_bounds(&mut self, params: &[GenericParam]) {
+        for gp in params {
+            if !gp.bounds.is_empty() {
+                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                    feature: "a bound on a method's own generic parameter",
+                    span:    gp.span,
+                });
+            }
+        }
+    }
+
+    /// Install the declared bounds (and names) of `def`'s parameters for a
+    /// body that does not push the declaration's generic scope. Pairs with
+    /// `restore_def_scope`.
+    fn install_def_scope(&mut self, def: Option<DefId>) -> BoundsScope {
+        let mut bounds: HashMap<TypeId, Vec<DefId>> = HashMap::new();
+        let mut names:  HashMap<TypeId, String>     = HashMap::new();
+        if let Some(def) = def {
+            let per_param = self.generic_bounds.get(&def).cloned().unwrap_or_default();
+            let written   = self.generic_param_names.get(&def).cloned().unwrap_or_default();
+            for (i, name) in written.iter().enumerate() {
+                let ty = self.ctx.types.intern(SemaType::Param(i));
+                names.insert(ty, name.clone());
+                if let Some(bs) = per_param.get(i) {
+                    if !bs.is_empty() { bounds.insert(ty, bs.clone()); }
+                }
+            }
+        }
+        BoundsScope {
+            bounds: std::mem::replace(&mut self.current_bounds, bounds),
+            names:  std::mem::replace(&mut self.param_names, names),
+        }
+    }
+
+    fn restore_def_scope(&mut self, prev: BoundsScope) {
+        self.current_bounds = prev.bounds;
+        self.param_names    = prev.names;
+    }
+
+    fn register_decl_bounds(&mut self, def: DefId, params: &[GenericParam]) {
+        if !params.is_empty() {
+            self.generic_param_names.insert(def, params.iter().map(|g| g.name.to_string()).collect());
+        }
+        let mut per_param: Vec<Vec<DefId>> = Vec::with_capacity(params.len());
+        for gp in params {
+            let mut ids: Vec<DefId> = Vec::with_capacity(gp.bounds.len());
+            for name in gp.bounds {
+                match self.resolve_trait_name(name) {
+                    Ok(id) => { if !ids.contains(&id) { ids.push(id); } }
+                    Err(None) if BUILTIN_TRAIT_NAMES.contains(name) => {
+                        self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                            feature: "a bound on a built-in trait",
+                            span:    gp.span,
+                        });
+                    }
+                    Err(found) => {
+                        self.errors.add_type_error(TypeError::NotATrait {
+                            name: name.to_string(), found, span: gp.span,
+                        });
+                    }
+                }
+            }
+            per_param.push(ids);
+        }
+        if per_param.iter().any(|b| !b.is_empty()) {
+            self.generic_bounds.insert(def, per_param);
+        }
+    }
+
+    /// `ty` with every reference and ownership wrapper removed, down to the
+    /// value's own type. A bound is about the value, not where it lives or
+    /// who owns it, so a struct reached through `ArenaRef` or `Unique`
+    /// satisfies the same bounds as the bare struct (this can only
+    /// under-report, never reject a program that is fine).
+    fn peel_wrappers(&mut self, ty: TypeId) -> TypeId {
+        let mut cur = self.apply(ty);
+        loop {
+            let inner = match self.ctx.types.get(cur) {
+                SemaType::GcRef(inner)
+                | SemaType::Unique(inner)
+                | SemaType::Shared(inner)
+                | SemaType::SyncShared(inner)
+                | SemaType::ArenaRef { inner, .. }
+                | SemaType::PoolRef { inner, .. }
+                | SemaType::OwnedRef { inner, .. }
+                | SemaType::Reference { inner, .. } => *inner,
+                _ => return cur,
+            };
+            cur = self.apply(inner);
+        }
+    }
+
+    /// Whether `ty` implements `trait_def`: `Some(true)` or `Some(false)`
+    /// once that can be told, `None` while it cannot (an unresolved
+    /// inference variable, or a named type before impls are registered).
+    /// An unknown or error type counts as implementing it, so an earlier
+    /// error does not cascade into this one.
+    fn bound_status(&mut self, ty: TypeId, trait_def: DefId) -> Option<bool> {
+        let ty = self.peel_wrappers(ty);
+        if ty == TypeId::ERROR { return Some(true); }
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Unknown => Some(true),
+            SemaType::Var(_)  => None,
+            SemaType::Param(_) => Some(self.current_bounds.get(&ty)
+                .is_some_and(|bs| bs.contains(&trait_def))),
+            SemaType::Named { def, .. } => {
+                if self.trait_impls.contains_key(&(trait_def, def)) { Some(true) }
+                else if self.impls_registered { Some(false) }
+                else { None }
+            }
+            // Built-in types have no impls until slice S2.
+            _ => Some(false),
+        }
+    }
+
+    /// Record that `ty` must implement `trait_def`. While signatures are
+    /// being collected the generic scope in force is the one the type was
+    /// written in, so what can be decided is decided now and the rest waits
+    /// for the impls to be registered. In a body everything waits for the
+    /// end of the body, where the diagnostics come out in source order.
+    fn require_bound(&mut self, ty: TypeId, trait_def: DefId, span: Span) {
+        if !self.impls_registered {
+            match self.bound_status(ty, trait_def) {
+                Some(true)  => return,
+                Some(false) => { self.report_unsatisfied(ty, trait_def, span); return; }
+                None        => {}
+            }
+        }
+        self.pending_obligations.push(Obligation { ty, trait_def, span });
+    }
+
+    fn report_unsatisfied(&mut self, ty: TypeId, trait_def: DefId, span: Span) {
+        if !self.reported_obligations.insert((span, trait_def)) { return; }
+        let ty = self.peel_wrappers(ty);
+        let trait_name = self.traits.get(&trait_def)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| self.ctx.symbols.lookup(trait_def).name.clone());
+        let is_param = matches!(self.ctx.types.get(ty), SemaType::Param(_));
+        let type_name = if is_param { self.param_display_name(ty) } else { self.display_type(ty) };
+        self.errors.add_type_error(TypeError::UnsatisfiedBound {
+            type_name, trait_name, span,
+        });
+    }
+
+    /// Settle every pending obligation. Called at the end of a body (after
+    /// literal types are settled, while the body's own bounds are still in
+    /// scope) and once more at the very end. One whose type is still
+    /// unresolved is dropped: nothing says it is wrong.
+    fn check_obligations(&mut self) {
+        let mut pending = std::mem::take(&mut self.pending_obligations);
+        pending.sort_by_key(|o| o.span.start);
+        for o in pending {
+            if self.bound_status(o.ty, o.trait_def) == Some(false) {
+                self.report_unsatisfied(o.ty, o.trait_def, o.span);
+            }
+        }
+    }
+
+    /// The bounds of a generic struct or enum `def` applied to its
+    /// arguments `args` (one obligation per bounded parameter).
+    fn require_def_bounds(&mut self, def: DefId, args: &[TypeId], span: Span) {
+        let Some(per_param) = self.generic_bounds.get(&def).cloned() else { return; };
+        for (i, bounds) in per_param.iter().enumerate() {
+            let Some(&arg) = args.get(i) else { break; };
+            for b in bounds {
+                self.require_bound(arg, *b, span);
+            }
+        }
+    }
+
     fn method_shape_of_fn_type(&self, has_self: bool, fn_ty: TypeId) -> Option<MethodShape> {
         match self.ctx.types.get(fn_ty).clone() {
             SemaType::Function { params, return_type, is_fallible, .. } =>
@@ -1200,6 +1533,7 @@ impl<'a> InferCtx<'a> {
         let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
         let prev_self = self.self_type.replace(self_param);
         let prev_generics = self.push_generic_scope(t.generic_params);
+        self.current_bounds.insert(self_param, vec![def_id]);
 
         let mut methods: Vec<TraitMethodInfo> = Vec::with_capacity(t.items.len());
         for it in t.items {
@@ -1240,17 +1574,14 @@ impl<'a> InferCtx<'a> {
         let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
         let prev_self_type = self.self_type.replace(self_param);
         let prev_struct = self.current_struct_type.replace(self_param);
-        let mut bounds = HashMap::new();
-        bounds.insert(self_param, vec![trait_def]);
-        let prev_bounds = std::mem::replace(&mut self.current_bounds, bounds);
         let prev_generics = self.push_generic_scope(t.generic_params);
+        self.current_bounds.insert(self_param, vec![trait_def]);
         for it in t.items {
             if let TraitItem::DefaultMethod(m) = it {
                 self.infer_method_body(m);
             }
         }
         self.pop_generic_scope(prev_generics);
-        self.current_bounds = prev_bounds;
         self.current_struct_type = prev_struct;
         self.self_type = prev_self_type;
     }
@@ -1432,6 +1763,7 @@ impl<'a> InferCtx<'a> {
         self.current_generic_params.iter()
             .find(|(_, id)| **id == ty)
             .map(|(name, _)| name.clone())
+            .or_else(|| self.param_names.get(&ty).cloned())
             .unwrap_or_else(|| self.display_type(ty))
     }
 
@@ -1674,6 +2006,7 @@ impl<'a> InferCtx<'a> {
 
     fn collect_signatures<'ast>(&mut self, program: &Program<'ast>) {
         self.register_generic_arities(program);
+        self.register_generic_bounds(program);
         self.collect_alias_sigs(program);
         for item in program.items {
             match item {
@@ -1718,6 +2051,9 @@ impl<'a> InferCtx<'a> {
         }
         self.register_extend_impl_methods(program);
         self.register_trait_impls(program);
+        self.impls_registered = true;
+        // Requirements raised by signatures that had to wait for the impls.
+        self.check_obligations();
     }
 
     /// The root name of a `target_type` written as a plain (possibly
@@ -1823,6 +2159,9 @@ impl<'a> InferCtx<'a> {
         if let Some(def_id) = self.ctx.top_level_def(f.name) {
             self.ctx.set_def_type(def_id, fn_ty);
             self.generic_arity.insert(def_id, f.generic_params.len());
+            if self.generic_bounds.contains_key(&def_id) {
+                self.fn_type_defs.insert(fn_ty, def_id);
+            }
         }
         fn_ty
     }
@@ -2422,7 +2761,7 @@ impl<'a> InferCtx<'a> {
                 Item::Enum(_) | Item::TypeAlias(_) => {}
             }
         }
-        self.finish_int_literals();
+        self.finish_body_checks();
     }
 
     fn infer_function_body<'ast>(&mut self, f: &FunctionDecl<'ast>) {
@@ -2433,8 +2772,11 @@ impl<'a> InferCtx<'a> {
         self.current_fallible = is_fallible;
         let prev_tier = self.current_tier;
         self.current_tier = f.tier;
+        let fn_def = self.ctx.top_level_def(f.name);
+        let prev_scope = self.install_def_scope(fn_def);
         self.infer_block(&f.body);
-        self.finish_int_literals();
+        self.finish_body_checks();
+        self.restore_def_scope(prev_scope);
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
         self.current_tier     = prev_tier;
@@ -2449,7 +2791,7 @@ impl<'a> InferCtx<'a> {
         let prev_tier = self.current_tier;
         self.current_tier = m.tier;
         self.infer_block(&m.body);
-        self.finish_int_literals();
+        self.finish_body_checks();
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
         self.current_tier     = prev_tier;
@@ -2547,9 +2889,11 @@ impl<'a> InferCtx<'a> {
         let self_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
         let prev_self = self.current_struct_type.replace(self_ty);
         let prev_self_type = self.self_type.replace(self_ty);
+        let prev_scope = self.install_def_scope(Some(def_id));
         for m in methods {
             self.infer_method_body(m);
         }
+        self.restore_def_scope(prev_scope);
         self.self_type = prev_self_type;
         self.current_struct_type = prev_self;
     }
@@ -2566,7 +2910,7 @@ impl<'a> InferCtx<'a> {
         // A const's type is shared by every function that reads it, so
         // whatever its initializer left open is settled here, not left for
         // one unrelated caller to decide.
-        self.finish_int_literals();
+        self.finish_body_checks();
     }
 
     /// The initializer must match the declared type. As with a const, a
@@ -2579,7 +2923,7 @@ impl<'a> InferCtx<'a> {
                 self.unify(declared, inferred, s.value.span);
             }
         }
-        self.finish_int_literals();
+        self.finish_body_checks();
     }
 
     // ── Block ─────────────────────────────────────────────────────
@@ -3167,7 +3511,7 @@ impl<'a> InferCtx<'a> {
                                 // concrete args, so they're inferred from
                                 // how the payload argument(s) below unify
                                 // against the (substituted) element types.
-                                let enum_ty  = self.instantiate(def_id);
+                                let enum_ty  = self.instantiate(def_id, expr.span);
                                 let inst_args: Vec<TypeId> = match self.ctx.types.get(enum_ty).clone() {
                                     SemaType::Named { args, .. } => args,
                                     _ => Vec::new(),
@@ -3228,6 +3572,7 @@ impl<'a> InferCtx<'a> {
                                     let m = m.clone();
                                     let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
                                     let fresh_args: Vec<TypeId> = (0..arity).map(|_| self.fresh_var()).collect();
+                                    self.require_def_bounds(def_id, &fresh_args, expr.span);
                                     let params: Vec<TypeId> = m.params.iter()
                                         .map(|p| self.substitute(*p, &fresh_args))
                                         .collect();
@@ -3393,14 +3738,28 @@ impl<'a> InferCtx<'a> {
                         // (`interpreter/eval/expr.rs`) already peels all
                         // three unconditionally, for every receiver, not
                         // just the six builtin kinds.
-                        // The receiver is a type parameter with trait bounds
-                        // (inside a trait default body: the abstract `Self`).
-                        if matches!(self.ctx.types.get(receiver_ty), SemaType::Param(_)) {
-                            if let Some(bounds) = self.current_bounds.get(&receiver_ty).cloned() {
-                                return self.call_through_bounds(
-                                    receiver_ty, &bounds, field, args, callee.span, expr.span,
-                                );
-                            }
+                        // The receiver is a type parameter (inside a trait
+                        // default body: the abstract `Self`). Its declared
+                        // bounds say what it can do; with none, nothing
+                        // does, and the call is an error rather than a
+                        // runtime panic for an argument type that lacks the
+                        // method (slice S1b, D6).
+                        let bare_recv = self.peel_wrappers(receiver_ty);
+                        if matches!(self.ctx.types.get(bare_recv), SemaType::Param(_)) {
+                            return match self.current_bounds.get(&bare_recv).cloned() {
+                                Some(bounds) => self.call_through_bounds(
+                                    bare_recv, &bounds, field, args, callee.span, expr.span,
+                                ),
+                                None => {
+                                    let param = self.param_display_name(bare_recv);
+                                    self.errors.add_type_error(TypeError::MethodOnUnboundedParam {
+                                        method: field.to_string(),
+                                        param,
+                                        span:   callee.span,
+                                    });
+                                    self.unknown()
+                                }
+                            };
                         }
                         let struct_recv_ty = match self.ctx.types.get(receiver_ty) {
                             SemaType::Unique(inner)
@@ -3548,7 +3907,7 @@ impl<'a> InferCtx<'a> {
                                     // concrete type from wherever the
                                     // result is used (an annotation, a
                                     // return type, a later unify).
-                                    let enum_ty = self.instantiate(def_id);
+                                    let enum_ty = self.instantiate(def_id, expr.span);
                                     return self.maybe_arena_ref(enum_ty);
                                 }
                             } else if !self.has_static_method(def_id, field) {
@@ -3717,7 +4076,7 @@ impl<'a> InferCtx<'a> {
                             // reasoning as the tuple-variant constructor:
                             // the struct-payload fields' values below are
                             // what T gets inferred from via unification.
-                            let enum_ty   = self.instantiate(def_id);
+                            let enum_ty   = self.instantiate(def_id, expr.span);
                             let inst_args: Vec<TypeId> = match self.ctx.types.get(enum_ty).clone() {
                                 SemaType::Named { args, .. } => args,
                                 _ => Vec::new(),
@@ -3780,7 +4139,7 @@ impl<'a> InferCtx<'a> {
                 let root = path.first().copied().unwrap_or("");
                 if let Some(def_id) = self.type_def_of(root) {
                     if let Some(decl_fields) = self.struct_fields.get(&def_id).cloned() {
-                        let struct_ty  = self.instantiate(def_id);
+                        let struct_ty  = self.instantiate(def_id, expr.span);
                         let inst_args: Vec<TypeId> = match self.ctx.types.get(struct_ty).clone() {
                             SemaType::Named { args, .. } => args,
                             _ => Vec::new(),
@@ -4027,6 +4386,14 @@ impl<'a> InferCtx<'a> {
     /// End of a body (or const initializer): record the width each
     /// literal ended up with for the interpreter, and settle every
     /// literal nothing constrained as plain `int`.
+    /// Settle everything a body left open: literal types first (an
+    /// obligation on `{integer}` needs the settled type), then bound
+    /// obligations.
+    fn finish_body_checks(&mut self) {
+        self.finish_int_literals();
+        self.check_obligations();
+    }
+
     fn finish_int_literals(&mut self) {
         let sites = std::mem::take(&mut self.int_lit_sites);
         for (span, ty) in sites {
@@ -4405,11 +4772,18 @@ impl<'a> InferCtx<'a> {
     /// generic callees: a non-generic fn's `generic_arity` is 0, so the
     /// fresh-Var/substitute step below is a no-op for it and this is
     /// just real argument checking that never existed, generic or not.
+    ///
+    /// The callee's declared bounds (found through its function type, so a
+    /// function held in a variable keeps them) become one obligation per
+    /// bounded parameter, reported at the first argument whose declared
+    /// type is exactly that parameter (the call itself when there is none).
     fn call_return_type<'ast>(&mut self, callee_ty: TypeId, args: &[Arg<'ast>], span: Span) -> TypeId {
         let resolved = self.apply(callee_ty);
+        let callee_def = self.fn_type_defs.get(&resolved).copied();
         match self.ctx.types.get(resolved).clone() {
             SemaType::Function { params, return_type, generic_arity, .. } => {
                 let fresh_args: Vec<TypeId> = (0..generic_arity).map(|_| self.fresh_var()).collect();
+                let raw_params = params.clone();
                 let params: Vec<TypeId> = params.iter()
                     .map(|p| self.substitute(*p, &fresh_args))
                     .collect();
@@ -4429,6 +4803,20 @@ impl<'a> InferCtx<'a> {
                     };
                     if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
                         self.unify(*param_ty, arg_ty, arg_span);
+                    }
+                }
+                if let Some(per_param) = callee_def.and_then(|d| self.generic_bounds.get(&d).cloned()) {
+                    for (i, bounds) in per_param.iter().enumerate() {
+                        let Some(&fresh) = fresh_args.get(i) else { break; };
+                        let at = raw_params.iter()
+                            .position(|p| matches!(self.ctx.types.get(*p), SemaType::Param(j) if *j == i))
+                            .and_then(|j| args.get(j))
+                            .map(|a| match &a.kind {
+                                ArgKind::Positional(e)       => e.span,
+                                ArgKind::Named { value, .. } => value.span,
+                            })
+                            .unwrap_or(span);
+                        for b in bounds { self.require_bound(fresh, *b, at); }
                     }
                 }
                 return_type

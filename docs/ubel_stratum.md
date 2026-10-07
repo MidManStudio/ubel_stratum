@@ -121,6 +121,35 @@ sites.
 - `register_generic_arities` now runs unconditionally first, and
   `target_type_def_id` follows a type alias.
 
+**Decisions (traits, slice S1b):**
+- `register_generic_bounds` runs right after `register_generic_arities`. It
+  validates every bound name once per declaration (`TYPE-122`, or `TYPE-129`
+  for a built-in trait name, a type alias parameter and a method's own generic
+  parameter) and records the resolved bounds in `generic_bounds`, keyed by the
+  function, struct or enum and then the parameter position. The written
+  parameter names go in `generic_param_names`.
+- `push_generic_scope` returns a `GenericScope` (names and bounds) and fills
+  `current_bounds` from the parameters' bound names, so the bounds follow the
+  names. A body that does not push its declaration's scope (a generic function
+  body, an `extend` or `impl` body on a generic struct) calls
+  `install_def_scope`, which sets `current_bounds` and the display names in
+  `param_names` without making the names resolvable as types.
+- A method call whose receiver (wrappers peeled by `peel_wrappers`) is a type
+  parameter goes through `call_through_bounds` when bounds are in force and is
+  `TYPE-130` when none are.
+- `Obligation { ty, trait_def, span }` is raised by `require_bound` where a
+  bounded parameter is instantiated: `call_return_type` (the callee's bounds
+  are found through `fn_type_defs`, so a bounded function held in a variable
+  keeps them), `instantiate` (a struct literal or enum variant, which now takes
+  the span), the associated-function call on a generic struct, and
+  `ast_type_to_sema` for an annotation naming a bounded struct or enum.
+  `bound_status` answers yes, no or not yet; a built-in type answers no, a
+  type parameter is looked up in `current_bounds`, a named type in
+  `trait_impls` once `impls_registered`, an unresolved variable stays
+  pending. `check_obligations` runs from `finish_body_checks` after integer
+  literals are settled and reports in span order; signature-time obligations
+  that had to wait are flushed at the end of `collect_signatures`.
+
 **Decisions (type aliases, enum and field calls, nested spans):**
 - `collect_alias_sigs` expands every `type` alias to a fixpoint before any
   other signature is collected (`alias_expansions: HashMap<DefId,
@@ -725,8 +754,9 @@ type checking (TYPE-1xx range).
 - `TypeError::NotATrait` (`TYPE-122`), `TraitMethodMissing` (`TYPE-123`),
   `UnknownTraitMethod` (`TYPE-124`), `TraitMethodSignatureMismatch`
   (`TYPE-125`), `UnsatisfiedBound` (`TYPE-126`), `AmbiguousTraitMethod`
-  (`TYPE-127`), `OverlappingImpl` (`TYPE-128`) and `UnsupportedTraitFeature`
-  (`TYPE-129`): see `docs/DIAGNOSTICS_RULES.md`.
+  (`TYPE-127`), `OverlappingImpl` (`TYPE-128`), `UnsupportedTraitFeature`
+  (`TYPE-129`) and `MethodOnUnboundedParam` (`TYPE-130`): see
+  `docs/DIAGNOSTICS_RULES.md`.
 - `TypeError::TypeAliasCycle` (`TYPE-121`): a `type` alias that refers to
   itself, directly or through others.
 - `TypeError::IntLiteralOutOfRange` (TYPE-120) gained `negative` and
@@ -1124,3 +1154,15 @@ the TypeError enum, the `ubel` CLI, both examples and the wasm playground
 (each now passes `trait_call_sites`), and added `tests/traits.rs` and sixteen
 fixtures. It is cumulative on the confirmed-bugs delivery. Same discipline:
 every line it wrote was checked for em dashes and first or second person.
+
+A twelfth delivery (traits slice S1b) touched `sema/type_infer.rs` and the
+TypeError enum (`TYPE-130`), and added `tests/bounds.rs` (46 tests) and ten
+fixtures. It is cumulative on the S1a delivery and needs no change to the
+interpreter, the CLI, the examples or the wasm playground. The fixture sweep
+went from 212 lexed, 204 parsed, 110 through sema, interpreter and full
+pipeline to 222, 214, 114, 114 and 114, and the only changes were the ten new
+files: no existing fixture changed its result. The test file was
+mutation-checked: each of seven reverted fixes fails the tests that guard it
+and no others of the file, and the one mutation that first failed nothing (the
+span sort) led to an added test. Same discipline: every line it wrote was
+checked for em dashes and first or second person.

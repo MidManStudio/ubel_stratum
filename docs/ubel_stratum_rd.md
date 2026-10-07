@@ -91,6 +91,34 @@ test needs runtime values.
   fails the three `TYPE-125` tests; the original inherent-versus-two-traits
   bug fails two tests.
 
+### `tests/bounds.rs`
+
+**What it does:** Integration tests for trait bounds, slice S1b (46
+tests). Source goes through `check_source` for the stage, codes, messages and
+positions, and through the interpreter (sema, then both setters, then
+`run_program`) where a test needs runtime values.
+
+**Decisions:**
+- Pins the exact code, count and position of every bound diagnostic
+  (`TYPE-122`, `TYPE-126`, `TYPE-129`, `TYPE-130`, and `TYPE-104` for a bound
+  set that lacks the method), that an integer literal is reported as `int`,
+  that diagnostics come out in source order, and the runtime contract that a
+  call through a bound runs the trait's method even when the type has an
+  inherent method of the same name. One test runs without
+  `set_trait_call_sites` to document why that table exists.
+- Covers each place a bound is enforced: a function call, a call through a
+  variable, a list argument, a struct literal, an enum variant, a type
+  annotation and a struct field, plus the places a bound must be visible
+  (a generic struct's method, an `extend` block, a MID-tier function with an
+  arena value).
+- Mutation-checked: removing the `TYPE-130` report fails the four tests that
+  expect it; removing the obligations at a function call fails the eight
+  call-site tests; removing them at struct and enum construction fails three
+  tests, and at type annotations three; installing no bounds for an `extend`
+  body fails the two extend tests; checking obligations before literal types
+  are settled fails six; and removing the span sort fails only the nested-call
+  ordering test.
+
 ### `tests/statics.rs`
 
 **What it does:** Integration tests for `static` items. Source goes

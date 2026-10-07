@@ -1,0 +1,25 @@
+// tests/fixtures/err_bound_unsupported_combined.ubl
+// Bounds that parse but cannot be enforced yet are reported, never
+// silently ignored: a built-in trait name (the prelude traits arrive with
+// slice S2), a bound on a type alias parameter, and a bound on a method's
+// own generic parameter. Each is one TYPE-129 for now.
+// Expected: sema FAIL (UnsupportedTraitFeature, TYPE-129, three times).
+
+trait Shape {
+    fn area(self) int
+}
+
+fn largest<T: Ord>(a: T, b: T) T {
+    return a
+}
+
+type Pair<T: Shape> = List<T>
+
+struct Helper {
+    v: int,
+    fn pick<U: Shape>(self, u: U) int { return 1 }
+}
+
+fn main() void {
+    println(1)
+}

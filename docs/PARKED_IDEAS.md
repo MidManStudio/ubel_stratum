@@ -775,15 +775,57 @@ Known gaps of the static work, recorded rather than hidden:
 
 Known gaps of S1a, recorded rather than hidden:
 
-- Bounds are still not enforced (slice S1b): `fn f<T: Shape>(x: T)` is
-  accepted for any `T`, and a method call on an unbounded type parameter is
-  still unchecked.
+- Bounds were not enforced: `fn f<T: Shape>(x: T)` was accepted for any `T`,
+  and a method call on an unbounded type parameter was unchecked. Closed by
+  slice S1b, below.
 - Tiers on trait methods are not built (slice S4); every trait method is
   `HIGH`, the default.
 
 ## Decided, not yet built
 
-**Traits, slices S1b to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S1b.** Bounds are enforced. See `docs/TRAITS_DESIGN.md`,
+section 0, for the decisions and the slice plan.
+
+- Before this, `fn total<T: Shape>(x: T) int { return x.area() }` called
+  with `total(5)` passed sema and panicked at run time ("no method `area` on
+  `int`"), and so did the same function without any bound. Sema now enforces
+  the bound where a bounded parameter is instantiated and resolves a method
+  call on a type parameter through its bounds.
+- Bound names are validated once per declaration (`register_generic_bounds`):
+  a name that is not a trait is `TYPE-122`; a built-in trait name, a bound on a
+  type alias parameter and a bound on a method's own generic parameter are
+  `TYPE-129` rather than being ignored.
+- `push_generic_scope` now carries each parameter's bounds, and
+  `install_def_scope` installs a declaration's bounds and parameter names for a
+  body that does not push its generic scope (a generic function body, an
+  `extend` or `impl` body on a generic struct).
+- Obligations (`require_bound`, `check_obligations`) are raised at a generic
+  function call, a struct literal, an enum variant construction, an associated
+  function on a generic struct and a type annotation naming a bounded struct
+  or enum. They are settled at the end of the body in source order, after
+  literal types, and an unresolved argument is not an error.
+- A bounded generic function keeps its bounds when held in a variable: the
+  bounded function's type is mapped back to its definition
+  (`fn_type_defs`), so `let f = total; f(7)` is `TYPE-126`.
+- A method call on a type parameter with no bound is `TYPE-130`; with bounds
+  that lack the method it is `TYPE-104`. Calls resolved through a bound are
+  recorded in `trait_call_sites`, so the trait's method runs.
+- Reference and ownership wrappers are peeled before a bound is checked, which
+  can only miss a violation.
+
+Known gaps of S1b, recorded rather than hidden:
+
+- A method's own generic parameter is not scoped in sema (its type is
+  unknown), so a bound on one is `TYPE-129` and a method call on such a value
+  is unchecked.
+- `where` clauses, bounds with arguments and bounds naming a built-in trait
+  wait for S2 and S3.
+- A struct literal written with an annotation that names a bad argument
+  (`let h: Holder<Plain> = Holder { .. }`) is two diagnostics, one at the
+  annotation and one at the literal; each is a real violation at its own
+  position.
+
+**Traits, slices S2 to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

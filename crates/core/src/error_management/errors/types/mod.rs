@@ -231,6 +231,17 @@ pub enum TypeError {
         span:    Span,
     },
 
+    /// A method called on a value whose type is a type parameter with no
+    /// trait bound. Nothing says what the parameter can do, so the call
+    /// cannot be resolved (and would panic at runtime for an argument
+    /// type that lacks the method). A parameter that HAS bounds, none of
+    /// which declares the method, is `NoSuchMethod` instead.
+    MethodOnUnboundedParam {
+        method: String,
+        param:  String,
+        span:   Span,
+    },
+
     /// A `type` alias that refers to itself, directly (`type A = A`) or
     /// through other aliases (`type A = B  type B = A`), so it has no
     /// finite expansion. Also reported for an alias that depends on one
@@ -329,6 +340,7 @@ impl TypeError {
             TypeError::AmbiguousTraitMethod        { span, .. } => *span,
             TypeError::OverlappingImpl             { span, .. } => *span,
             TypeError::UnsupportedTraitFeature     { span, .. } => *span,
+            TypeError::MethodOnUnboundedParam      { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -410,6 +422,9 @@ impl TypeError {
 
             TypeError::UnsupportedTraitFeature { feature, .. } =>
                 format!("{} is not supported yet", feature),
+
+            TypeError::MethodOnUnboundedParam { method, param, .. } =>
+                format!("cannot call `{}` on a value of type parameter `{}`: it has no trait bound", method, param),
 
             TypeError::TypeAliasCycle { name, .. } =>
                 format!("type alias `{}` refers to itself, directly or through other aliases", name),
@@ -515,6 +530,9 @@ impl TypeError {
             TypeError::AmbiguousTraitMethod { method, traits, .. } =>
                 Some(format!("name the trait: `{}.{}(value)`", traits.first().map(String::as_str).unwrap_or("Trait"), method)),
 
+            TypeError::MethodOnUnboundedParam { method, param, .. } =>
+                Some(format!("declare a bound that provides `{}`, as in `<{}: SomeTrait>`", method, param)),
+
             TypeError::TypeAliasCycle { .. } =>
                 Some("an alias is just another name for a type, so it must end in a type that is not itself an alias of the same chain".to_string()),
 
@@ -573,6 +591,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::AmbiguousTraitMethod { .. }          => "TYPE-127",
             TypeError::OverlappingImpl { .. }               => "TYPE-128",
             TypeError::UnsupportedTraitFeature { .. }       => "TYPE-129",
+            TypeError::MethodOnUnboundedParam { .. }        => "TYPE-130",
         }
     }
     fn span(&self) -> Span { self.span() }

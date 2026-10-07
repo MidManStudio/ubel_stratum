@@ -1,0 +1,41 @@
+// tests/fixtures/ok_bound_multiple_isolated.ubl
+// A parameter with two bounds can use the methods of both, a default
+// method is reachable through a bound, a bound may name a trait declared
+// later in the file, and a bounded function may call itself and another
+// bounded function with its own parameter.
+// Expected: sema OK, interpret OK.
+
+fn describe<T: Shape + Named>(x: T) string {
+    return $"{x.name()}:{x.twice()}"
+}
+
+fn depth<T: Shape>(x: T, n: int) int {
+    if n == 0 { return x.area() }
+    return depth(x, n - 1)
+}
+
+trait Shape {
+    fn area(self) int
+    fn twice(self) int { return self.area() * 2 }
+}
+
+trait Named {
+    fn name(self) string
+}
+
+struct Sq {
+    s: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int { return self.s * self.s }
+}
+
+impl Named for Sq {
+    fn name(self) string { return "sq" }
+}
+
+fn main() void {
+    println(describe(Sq { s = 3 }))
+    println(depth(Sq { s = 2 }, 4))
+}

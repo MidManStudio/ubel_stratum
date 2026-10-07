@@ -34,7 +34,7 @@
 | Slice | Status | Contents |
 |---|---|---|
 | **S1a** | **Built** | Trait impls registered in sema and interpreter dispatch; conformance checks (missing method, method not in the trait, signature mismatch with `Self`); default methods inherited or overridden; `Self` in signatures and default bodies; overlap; inherent-first; ambiguity and the qualified call `Trait.method(value)`; calls made through a trait run the trait's method; every trait feature not built yet reported as `TYPE-129` instead of ignored. |
-| **S1b** | Next | Bounds: declared bounds validated, bound obligations checked at call sites, method calls on a type parameter resolved through its bounds, a method call on an unbounded type parameter an error. |
+| **S1b** | **Built** | Bounds: declared bounds validated, bound obligations checked wherever a bounded parameter is instantiated, method calls on a type parameter resolved through its bounds, a method call on an unbounded type parameter an error (`TYPE-130`). |
 | S2 to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
@@ -55,6 +55,44 @@
   associated type are each reported as `TYPE-129` (`UnsupportedTraitFeature`),
   so none is silently ignored. Impls for built-in types arrive with S2, generic
   traits with S3.
+
+### What S1b settled that the options did not
+
+- **Bound names.** A bound must name a trait declared in the program
+  (`TYPE-122` otherwise, once per declaration, at the parameter). The six
+  derive names (`PartialEq`, `Eq`, `Hash`, `Ord`, `PartialOrd`, `Clone`) are
+  not declared traits until S2, so a bound written with one is `TYPE-129`
+  rather than being accepted and ignored. A user trait that happens to use
+  one of those names is a real bound. A bound on a type alias parameter or on
+  a method's own generic parameter is `TYPE-129` too, because neither scope
+  exists in sema yet.
+- **Where a bound is enforced.** Each place a bounded parameter is
+  instantiated records an obligation that the argument type implements the
+  trait: a call to a generic function (including a call through a variable
+  that holds it), a struct literal, an enum variant construction, an
+  associated function called on a generic struct, and a type annotation that
+  names a bounded struct or enum with arguments. A call is reported at the
+  first argument whose declared type is the bounded parameter, the others at
+  the expression or annotation.
+- **When it is decided.** Obligations are settled at the end of the body,
+  after integer literal types are settled (so `total(5)` reports `int`, not
+  `{integer}`), and reported in source order. An argument that is still an
+  unresolved inference variable is not an error. Obligations raised by
+  signatures wait until every impl is registered.
+- **Method calls on a type parameter.** The receiver's type parameter is
+  looked up in the bounds in force for the body: a generic function, a method
+  of a generic struct, and an `extend` or `impl` block on one all see the
+  declaration's bounds. With bounds, the method must come from one of them
+  (`TYPE-104` when none supplies it, `TYPE-127` when two do). With none, the
+  call is `TYPE-130`. Calls resolved through a bound are recorded in
+  `trait_call_sites`, so the trait's method runs even when the concrete type
+  has an inherent method of the same name.
+- **Reference and ownership wrappers are ignored.** A value reached through
+  `ArenaRef`, `GcRef`, `OwnedRef`, `PoolRef`, `Unique`, `Shared`, `SyncShared`
+  or a borrow satisfies the same bounds as the bare value. This can only miss
+  a violation, never reject a program that is fine.
+- **Still open:** `where` clauses and bounds with arguments (later); bounds
+  naming built-in traits and impls for built-in types need S2.
 
 ### D7: what has to be specified before S4
 

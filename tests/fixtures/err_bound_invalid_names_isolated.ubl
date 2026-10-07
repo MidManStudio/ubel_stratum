@@ -1,0 +1,27 @@
+// tests/fixtures/err_bound_invalid_names_isolated.ubl
+// Bounds whose names are not usable: a name that does not exist, a name
+// that is a struct, and a bound on a struct and an enum parameter. Each
+// is one TYPE-122 at the parameter. A bound naming a built-in trait
+// (`T: Ord`) is reported separately as not built yet (see
+// err_bound_unsupported_combined).
+// Expected: sema FAIL (NotATrait, TYPE-122, four times).
+
+struct Plain {
+    p: int,
+}
+
+fn a<T: Missing>(x: T) int { return 1 }
+
+fn b<T: Plain>(x: T) int { return 1 }
+
+struct Holder<T: Nothing> {
+    v: T,
+}
+
+enum Slot<T: Plain> {
+    Full(T),
+}
+
+fn main() void {
+    println(1)
+}

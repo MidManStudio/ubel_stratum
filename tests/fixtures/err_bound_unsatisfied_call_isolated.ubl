@@ -1,0 +1,24 @@
+// tests/fixtures/err_bound_unsatisfied_call_isolated.ubl
+// A bounded function called with an argument whose type does not
+// implement the trait: a primitive, a string and a struct with no impl.
+// Each is one diagnostic at its own argument; before bounds were
+// enforced this passed sema and panicked at run time.
+// Expected: sema FAIL (UnsatisfiedBound, TYPE-126, three times).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Plain {
+    p: int,
+}
+
+fn total<T: Shape>(x: T) int {
+    return x.area()
+}
+
+fn main() void {
+    println(total(5))
+    println(total("text"))
+    println(total(Plain { p = 1 }))
+}

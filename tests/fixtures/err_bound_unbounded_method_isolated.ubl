@@ -1,0 +1,27 @@
+// tests/fixtures/err_bound_unbounded_method_isolated.ubl
+// A method called on a value whose type is a type parameter with no
+// bound: in a generic function, inside a generic struct, and in an extend
+// block on a generic struct. Nothing says what the parameter can do, so
+// each call is one diagnostic.
+// Expected: sema FAIL (MethodOnUnboundedParam, TYPE-130, three times).
+
+fn total<T>(x: T) int {
+    return x.area()
+}
+
+struct Box<T> {
+    v: T,
+    fn show(self) int { return self.v.area() }
+}
+
+struct Crate<T> {
+    v: T,
+}
+
+extend Crate {
+    fn show(self) int { return self.v.area() }
+}
+
+fn main() void {
+    println(1)
+}
