@@ -1,0 +1,58 @@
+// tests/fixtures/ok_prelude_combined.ubl
+// Prelude bounds beside the features they have to live with: a bound that
+// mixes a prelude trait with a user trait, a generic struct whose parameter
+// is `Ord` and whose method and `extend` block use `<` and `cmp`, an enum
+// compared with `==`, a sized integer ordered through a bound, and a
+// bounded function held in a variable.
+// Expected: sema OK, interpret OK.
+
+trait Describe {
+    fn describe(self) string
+}
+
+@derive(PartialEq, Eq, PartialOrd, Ord, Clone)
+struct Rank {
+    level: int,
+}
+
+impl Describe for Rank {
+    fn describe(self) string { return "rank" }
+}
+
+enum Suit {
+    Hearts,
+    Spades,
+}
+
+struct SortedPair<T: Ord> {
+    lo: T,
+    hi: T,
+    fn ordered(self) bool { return self.lo <= self.hi }
+}
+
+extend SortedPair {
+    fn width(self) bool { return self.lo.cmp(self.hi) == Ordering.Less }
+}
+
+fn label<T: Ord + Describe>(a: T, b: T) string {
+    if a < b { return a.describe() }
+    return b.describe()
+}
+
+fn smallest<T: Ord>(a: T, b: T) T {
+    if a < b { return a }
+    return b
+}
+
+fn main() void {
+    println(label(Rank { level = 1 }, Rank { level = 2 }))
+    let pair = SortedPair { lo = 3, hi = 8 }
+    println(pair.ordered())
+    println(pair.width())
+    println(Suit.Hearts == Suit.Spades)
+    let a: u8 = 7u8
+    let b: u8 = 9u8
+    println(smallest(a, b))
+    let f = smallest
+    println(f(10, 4))
+}

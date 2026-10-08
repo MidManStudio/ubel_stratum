@@ -1,0 +1,25 @@
+// tests/fixtures/ok_prelude_supertraits_isolated.ubl
+// A bound implies the traits beneath it: `Ord` gives `PartialOrd`, `Eq` and
+// `PartialEq` (so `==`, `<`, `eq`, `lt` and `partial_cmp` all work on a
+// value of that type), `Eq` gives `PartialEq`, and `PartialOrd` gives
+// `PartialEq`.
+// Expected: sema OK, interpret OK.
+
+fn everything<T: Ord>(a: T, b: T) bool {
+    return a == b or a != b or a < b or a <= b or a > b or a >= b
+        or a.eq(b) or a.lt(b) or a.partial_cmp(b) == Ordering.Less
+}
+
+fn only_eq<T: Eq>(a: T, b: T) bool {
+    return a == b and !a.ne(b)
+}
+
+fn partial<T: PartialOrd>(a: T, b: T) bool {
+    return a == b or a < b
+}
+
+fn main() void {
+    println(everything(1, 2))
+    println(only_eq("x", "x"))
+    println(partial(2.5, 1.5))
+}

@@ -124,8 +124,8 @@ sites.
 **Decisions (traits, slice S1b):**
 - `register_generic_bounds` runs right after `register_generic_arities`. It
   validates every bound name once per declaration (`TYPE-122`, or `TYPE-129`
-  for a built-in trait name, a type alias parameter and a method's own generic
-  parameter) and records the resolved bounds in `generic_bounds`, keyed by the
+  for `Hash`, a type alias parameter and a method's own generic parameter)
+  and records the resolved bounds in `generic_bounds`, keyed by the
   function, struct or enum and then the parameter position. The written
   parameter names go in `generic_param_names`.
 - `push_generic_scope` returns a `GenericScope` (names and bounds) and fills
@@ -1155,6 +1155,30 @@ the TypeError enum, the `ubel` CLI, both examples and the wasm playground
 fixtures. It is cumulative on the confirmed-bugs delivery. Same discipline:
 every line it wrote was checked for em dashes and first or second person.
 
+**Decisions (traits, slice S2a part 1):**
+- `ubel_stratum_rd::prelude` holds the prelude as Ubel source (`Ordering`,
+  `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Clone`). `parse()` calls
+  `prelude::inject`, which parses it with every token span shifted past
+  `PRELUDE_SPAN_START` (`Span::is_prelude`) and puts its items in front of the
+  program's, leaving out any the program declares itself and everything that
+  depends on it (`DEPENDS_ON`).
+- Sema records the prelude traits when `collect_trait_info` sees a prelude span
+  (`prelude_traits`, `prelude_defs`). `prelude_status` answers whether a type
+  has one, from the table in `docs/TRAITS_DESIGN.md`; `bound_status` and
+  `type_implements` use it for a prelude trait instead of `trait_impls`.
+  `PRELUDE_TRAITS` carries the supertraits, and `expand_supertraits` widens the
+  bounds in force inside a body (declared bounds are not widened).
+- `try_prelude_method` resolves `x.eq(y)`, `x.cmp(y)` and the rest on a value
+  that is not a type parameter, by calling `call_through_bounds` with the
+  trait as the only bound. It runs before the user-type paths and inside the
+  built-in-kind path, and yields to a method the type declares itself.
+- `check_operator_bound` raises `TYPE-131` for `==`, `!=` and the ordering
+  operators on a type-parameter operand without the trait.
+- A hand-written impl of a prelude trait is `TYPE-129` in
+  `register_trait_impls` and is skipped. The interpreter runs a prelude trait's
+  method natively (`native_prelude_method` in `eval/expr.rs`, reached from the
+  trait call site table and from the qualified call) through `eval_binop`.
+
 A twelfth delivery (traits slice S1b) touched `sema/type_infer.rs` and the
 TypeError enum (`TYPE-130`), and added `tests/bounds.rs` (46 tests) and ten
 fixtures. It is cumulative on the S1a delivery and needs no change to the
@@ -1165,4 +1189,19 @@ files: no existing fixture changed its result. The test file was
 mutation-checked: each of seven reverted fixes fails the tests that guard it
 and no others of the file, and the one mutation that first failed nothing (the
 span sort) led to an added test. Same discipline: every line it wrote was
+checked for em dashes and first or second person.
+
+A thirteenth delivery (traits slice S2a, part 1) touched `rd_parser/lib.rs`
+(`parse()` injects the prelude), `lexer/token.rs` (the reserved span range),
+`sema/type_infer.rs`, `interpreter/eval/expr.rs` and the TypeError enum
+(`TYPE-131`), and added `rd_parser/src/prelude.rs`, `tests/prelude_traits.rs`
+(40 tests), five unit tests in `prelude.rs` and nine fixtures. It is
+cumulative on the S1b delivery, includes the S2 design section of
+`docs/TRAITS_DESIGN.md`, and changed one S1b test and one S1b fixture that
+had assumed `T: Ord` was `TYPE-129`. The fixture sweep went from 222 lexed,
+214 parsed, 114 through sema, interpreter and full pipeline to 231, 223, 119,
+119 and 119, and the only changes were the nine new files. Each of ten
+reverted fixes fails the tests that guard it; one mutation (supertrait
+expansion) first failed nothing because it reverted only one of two paths, and
+was redone on the function itself. Same discipline: every line it wrote was
 checked for em dashes and first or second person.

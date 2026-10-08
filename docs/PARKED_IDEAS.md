@@ -825,7 +825,38 @@ Known gaps of S1b, recorded rather than hidden:
   annotation and one at the literal; each is a real violation at its own
   position.
 
-**Traits, slices S2 to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S2a part 1.** The prelude traits exist. See
+`docs/TRAITS_DESIGN.md`, "What S2 settled" and "What S2a part 1 settled".
+
+- `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Clone` plus the `Ordering` enum
+  are declared in Ubel source (`rd_parser/src/prelude.rs`) and injected by
+  `parse()` with spans in a reserved range. A program that declares one of the
+  names keeps its own.
+- What a type satisfies follows the runtime: integers and `string` all five,
+  floats not `Eq` or `Ord`, `bool` and `char` not ordered, a struct what it
+  derives, an enum `PartialEq` and `Eq`, collections none.
+- `T: Ord` and the others work as bounds, imply the traits beneath them, and
+  allow `==`, `<` and the methods on a value of type `T`. Without the bound
+  the operator is `TYPE-131`.
+- `eq`, `ne`, `partial_cmp`, `lt`, `le`, `gt`, `ge`, `cmp` and `clone` can be
+  called on a built-in or derived value directly, and through the qualified
+  form `Ord.cmp(a, b)`.
+- A hand-written impl of one of the five is `TYPE-129` until S2b, and a `Hash`
+  bound is `TYPE-129` until S2a part 2.
+
+Known gaps of S2a part 1, recorded rather than hidden:
+
+- `==` on a struct without `PartialEq` is still reference identity, and a
+  user-written `eq` is not called by `==` (S2b).
+- An enum is `PartialEq` and `Eq` whatever its payload types are.
+- Two lists with equal elements are not `==`, and a list is not `PartialEq`;
+  list equality is reference identity at run time.
+- `char` has no ordering because `<` is not defined on it.
+- A tuple literal does not parse as a nested call argument
+  (`need((1, "a"))` is a parse error); bind it first. Found while testing, not
+  related to traits.
+
+**Traits, slices S2a part 2 to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

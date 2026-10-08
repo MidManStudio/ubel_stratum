@@ -1,0 +1,31 @@
+// tests/fixtures/err_prelude_handwritten_impl_isolated.ubl
+// A hand-written impl of a prelude trait is reported rather than accepted
+// and ignored: `==` and `<` would not call it until the runtime dispatch
+// arrives (slice S2b). `@derive` is the way to get these traits for now.
+// One diagnostic per impl, for a struct and for an enum.
+// Expected: sema FAIL (UnsupportedTraitFeature, TYPE-129, three times).
+
+struct Point {
+    x: int,
+}
+
+enum Level {
+    Low,
+    High,
+}
+
+impl PartialEq for Point {
+    fn eq(self, other: Point) bool { return self.x == other.x }
+}
+
+impl Clone for Point {
+    fn clone(self) Point { return Point { x = self.x } }
+}
+
+impl PartialEq for Level {
+    fn eq(self, other: Level) bool { return true }
+}
+
+fn main() void {
+    println(1)
+}

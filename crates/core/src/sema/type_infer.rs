@@ -344,11 +344,21 @@ struct BoundsScope {
     names:  HashMap<TypeId, String>,
 }
 
-/// Trait names that exist only as `@derive` names until the prelude
-/// traits arrive (slice S2). A bound written with one is reported as
-/// not built yet instead of being ignored.
-const BUILTIN_TRAIT_NAMES: [&str; 6] =
-    ["PartialEq", "Eq", "Hash", "Ord", "PartialOrd", "Clone"];
+/// Trait names that exist only as `@derive` names until the prelude trait
+/// is built (`Hash` waits for the hasher, slice S2a part 2). A bound written
+/// with one is reported as not built yet instead of being ignored.
+const BUILTIN_TRAIT_NAMES: [&str; 1] = ["Hash"];
+
+/// The prelude traits, and the traits each one implies (the derive
+/// prerequisite chain, written as supertraits because `trait B: A` is not
+/// parsed until S3).
+const PRELUDE_TRAITS: [(&str, &[&str]); 5] = [
+    ("PartialEq",  &[]),
+    ("Eq",         &["PartialEq"]),
+    ("PartialOrd", &["PartialEq"]),
+    ("Ord",        &["PartialOrd", "Eq", "PartialEq"]),
+    ("Clone",      &[]),
+];
 
 /// What a checked pattern definitively covers, for exhaustiveness.
 enum PatternCoverage {
@@ -450,6 +460,11 @@ struct InferCtx<'a> {
     /// Obligations already reported, so one mistake reached twice (a call
     /// inferred more than once) is one diagnostic.
     reported_obligations: HashSet<(Span, DefId)>,
+    /// The prelude traits (`PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Clone`),
+    /// by definition, and back by name. Present only for a prelude item the
+    /// program did not shadow with its own.
+    prelude_traits:   HashMap<DefId, &'static str>,
+    prelude_defs:     HashMap<&'static str, DefId>,
     /// Set once `register_trait_impls` has run: before that a named type
     /// cannot be said to lack an impl.
     impls_registered: bool,
@@ -547,6 +562,8 @@ impl<'a> InferCtx<'a> {
             param_names:       HashMap::new(),
             pending_obligations: Vec::new(),
             reported_obligations: HashSet::new(),
+            prelude_traits:    HashMap::new(),
+            prelude_defs:      HashMap::new(),
             impls_registered:  false,
             current_struct_type:    None,
             callee_field_pending:   false,
@@ -1267,7 +1284,25 @@ impl<'a> InferCtx<'a> {
                 if !ids.contains(&id) { ids.push(id); }
             }
         }
-        ids
+        self.expand_supertraits(ids)
+    }
+
+    /// `ids` plus the traits each prelude trait among them implies: a body
+    /// with `T: Ord` may also use what `PartialOrd`, `Eq` and `PartialEq`
+    /// provide. Declared bounds stay as written (an obligation for `Ord`
+    /// is one obligation); only the bounds in force inside a body widen.
+    fn expand_supertraits(&self, ids: Vec<DefId>) -> Vec<DefId> {
+        let mut out = ids.clone();
+        for id in &ids {
+            let Some(name) = self.prelude_traits.get(id) else { continue; };
+            let supers = PRELUDE_TRAITS.iter().find(|(n, _)| n == name).map(|(_, s)| *s).unwrap_or(&[]);
+            for s in supers {
+                if let Some(sid) = self.prelude_defs.get(s) {
+                    if !out.contains(sid) { out.push(*sid); }
+                }
+            }
+        }
+        out
     }
 
     /// Validate the bounds written on every generic function, struct and
@@ -1352,7 +1387,7 @@ impl<'a> InferCtx<'a> {
                 let ty = self.ctx.types.intern(SemaType::Param(i));
                 names.insert(ty, name.clone());
                 if let Some(bs) = per_param.get(i) {
-                    if !bs.is_empty() { bounds.insert(ty, bs.clone()); }
+                    if !bs.is_empty() { bounds.insert(ty, self.expand_supertraits(bs.clone())); }
                 }
             }
         }
@@ -1420,6 +1455,59 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    /// Whether a type implements a prelude trait, from what the runtime does
+    /// with that kind of value today (docs/TRAITS_DESIGN.md, "What S2
+    /// settled"). `None` while the type is an unresolved variable.
+    ///
+    /// - Integers and `string`: all five. `float` and `double` (and `f32`,
+    ///   `f64`): `PartialEq`, `PartialOrd` and `Clone`, not `Eq` or `Ord`,
+    ///   because of NaN. `bool` and `char`: `PartialEq`, `Eq` and `Clone`
+    ///   (`<` is not defined on them, so neither is ordering).
+    /// - A tuple or an optional: `PartialEq`, `Eq` and `Clone` when its
+    ///   elements have them, never ordering.
+    /// - A struct: the traits it derives. An enum: `PartialEq` and `Eq`.
+    /// - Every other built-in type: none (`==` on a collection is reference
+    ///   identity, so it is not `PartialEq` here).
+    fn prelude_status(&mut self, name: &str, ty: TypeId) -> Option<bool> {
+        let ty = self.peel_wrappers(ty);
+        if ty == TypeId::ERROR { return Some(true); }
+        let eq_like  = matches!(name, "PartialEq" | "Eq" | "Clone");
+        let all_five = true;
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Unknown => Some(true),
+            SemaType::Var(n)  => if self.int_lit_vars.contains_key(&n) { Some(all_five) } else { None },
+            SemaType::Int | SemaType::Uint | SemaType::Long | SemaType::Ulong
+            | SemaType::I8 | SemaType::I16 | SemaType::I32 | SemaType::I64
+            | SemaType::U8 | SemaType::U16 | SemaType::U32 | SemaType::U64
+            | SemaType::Isize | SemaType::Usize | SemaType::Str => Some(all_five),
+            SemaType::Float | SemaType::Double | SemaType::F32 | SemaType::F64 =>
+                Some(matches!(name, "PartialEq" | "PartialOrd" | "Clone")),
+            SemaType::Bool | SemaType::Char => Some(eq_like),
+            SemaType::Tuple(elems) => {
+                if !eq_like { return Some(false); }
+                let mut all = Some(true);
+                for e in elems {
+                    match self.prelude_status(name, e) {
+                        Some(false) => return Some(false),
+                        None        => all = None,
+                        Some(true)  => {}
+                    }
+                }
+                all
+            }
+            SemaType::Optional(inner) => if eq_like { self.prelude_status(name, inner) } else { Some(false) },
+            SemaType::Named { def, .. } => match self.ctx.symbols.lookup(def).kind {
+                DefKind::Struct { .. } => Some(self.struct_derives.get(&def).is_some_and(|d| d.contains(name))),
+                DefKind::Enum          => Some(matches!(name, "PartialEq" | "Eq")),
+                _                      => Some(false),
+            },
+            SemaType::Param(_) => Some(self.prelude_defs.get(name)
+                .and_then(|d| self.current_bounds.get(&ty).map(|bs| bs.contains(d)))
+                .unwrap_or(false)),
+            _ => Some(false),
+        }
+    }
+
     /// Whether `ty` implements `trait_def`: `Some(true)` or `Some(false)`
     /// once that can be told, `None` while it cannot (an unresolved
     /// inference variable, or a named type before impls are registered).
@@ -1428,6 +1516,9 @@ impl<'a> InferCtx<'a> {
     fn bound_status(&mut self, ty: TypeId, trait_def: DefId) -> Option<bool> {
         let ty = self.peel_wrappers(ty);
         if ty == TypeId::ERROR { return Some(true); }
+        if let Some(name) = self.prelude_traits.get(&trait_def).copied() {
+            return self.prelude_status(name, ty);
+        }
         match self.ctx.types.get(ty).clone() {
             SemaType::Unknown => Some(true),
             SemaType::Var(_)  => None,
@@ -1524,6 +1615,12 @@ impl<'a> InferCtx<'a> {
     /// all written in terms of the abstract `Self`.
     fn collect_trait_info<'ast>(&mut self, t: &TraitDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(t.name) else { return; };
+        if t.span.is_prelude() {
+            if let Some((name, _)) = PRELUDE_TRAITS.iter().find(|(n, _)| *n == t.name) {
+                self.prelude_traits.insert(def_id, name);
+                self.prelude_defs.insert(name, def_id);
+            }
+        }
         if !t.generic_params.is_empty() {
             self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
                 feature: "a generic trait",
@@ -1660,6 +1757,13 @@ impl<'a> InferCtx<'a> {
                     continue;
                 }
             };
+            if self.prelude_traits.contains_key(&trait_def) {
+                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                    feature: "a hand-written impl of a prelude trait (use @derive; hand-written impls arrive with the runtime dispatch, slice S2b)",
+                    span:    i.span,
+                });
+                continue;
+            }
             let target_def = self.target_type_def_id(i.target_type).filter(|d|
                 matches!(self.ctx.symbols.lookup(*d).kind, DefKind::Struct { .. } | DefKind::Enum));
             let Some(target_def) = target_def else {
@@ -1868,8 +1972,11 @@ impl<'a> InferCtx<'a> {
     /// `impl`, or a type parameter whose bounds include the trait. Anything
     /// unresolved or unknown counts as implementing it, so an earlier error
     /// does not cascade into this one.
-    fn type_implements(&self, ty: TypeId, trait_def: DefId) -> bool {
+    fn type_implements(&mut self, ty: TypeId, trait_def: DefId) -> bool {
         if ty == TypeId::ERROR { return true; }
+        if let Some(name) = self.prelude_traits.get(&trait_def).copied() {
+            return self.prelude_status(name, ty).unwrap_or(true);
+        }
         match self.ctx.types.get(ty) {
             SemaType::Named { def, .. } => self.trait_impls.contains_key(&(trait_def, *def)),
             SemaType::Param(_) => self.current_bounds.get(&ty)
@@ -3633,6 +3740,13 @@ impl<'a> InferCtx<'a> {
                             instance::resolve_receiver(&self.ctx.types, receiver_ty)
                         {
                             let Some((ret, arity)) = instance::signature(kind, field) else {
+                                // `s.lt(t)` on a string: a prelude method on a
+                                // built-in kind that has the trait.
+                                if let Some(ret) = self.try_prelude_method(
+                                    receiver_ty, field, args, callee.span, expr.span,
+                                ) {
+                                    return ret;
+                                }
                                 let on_type = self.display_type(receiver_ty);
                                 self.errors.add_type_error(TypeError::NoSuchMethod {
                                     method: field.to_string(),
@@ -3760,6 +3874,15 @@ impl<'a> InferCtx<'a> {
                                     self.unknown()
                                 }
                             };
+                        }
+                        // A prelude method (`eq`, `cmp`, `clone`, ...) on a value
+                        // whose type has the trait: a primitive, a derived
+                        // struct, an enum, a tuple. A method of the same name
+                        // on the type itself wins.
+                        if let Some(ret) = self.try_prelude_method(
+                            receiver_ty, field, args, callee.span, expr.span,
+                        ) {
+                            return ret;
                         }
                         let struct_recv_ty = match self.ctx.types.get(receiver_ty) {
                             SemaType::Unique(inner)
@@ -4640,6 +4763,8 @@ impl<'a> InferCtx<'a> {
             }
             BinOp::Eq | BinOp::Ne => {
                 self.unify(lhs, rhs, span);
+                let text = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
+                self.check_operator_bound(lhs, "PartialEq", text, span);
                 self.bool_ty()
             }
             // TYPE-118: previously nothing checked here at all, this
@@ -4657,6 +4782,14 @@ impl<'a> InferCtx<'a> {
             // opaque runtime crash.
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 self.unify(lhs, rhs, span);
+                let bare = self.peel_wrappers(lhs);
+                if matches!(self.ctx.types.get(bare), SemaType::Param(_)) {
+                    let text = match op {
+                        BinOp::Lt => "<", BinOp::Le => "<=", BinOp::Gt => ">", _ => ">=",
+                    };
+                    self.check_operator_bound(bare, "PartialOrd", text, span);
+                    return self.bool_ty();
+                }
                 let resolved = self.apply(lhs);
                 let orderable = match self.ctx.types.get(resolved) {
                     SemaType::Int | SemaType::Float | SemaType::Double | SemaType::Str => true,
@@ -4699,6 +4832,59 @@ impl<'a> InferCtx<'a> {
             }
             BinOp::Range | BinOp::RangeIncl => self.unknown(),
         }
+    }
+
+    /// `x.eq(y)`, `x.cmp(y)`, `x.clone()` and the other prelude methods on a
+    /// value that is not a type parameter. `Some(type)` when `method` is a
+    /// prelude method and the receiver's type has that trait; the call is
+    /// recorded in `trait_call_sites`, so the interpreter runs the prelude
+    /// method (natively for a built-in or derived type). `None` leaves the
+    /// call to the ordinary paths, which report an unknown method.
+    fn try_prelude_method<'ast>(
+        &mut self,
+        receiver_ty: TypeId,
+        method:      &str,
+        args:        &[Arg<'ast>],
+        callee_span: Span,
+        call_span:   Span,
+    ) -> Option<TypeId> {
+        if self.prelude_traits.is_empty() { return None; }
+        let trait_def = self.prelude_traits.keys().copied().find(|d| {
+            self.traits.get(d).is_some_and(|i| i.methods.iter().any(|m| m.name == method && m.shape.has_self))
+        })?;
+        let name = self.prelude_traits[&trait_def];
+        let bare = self.peel_wrappers(receiver_ty);
+        match self.ctx.types.get(bare) {
+            SemaType::Param(_) | SemaType::Var(_) | SemaType::Unknown => return None,
+            SemaType::Named { def, .. } => {
+                if self.struct_methods.get(def)
+                    .is_some_and(|ms| ms.iter().any(|(n, _)| n == method)) {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        if self.prelude_status(name, bare) != Some(true) { return None; }
+        let ret = self.call_through_bounds(bare, &[trait_def], method, args, callee_span, call_span);
+        // `clone` hands back the receiver's own type, tier tag included.
+        if method == "clone" { return Some(self.maybe_arena_ref(receiver_ty)); }
+        Some(ret)
+    }
+
+    /// `a == b`, `a < b` and the like on a value of a type-parameter type:
+    /// the operator needs the prelude trait in the parameter's bounds
+    /// (`PartialEq` for `==` and `!=`, `PartialOrd` for ordering; `Ord` and
+    /// `Eq` imply them). A concrete type is not checked here.
+    fn check_operator_bound(&mut self, operand: TypeId, trait_name: &'static str, op: &'static str, span: Span) {
+        let ty = self.peel_wrappers(operand);
+        if !matches!(self.ctx.types.get(ty), SemaType::Param(_)) { return; }
+        if self.prelude_status(trait_name, ty) == Some(true) { return; }
+        // The prelude trait itself (an operator inside its own default body
+        // on `Self`) is covered by the Self bound; a shadowed prelude name
+        // has no prelude trait to require.
+        if !self.prelude_defs.contains_key(trait_name) { return; }
+        let param = self.param_display_name(ty);
+        self.errors.add_type_error(TypeError::OperatorNeedsBound { op, param, trait_name, span });
     }
 
     // ── Type unwrapping helpers ───────────────────────────────────

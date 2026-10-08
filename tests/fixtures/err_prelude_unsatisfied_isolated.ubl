@@ -1,0 +1,28 @@
+// tests/fixtures/err_prelude_unsatisfied_isolated.ubl
+// A prelude bound that the argument's type does not have: a `double` is not
+// `Ord` (NaN), a struct that derives nothing is not `PartialEq`, a struct
+// that derives only `PartialEq` is not `Clone`, and a list is not `Clone`.
+// One diagnostic each, at the argument.
+// Expected: sema FAIL (UnsatisfiedBound, TYPE-126, four times).
+
+@derive(PartialEq)
+struct Half {
+    n: int,
+}
+
+struct Bare {
+    n: int,
+}
+
+fn rank<T: Ord>(x: T) void { }
+
+fn compare<T: PartialEq>(x: T) void { }
+
+fn copy<T: Clone>(x: T) void { }
+
+fn main() void {
+    rank(2.5)
+    compare(Bare { n = 1 })
+    copy(Half { n = 1 })
+    copy([1, 2])
+}

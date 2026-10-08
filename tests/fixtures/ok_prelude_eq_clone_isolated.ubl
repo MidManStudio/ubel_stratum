@@ -1,0 +1,44 @@
+// tests/fixtures/ok_prelude_eq_clone_isolated.ubl
+// `PartialEq` and `Clone` as bounds and as methods called directly on a
+// value: `eq`, `ne` and `clone` on a derived struct, `eq` on integers and
+// strings, `partial_cmp` on a float. A method the type declares itself
+// still wins over the prelude method of the same name.
+// Expected: sema OK, interpret OK.
+
+@derive(PartialEq, Clone)
+struct Point {
+    x: int,
+    y: int,
+}
+
+@derive(PartialEq)
+struct Tag {
+    id: int,
+}
+
+extend Tag {
+    fn ne(self, other: Tag) bool { return false }
+}
+
+fn same<T: PartialEq>(a: T, b: T) bool {
+    return a == b and a.eq(b) and !a.ne(b)
+}
+
+fn copy<T: Clone>(x: T) T {
+    return x.clone()
+}
+
+fn main() void {
+    let p = Point { x = 1, y = 2 }
+    let q = copy(p)
+    println(same(p, q))
+    println(p.eq(Point { x = 9, y = 9 }))
+    println(q.clone().y)
+    let n = 4
+    let s = "a"
+    let f = 1.5
+    println(n.eq(4))
+    println(s.ne("b"))
+    println(f.partial_cmp(2.5) == Ordering.Less)
+    println(Tag { id = 1 }.ne(Tag { id = 2 }))
+}

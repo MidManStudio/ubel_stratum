@@ -91,6 +91,34 @@ test needs runtime values.
   fails the three `TYPE-125` tests; the original inherent-versus-two-traits
   bug fails two tests.
 
+### `prelude.rs`, `tests/prelude_traits.rs`
+
+**What it does:** `prelude.rs` holds the declarations every program sees
+without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
+`Clone`) as Ubel source. `parse()` calls `prelude::inject` after parsing the
+program. `tests/prelude_traits.rs` (40 tests) covers what each kind of type
+satisfies, the methods, the operators on a type parameter, hand-written impls
+and shadowing.
+
+**Decisions:**
+- The prelude source is lexed once per process and every token span is
+  shifted past `PRELUDE_SPAN_START`, so a prelude node cannot collide with a
+  user node in sema's `Span`-keyed tables. The parser never slices the source
+  by span, so this needs no other change.
+- A name the program declares itself is not injected, nor is anything that
+  depends on it (`DEPENDS_ON`), so a prelude signature never binds to a user's
+  type. Five unit tests in `prelude.rs` pin the dependency table and the
+  shadowing sets.
+- The tests pin the satisfaction table kind by kind, the exact code and
+  position of `TYPE-126`, `TYPE-131` and `TYPE-129`, and that a call through a
+  bound or directly on a value runs the right native method.
+- Mutation-checked: widening floats to `Eq` and `Ord` fails three tests; no
+  supertrait expansion fails three; no operator bound check fails four; no
+  prelude methods on values fails one; accepting hand-written impls fails two;
+  no native prelude methods fails six; a shadowing rule that does not cascade
+  fails five; enums that are not `PartialEq` fail one; collections that
+  satisfy fail two; ordered tuples fail one.
+
 ### `tests/bounds.rs`
 
 **What it does:** Integration tests for trait bounds, slice S1b (46

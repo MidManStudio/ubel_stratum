@@ -4,6 +4,7 @@ pub mod check;
 pub mod cursor;
 pub mod error;
 pub mod keywords;
+pub mod prelude;
 pub mod estimates;
 
 pub(crate) mod parser;
@@ -24,7 +25,9 @@ pub fn parse<'ast>(
     tokens: &[Token],
     source: String,
 ) -> Result<Program<'ast>, ErrorManager> {
-    Parser::new(arena, tokens, source).parse_program()
+    let mut program = Parser::new(arena, tokens, source).parse_program()?;
+    prelude::inject(arena, &mut program);
+    Ok(program)
 }
 
 /// Parse a single expression — used for string interpolation evaluation.

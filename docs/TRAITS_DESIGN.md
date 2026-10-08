@@ -35,7 +35,8 @@
 |---|---|---|
 | **S1a** | **Built** | Trait impls registered in sema and interpreter dispatch; conformance checks (missing method, method not in the trait, signature mismatch with `Self`); default methods inherited or overridden; `Self` in signatures and default bodies; overlap; inherent-first; ambiguity and the qualified call `Trait.method(value)`; calls made through a trait run the trait's method; every trait feature not built yet reported as `TYPE-129` instead of ignored. |
 | **S1b** | **Built** | Bounds: declared bounds validated, bound obligations checked wherever a bounded parameter is instantiated, method calls on a type parameter resolved through its bounds, a method call on an unbounded type parameter an error (`TYPE-130`). |
-| **S2a** | Designed, not built | Prelude traits for the six derives with real signatures, the `Ordering` enum, built-in impls, `@derive` as an impl generator, bounds and operator checks on type parameters, `Hash` and `Eq` on `Dictionary` keys. See "What S2 settled" below. |
+| **S2a, part 1** | **Built** | The prelude traits `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Clone` with real signatures, the `Ordering` enum, what built-in and derived types satisfy, supertrait bounds, the methods callable through a bound and directly on a value, operator checks on type parameters (`TYPE-131`), hand-written impls reported (`TYPE-129`). See "What S2a part 1 settled" below. |
+| **S2a, part 2** | Designed, not built | `Hash` and the `Hasher` type, and `Hash` and `Eq` required of `Dictionary` keys. |
 | **S2b** | Designed, not built | Runtime dispatch: `==`, `!=`, ordering operators, list `contains`, dictionary keys, Linqerizer ordering and `clone` call hand-written impls. |
 | S3 to S6 | Planned | As in section 4. |
 
@@ -65,7 +66,9 @@
   derive names (`PartialEq`, `Eq`, `Hash`, `Ord`, `PartialOrd`, `Clone`) are
   not declared traits until S2, so a bound written with one is `TYPE-129`
   rather than being accepted and ignored. A user trait that happens to use
-  one of those names is a real bound. A bound on a type alias parameter or on
+  one of those names is a real bound. (Since S2a part 1 the five that are
+  prelude traits are ordinary bounds; `Hash` is still `TYPE-129` until the
+  hasher exists.) A bound on a type alias parameter or on
   a method's own generic parameter is `TYPE-129` too, because neither scope
   exists in sema yet.
 - **Where a bound is enforced.** Each place a bounded parameter is
@@ -94,7 +97,7 @@
   or a borrow satisfies the same bounds as the bare value. This can only miss
   a violation, never reject a program that is fine.
 - **Still open:** `where` clauses and bounds with arguments (later); bounds
-  naming built-in traits and impls for built-in types need S2.
+  naming `Hash` and impls for built-in types need S2.
 
 ### What S2 settled (decided 2026-10-07)
 
@@ -123,7 +126,7 @@ traits):
   `Ordering` is a prelude enum `{ Less, Equal, Greater }`. `Hasher` is a
   built-in type. Its surface is proposed as `Hasher.new()` and
   `state.finish() u64`, with each primitive's `hash` writing into the state;
-  it is confirmed when S2a starts.
+  it is confirmed when S2a part 2 starts.
 - **Two deliveries.** S2a is the static side and S2b the runtime dispatch. Until
   S2b lands, a hand-written `impl PartialEq for X` (and the other five) is
   `TYPE-129`, so an impl that `==` would ignore is never accepted silently.
@@ -150,7 +153,65 @@ What reading the code established before this was decided:
   token spans are shifted into a reserved range, and programmatic registration
   with natively implemented methods; diagnostics are rendered by indexing the
   source's lines, so a label that points into the prelude would need handling in
-  the renderer. The mechanism is chosen when S2a is built and recorded here.
+  the renderer. The mechanism was chosen in S2a part 1, see below.
+
+### What S2a part 1 settled
+
+- **The prelude is Ubel source, injected by `parse()`.**
+  `crates/rd_parser/src/prelude.rs` holds the declarations (`Ordering`,
+  `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Clone`). They are lexed once with
+  every token span shifted into the range `Span::is_prelude` reserves (starts
+  at 2^40, so no user node can collide with one in sema's `Span`-keyed
+  tables), parsed with each program and placed in front of the program's own
+  items. This was chosen over programmatic registration because the prelude
+  traits then use the machinery a user trait does: signatures, default
+  methods (`ne`, `lt`, `le`, `gt` and `ge` are written in Ubel), bounds and
+  `Self`.
+- **Shadowing.** A program that declares one of these names keeps its own, and
+  the prelude items that depend on it are dropped with it: `Eq` and
+  `PartialOrd` depend on `PartialEq`, `PartialOrd` and `Ord` on `Ordering`,
+  `Ord` on `PartialOrd` and `Eq`.
+- **Supertraits are a table in sema.** `trait B: A` is not parsed until S3, so
+  a bound `T: Ord` also puts `PartialOrd`, `Eq` and `PartialEq` in force inside
+  the body. Declared bounds stay as written, so a call site raises one
+  obligation per declared bound.
+- **What satisfies a prelude trait** follows what the runtime does with the
+  value:
+
+| Type | `PartialEq` | `Eq` | `PartialOrd` | `Ord` | `Clone` |
+|---|---|---|---|---|---|
+| integers (every width), `string` | yes | yes | yes | yes | yes |
+| `float`, `double`, `f32`, `f64` | yes | no | yes | no | yes |
+| `bool`, `char` | yes | yes | no | no | yes |
+| tuple, optional | when elements are | when elements are | no | no | when elements are |
+| struct | if derived | if derived | if derived | if derived | if derived |
+| enum | yes | yes | no | no | no |
+| every other built-in type | no | no | no | no | no |
+
+  Ordering is limited to what `<` accepts (it is not defined on `bool` or
+  `char`). `==` on a collection is reference identity, so a collection is not
+  `PartialEq`. A value reached through an ownership or reference wrapper has
+  the traits of the value.
+- **Methods.** `eq`, `ne`, `partial_cmp`, `lt`, `le`, `gt`, `ge`, `cmp` and
+  `clone` can be called through a bound and directly on a value whose type has
+  the trait, and `Ord.cmp(a, b)` works in the qualified form. A method on the
+  type itself wins over the prelude method. The call is recorded in
+  `trait_call_sites`; the interpreter runs a built-in or derived type's
+  prelude method natively (`native_prelude_method`), through the same `==` and
+  `<` the operators use, so every numeric width, string and derived struct
+  behaves as it does with the operators.
+- **Operators on a type parameter.** `==` and `!=` need `PartialEq`, and the
+  ordering operators need `PartialOrd`, in the parameter's bounds (`Eq` and
+  `Ord` imply them). Without it the operator is `TYPE-131`
+  (`OperatorNeedsBound`), at the expression. Operators on a concrete type are
+  unchanged: `==` on a struct without `PartialEq` stays reference identity.
+- **Hand-written impls** of the five traits are `TYPE-129` until S2b, and a
+  `Hash` bound is `TYPE-129` until part 2.
+- **Not in part 1:** `Hash`, `Hasher`, the `Dictionary` key requirement
+  (part 2); dispatch to hand-written impls (S2b).
+- **Limits recorded:** an enum is `PartialEq` and `Eq` whatever its payload
+  types are (its comparison is structural at run time); a struct is the
+  traits it derives, nothing else.
 
 ### D7: what has to be specified before S4
 

@@ -46,6 +46,7 @@ crates/rd_parser/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              ← public API: parse() / parse_expr_str()
+    ├── prelude.rs          ← prelude declarations injected by parse()
     ├── cursor.rs           ← Cursor<'tok>: peek/advance/expect/sync
     ├── error.rs            ← error constructor helpers → core ParseError
     ├── parser.rs           ← Parser<'ast,'tok> struct + shared helpers

@@ -1,0 +1,37 @@
+// tests/fixtures/ok_prelude_shadowing_isolated.ubl
+// A program that declares a prelude name keeps its own. Here the program has
+// its own `Ordering` enum and its own `Clone` trait: the prelude drops both,
+// and drops `PartialOrd` and `Ord` with `Ordering` because their signatures
+// mention it. The other prelude traits are still there.
+// Expected: sema OK, interpret OK.
+
+enum Ordering {
+    Before,
+    After,
+}
+
+trait Clone {
+    fn duplicate(self) int
+}
+
+struct Item {
+    n: int,
+}
+
+impl Clone for Item {
+    fn duplicate(self) int { return self.n * 2 }
+}
+
+fn twice<T: Clone>(x: T) int {
+    return x.duplicate()
+}
+
+fn same<T: PartialEq>(a: T, b: T) bool {
+    return a == b
+}
+
+fn main() void {
+    println(twice(Item { n = 4 }))
+    println(Ordering.After == Ordering.After)
+    println(same(1, 1))
+}

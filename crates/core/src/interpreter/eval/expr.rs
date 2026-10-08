@@ -1165,8 +1165,83 @@ fn eval_call_with_receiver<'ast>(
                 return interp.call_method(fn_id, receiver, &args);
             }
         }
+        // A prelude trait has no impl block to find: what a built-in or
+        // derived type does for `eq`, `cmp`, `clone` and the rest is native.
+        if is_prelude_trait(trait_name) {
+            return native_prelude_method(receiver, method_name, &args);
+        }
     }
     eval_method_call(interp, receiver, method_name, &args)
+}
+
+/// The traits declared in the prelude (`ubel_stratum_rd::prelude`).
+fn is_prelude_trait(name: &str) -> bool {
+    matches!(name, "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Clone")
+}
+
+/// Strip the ownership wrappers (`Unique`, `Shared`, `SyncShared`) so a
+/// value is compared, ordered and cloned as the value it holds.
+fn unwrap_ownership(value: Value) -> Value {
+    match value {
+        Value::Unique(inner)                      => unwrap_ownership((*inner).clone()),
+        Value::Shared(rc) | Value::SyncShared(rc) => unwrap_ownership(rc.borrow().clone()),
+        other                                     => other,
+    }
+}
+
+/// `Less`, `Equal` or `Greater`, the prelude enum.
+fn ordering_value(variant: &str) -> Value {
+    Value::Enum {
+        type_name: "Ordering".to_string(),
+        variant:   variant.to_string(),
+        payload:   Box::new(crate::interpreter::value::EnumPayload::None),
+    }
+}
+
+/// The order of two values, through the same `==` and `<` the operators use
+/// (so every numeric width, string and derived struct behaves as it does
+/// there). `None` when they are unordered (a NaN).
+fn order_of(a: &Value, b: &Value) -> Result<Option<std::cmp::Ordering>, Signal> {
+    let truth = |op: BinOp| -> Result<bool, Signal> {
+        Ok(matches!(eval_binop(op, a.clone(), b.clone())?, Value::Bool(true)))
+    };
+    if truth(BinOp::Lt)? { return Ok(Some(std::cmp::Ordering::Less)); }
+    if truth(BinOp::Gt)? { return Ok(Some(std::cmp::Ordering::Greater)); }
+    if truth(BinOp::Eq)? { return Ok(Some(std::cmp::Ordering::Equal)); }
+    Ok(None)
+}
+
+/// The methods of the prelude traits on a built-in or derived value:
+/// `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `partial_cmp`, `cmp`, `clone`.
+fn native_prelude_method(receiver: Value, method: &str, args: &[Value]) -> EvalResult {
+    let receiver = unwrap_ownership(receiver);
+    if method == "clone" {
+        return Ok(receiver.deep_clone());
+    }
+    let other = match args.first() {
+        Some(v) => unwrap_ownership(v.clone()),
+        None => return Err(Signal::Panic(format!("'{}' needs one argument", method))),
+    };
+    let as_bool = |v: Value| matches!(v, Value::Bool(true));
+    match method {
+        "eq" => eval_binop(BinOp::Eq, receiver, other),
+        "ne" => Ok(Value::Bool(!as_bool(eval_binop(BinOp::Eq, receiver, other)?))),
+        "lt" => eval_binop(BinOp::Lt, receiver, other),
+        "le" => eval_binop(BinOp::Le, receiver, other),
+        "gt" => eval_binop(BinOp::Gt, receiver, other),
+        "ge" => eval_binop(BinOp::Ge, receiver, other),
+        "partial_cmp" | "cmp" => {
+            use std::cmp::Ordering;
+            match order_of(&receiver, &other)? {
+                Some(Ordering::Less)    => Ok(ordering_value("Less")),
+                Some(Ordering::Equal)   => Ok(ordering_value("Equal")),
+                Some(Ordering::Greater) => Ok(ordering_value("Greater")),
+                None if method == "partial_cmp" => Ok(Value::Null),
+                None => Err(Signal::Panic("cmp on values that are not ordered".into())),
+            }
+        }
+        _ => Err(Signal::Panic(format!("no prelude method '{}'", method))),
+    }
 }
 
 /// Dispatch a method call given an already-evaluated receiver.
@@ -1439,6 +1514,18 @@ fn eval_qualified_trait_call<'ast>(
         )));
     }
     let receiver = values.remove(0);
+    // A prelude trait has no impl block to find (see `native_prelude_method`).
+    if is_prelude_trait(trait_name) {
+        let has_table_entry = match &receiver {
+            Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => interp.trait_method_table
+                .get(&(type_name.clone(), trait_name.to_string()))
+                .is_some_and(|m| m.contains_key(method)),
+            _ => false,
+        };
+        if !has_table_entry {
+            return native_prelude_method(receiver, method, &values);
+        }
+    }
     let type_name = match &receiver {
         Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => type_name.clone(),
         other => return Err(Signal::Panic(format!(

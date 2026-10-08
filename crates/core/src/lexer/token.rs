@@ -315,10 +315,23 @@ pub struct Span {
     pub column: usize,
 }
 
+/// Prelude declarations (the traits and `Ordering` every program sees
+/// without writing them) are parsed from text of their own, and their spans
+/// are shifted into a range no user source can reach. Sema's tables are keyed
+/// by `Span`, so this is what keeps a prelude node from colliding with a user
+/// node at the same offset. See `ubel_stratum_rd::prelude`.
+pub const PRELUDE_SPAN_START: usize = 1 << 40;
+pub const PRELUDE_LINE_START: usize = 1 << 24;
+
 impl Span {
     pub fn new(start: usize, end: usize, line: usize, column: usize) -> Self {
         Span { start, end, line, column }
     }
+
+    /// Whether this span belongs to a prelude declaration rather than to the
+    /// program's own source.
+    #[inline]
+    pub fn is_prelude(&self) -> bool { self.start >= PRELUDE_SPAN_START }
     pub fn len(&self) -> usize { self.end - self.start }
     pub fn merge(&self, other: &Span) -> Span {
         Span {

@@ -1,0 +1,34 @@
+// tests/fixtures/err_prelude_operator_unbounded_isolated.ubl
+// `==` and `<` on a value of type-parameter type need the matching prelude
+// bound: `PartialEq` for `==` and `!=`, `PartialOrd` for the ordering
+// operators. A parameter with no bound, a parameter with only `PartialEq`
+// used with `<`, and a generic struct method whose parameter is unbounded
+// are each one diagnostic at the expression. `Eq` and `Ord` imply them, so
+// those are fine.
+// Expected: sema FAIL (OperatorNeedsBound, TYPE-131, four times).
+
+fn nothing<T>(a: T, b: T) bool {
+    return a == b
+}
+
+fn too_little<T: PartialEq>(a: T, b: T) bool {
+    return a < b
+}
+
+fn not_equal<T>(a: T, b: T) bool {
+    return a != b
+}
+
+struct Pair<T> {
+    a: T,
+    b: T,
+    fn ordered(self) bool { return self.a <= self.b }
+}
+
+fn fine<T: Ord>(a: T, b: T) bool {
+    return a == b or a < b
+}
+
+fn main() void {
+    println(fine(1, 2))
+}

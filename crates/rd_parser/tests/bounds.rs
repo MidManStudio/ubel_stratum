@@ -548,11 +548,10 @@ fn main() void { println(1) }
 }
 
 #[test]
-fn a_bound_naming_a_built_in_trait_is_type_129_until_the_prelude_traits_exist() {
-    for name in ["PartialEq", "Eq", "Hash", "Ord", "PartialOrd", "Clone"] {
-        let src = format!("fn a<T: {name}>(x: T) int {{ return 1 }}\nfn main() void {{ println(1) }}\n");
-        assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-129"]), "bound {name}");
-    }
+fn a_bound_naming_hash_is_type_129_until_the_hasher_exists() {
+    // The other five derive names are prelude traits now (see prelude.rs).
+    let src = "fn a<T: Hash>(x: T) int { return 1 }\nfn main() void { println(1) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
 }
 
 #[test]

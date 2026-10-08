@@ -242,6 +242,16 @@ pub enum TypeError {
         span:   Span,
     },
 
+    /// `==`, `!=`, `<`, `<=`, `>` or `>=` on a value whose type is a type
+    /// parameter that does not declare the trait the operator needs
+    /// (`PartialEq` for the first two, `PartialOrd` for the others).
+    OperatorNeedsBound {
+        op:         &'static str,
+        param:      String,
+        trait_name: &'static str,
+        span:       Span,
+    },
+
     /// A `type` alias that refers to itself, directly (`type A = A`) or
     /// through other aliases (`type A = B  type B = A`), so it has no
     /// finite expansion. Also reported for an alias that depends on one
@@ -341,6 +351,7 @@ impl TypeError {
             TypeError::OverlappingImpl             { span, .. } => *span,
             TypeError::UnsupportedTraitFeature     { span, .. } => *span,
             TypeError::MethodOnUnboundedParam      { span, .. } => *span,
+            TypeError::OperatorNeedsBound          { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -425,6 +436,9 @@ impl TypeError {
 
             TypeError::MethodOnUnboundedParam { method, param, .. } =>
                 format!("cannot call `{}` on a value of type parameter `{}`: it has no trait bound", method, param),
+
+            TypeError::OperatorNeedsBound { op, param, trait_name, .. } =>
+                format!("`{}` on a value of type parameter `{}` needs a `{}` bound", op, param, trait_name),
 
             TypeError::TypeAliasCycle { name, .. } =>
                 format!("type alias `{}` refers to itself, directly or through other aliases", name),
@@ -533,6 +547,9 @@ impl TypeError {
             TypeError::MethodOnUnboundedParam { method, param, .. } =>
                 Some(format!("declare a bound that provides `{}`, as in `<{}: SomeTrait>`", method, param)),
 
+            TypeError::OperatorNeedsBound { param, trait_name, .. } =>
+                Some(format!("declare the bound, as in `<{}: {}>`", param, trait_name)),
+
             TypeError::TypeAliasCycle { .. } =>
                 Some("an alias is just another name for a type, so it must end in a type that is not itself an alias of the same chain".to_string()),
 
@@ -592,6 +609,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::OverlappingImpl { .. }               => "TYPE-128",
             TypeError::UnsupportedTraitFeature { .. }       => "TYPE-129",
             TypeError::MethodOnUnboundedParam { .. }        => "TYPE-130",
+            TypeError::OperatorNeedsBound { .. }            => "TYPE-131",
         }
     }
     fn span(&self) -> Span { self.span() }

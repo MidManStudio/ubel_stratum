@@ -33,7 +33,9 @@ that feature spans sema and runtime. `crates/rd_parser/tests/statics.rs`
 does it for `static` items, where the runtime half (one value shared by
 every function) is the property most likely to regress silently.
 `traits.rs` covers nominal traits (codes, messages, dispatch order and the
-call-through-a-trait runtime contract). `bounds.rs` covers trait bounds:
+call-through-a-trait runtime contract). `prelude_traits.rs` covers the
+prelude traits (what each kind of type satisfies, the methods, the operators
+on a type parameter, shadowing). `bounds.rs` covers trait bounds:
 which bound is enforced where, the exact count and position of every
 diagnostic, and the rule that a call through a bound runs the trait's method. After `cargo test -p <crate>`, rebuild
 with `cargo build --workspace --all-targets` before using the `pipeline`
