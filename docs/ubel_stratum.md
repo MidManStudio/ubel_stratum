@@ -1242,3 +1242,14 @@ full pipeline to 236, 228, 122, 122 and 122, and the only changes were the five
 new files. Each of eleven reverted fixes fails the tests that guard it. Same
 discipline: every line it wrote was checked for em dashes and first or second
 person.
+
+A fifteenth delivery fixed a build failure of the wasm playground (Deploy Site)
+that the thirteenth delivery caused: `PRELUDE_SPAN_START` was `1 << 40`, which
+overflows the 32-bit `usize` of `wasm32`. It is now `(1u32 << 31) as usize`
+(and `PRELUDE_LINE_START` is computed the same way), and a unit test in
+`prelude.rs` checks that the range and every prelude token span fit in a
+`u32`; with the old value that test fails. The delivery touched `lexer/token.rs`,
+`rd_parser/src/prelude.rs` and three docs. The wasm playground itself still
+cannot be built in the authoring sandbox (no `wasm32` target, and a dependency
+that needs a newer toolchain), so the width of every constant added since the
+playground last built is the thing that was checked by test instead.

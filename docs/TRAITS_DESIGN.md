@@ -159,10 +159,10 @@ What reading the code established before this was decided:
 - **The prelude is Ubel source, injected by `parse()`.**
   `crates/rd_parser/src/prelude.rs` holds the declarations (`Ordering`,
   `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Clone`). They are lexed once with
-  every token span shifted into the range `Span::is_prelude` reserves (starts
-  at 2^40, so no user node can collide with one in sema's `Span`-keyed
-  tables), parsed with each program and placed in front of the program's own
-  items. This was chosen over programmatic registration because the prelude
+  every token span shifted into the range `Span::is_prelude` reserves (it
+  starts at 2^31 so that it fits the 32-bit `usize` of `wasm32`, and no user
+  node can collide with one in sema's `Span`-keyed tables), parsed with each
+  program and placed in front of the program's own items. This was chosen over programmatic registration because the prelude
   traits then use the machinery a user trait does: signatures, default
   methods (`ne`, `lt`, `le`, `gt` and `ge` are written in Ubel), bounds and
   `Self`.

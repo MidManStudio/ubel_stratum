@@ -320,8 +320,13 @@ pub struct Span {
 /// are shifted into a range no user source can reach. Sema's tables are keyed
 /// by `Span`, so this is what keeps a prelude node from colliding with a user
 /// node at the same offset. See `ubel_stratum_rd::prelude`.
-pub const PRELUDE_SPAN_START: usize = 1 << 40;
-pub const PRELUDE_LINE_START: usize = 1 << 24;
+///
+/// The range has to fit a 32-bit `usize` (the wasm playground is built for
+/// `wasm32`), so it starts at 2^31: a program source of 2 GiB or more is not
+/// supported, which no real program reaches. The constant is computed from a
+/// `u32` so that it evaluates on a target of either width.
+pub const PRELUDE_SPAN_START: usize = (1u32 << 31) as usize;
+pub const PRELUDE_LINE_START: usize = (1u32 << 24) as usize;
 
 impl Span {
     pub fn new(start: usize, end: usize, line: usize, column: usize) -> Self {

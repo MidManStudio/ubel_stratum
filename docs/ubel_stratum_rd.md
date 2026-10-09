@@ -106,6 +106,11 @@ and shadowing.
   shifted past `PRELUDE_SPAN_START`, so a prelude node cannot collide with a
   user node in sema's `Span`-keyed tables. The parser never slices the source
   by span, so this needs no other change.
+- The reserved range starts at 2^31, computed from a `u32`, because `wasm32`
+  has a 32-bit `usize`. The first version used 2^40, which compiled natively
+  and failed the wasm playground build (`shift left by 40 would overflow`) when
+  it was deployed; a 64-bit build cannot see that, so a unit test checks that
+  the range and every prelude token span fit in a `u32`.
 - A name the program declares itself is not injected, nor is anything that
   depends on it (`DEPENDS_ON`), so a prelude signature never binds to a user's
   type. Seven unit tests in `prelude.rs` pin the dependency table and the

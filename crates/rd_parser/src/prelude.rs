@@ -164,6 +164,20 @@ pub fn inject<'ast>(arena: &'ast AstArena, program: &mut Program<'ast>) {
 mod tests {
     use super::*;
 
+    /// `wasm32` has a 32-bit `usize`. A span range that does not fit it fails
+    /// to compile there (it did once, with a range that started at 2^40), and
+    /// that cannot be seen from a 64-bit build, so the range is checked here.
+    #[test]
+    fn the_prelude_span_range_fits_a_32_bit_usize() {
+        let max = u32::MAX as u64;
+        assert!(PRELUDE_SPAN_START as u64 <= max);
+        assert!(PRELUDE_LINE_START as u64 <= max);
+        for t in prelude_tokens() {
+            assert!(t.span.start as u64 <= max && t.span.end as u64 <= max, "span {:?}", t.span);
+            assert!(t.span.line as u64 <= max, "span {:?}", t.span);
+        }
+    }
+
     #[test]
     fn nothing_declared_keeps_everything() {
         assert_eq!(kept_names(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hasher", "Hash"]);
