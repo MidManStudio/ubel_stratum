@@ -1,5 +1,6 @@
-//! The prelude traits, slice S2a: `PartialEq`, `Eq`, `PartialOrd`, `Ord` and
-//! `Clone` exist without being declared, with real methods, as bounds, and as
+//! The prelude traits, slice S2a: `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
+//! `Clone` and `Hash` (with the `Hasher` it writes into) exist without being
+//! declared, with real methods, as bounds, and as
 //! what `==`, `<` and `.clone()` need on a type parameter.
 //!
 //! What a type satisfies follows what the runtime does with that kind of
@@ -48,9 +49,9 @@ fn run(source: &str) -> Result<String, String> {
     result.map(|_| output)
 }
 
-/// A struct deriving all five traits, one deriving only `PartialEq`, one
+/// A struct deriving all six traits, one deriving only `PartialEq`, one
 /// deriving nothing, and a plain enum.
-const TYPES: &str = r#"@derive(PartialEq, Eq, PartialOrd, Ord, Clone)
+const TYPES: &str = r#"@derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)
 struct All { n: int }
 @derive(PartialEq)
 struct EqOnly { n: int }
@@ -85,8 +86,8 @@ fn rejected(trait_name: &str, arg: &str) -> bool {
 // ── The five traits are usable without being declared ────────────
 
 #[test]
-fn the_five_prelude_traits_are_usable_as_bounds() {
-    for name in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone"] {
+fn the_six_prelude_traits_are_usable_as_bounds() {
+    for name in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hash"] {
         let src = format!("fn a<T: {name}>(x: T) int {{ return 1 }}\nfn main() void {{ println(a(1)) }}\n");
         assert_eq!(codes(&src), (Stage::Clean, vec![]), "bound {name}");
     }
@@ -235,17 +236,17 @@ fn partial_eq_alone_has_no_cmp() {
 // ── What each kind of type satisfies ─────────────────────────────
 
 #[test]
-fn integers_and_strings_satisfy_all_five() {
+fn integers_and_strings_satisfy_all_six() {
     for arg in ["1", "\"s\""] {
-        for t in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone"] {
+        for t in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hash"] {
             assert!(satisfied(t, arg), "{arg}: {t}");
         }
     }
 }
 
 #[test]
-fn sized_integers_satisfy_all_five() {
-    let src = with_types(r#"fn need<T: Ord + Clone>(x: T) void { }
+fn sized_integers_satisfy_all_six() {
+    let src = with_types(r#"fn need<T: Ord + Clone + Hash>(x: T) void { }
 fn main() void {
     let a: u8 = 1u8
     let b: i64 = 2
@@ -264,14 +265,16 @@ fn floats_are_not_eq_or_ord_because_of_nan() {
         assert!(satisfied("Clone", arg), "{arg}: Clone");
         assert!(rejected("Eq", arg), "{arg}: Eq");
         assert!(rejected("Ord", arg), "{arg}: Ord");
+        assert!(rejected("Hash", arg), "{arg}: Hash");
     }
 }
 
 #[test]
-fn bool_and_char_are_eq_but_not_ordered() {
+fn bool_and_char_are_eq_and_hash_but_not_ordered() {
     for arg in ["true", "'c'"] {
         assert!(satisfied("PartialEq", arg), "{arg}: PartialEq");
         assert!(satisfied("Eq", arg), "{arg}: Eq");
+        assert!(satisfied("Hash", arg), "{arg}: Hash");
         assert!(satisfied("Clone", arg), "{arg}: Clone");
         assert!(rejected("PartialOrd", arg), "{arg}: PartialOrd");
         assert!(rejected("Ord", arg), "{arg}: Ord");
@@ -282,18 +285,21 @@ fn bool_and_char_are_eq_but_not_ordered() {
 fn a_struct_satisfies_exactly_the_traits_it_derives() {
     assert!(satisfied("Ord", "All { n = 1 }"));
     assert!(satisfied("Clone", "All { n = 1 }"));
+    assert!(satisfied("Hash", "All { n = 1 }"));
     assert!(satisfied("PartialEq", "EqOnly { n = 1 }"));
     assert!(rejected("Eq", "EqOnly { n = 1 }"));
     assert!(rejected("Clone", "EqOnly { n = 1 }"));
-    for t in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone"] {
+    assert!(rejected("Hash", "EqOnly { n = 1 }"));
+    for t in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hash"] {
         assert!(rejected(t, "Bare { n = 1 }"), "Bare: {t}");
     }
 }
 
 #[test]
-fn an_enum_is_partial_eq_and_eq_only() {
+fn an_enum_is_partial_eq_eq_and_hash_only() {
     assert!(satisfied("PartialEq", "Color.Red"));
     assert!(satisfied("Eq", "Color.Red"));
+    assert!(satisfied("Hash", "Color.Red"));
     assert!(rejected("Ord", "Color.Red"));
     assert!(rejected("PartialOrd", "Color.Red"));
     assert!(rejected("Clone", "Color.Red"));
@@ -302,7 +308,7 @@ fn an_enum_is_partial_eq_and_eq_only() {
 #[test]
 fn collections_satisfy_none_because_equality_on_them_is_identity() {
     for arg in ["[1, 2]", "List.new()"] {
-        for t in ["PartialEq", "Ord", "Clone"] {
+        for t in ["PartialEq", "Ord", "Clone", "Hash"] {
             let src = format!("fn need<T: {t}>(x: T) void {{ }}\nfn main() void {{ need({arg}) }}\n");
             assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-126"]), "{arg}: {t}");
         }
@@ -324,6 +330,8 @@ fn a_tuple_is_eq_and_clone_when_its_elements_are_and_never_ordered() {
     assert_eq!(tuple_needs("PartialEq", "(1, \"a\")"), clean);
     assert_eq!(tuple_needs("Eq", "(1, \"a\")"), clean);
     assert_eq!(tuple_needs("Clone", "(1, \"a\")"), clean);
+    assert_eq!(tuple_needs("Hash", "(1, \"a\")"), clean);
+    assert_eq!(tuple_needs("Hash", "(1, 2.5)"), rejected);
     assert_eq!(tuple_needs("Ord", "(1, \"a\")"), rejected);
     assert_eq!(tuple_needs("PartialEq", "(1, 2.5)"), clean);
     assert_eq!(tuple_needs("Eq", "(1, 2.5)"), rejected);
@@ -458,7 +466,7 @@ fn main() void { println(1) }
 
 #[test]
 fn a_hand_written_impl_of_each_prelude_trait_is_type_129() {
-    for name in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone"] {
+    for name in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hash"] {
         let src = format!("struct P {{ n: int }}\nimpl {name} for P {{ }}\nfn main() void {{ println(1) }}\n");
         assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-129"]), "impl {name}");
         assert_eq!(lines(&src)[0].0, 2, "impl {name}");
@@ -516,12 +524,218 @@ fn main() void { println(1) }
     assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-122"]));
 }
 
-// ── Hash waits for the hasher ────────────────────────────────────
+// ── Hash and the Hasher ──────────────────────────────────────────
+
+/// `digest(x)` hashes one value into a fresh `Hasher`.
+const DIGEST: &str = r#"fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+"#;
 
 #[test]
-fn hash_is_still_type_129_as_a_bound() {
-    let src = "fn f<T: Hash>(x: T) int { return 1 }\nfn main() void { println(1) }\n";
-    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
+fn hashing_is_deterministic_and_separates_values() {
+    let src = with_types(&format!("{DIGEST}fn main() void {{
+    println(digest(5) == digest(5))
+    println(digest(5) == digest(6))
+    println(digest(\"a\") == digest(\"b\"))
+    println(digest(All {{ n = 1 }}) == digest(All {{ n = 1 }}))
+    println(digest(All {{ n = 1 }}) == digest(All {{ n = 2 }}))
+    println(digest(Color.Red) == digest(Color.Green))
+}}\n"));
+    assert_eq!(run(&src).unwrap(), "true\nfalse\nfalse\ntrue\nfalse\nfalse\n");
+}
+
+#[test]
+fn hashing_is_order_sensitive_and_accumulates_in_the_hasher() {
+    let src = r#"fn main() void {
+    let n = 7
+    let s = "z"
+    let h = Hasher.new()
+    n.hash(h)
+    s.hash(h)
+    let g = Hasher.new()
+    s.hash(g)
+    n.hash(g)
+    println(h.finish() == g.finish())
+    println(h.finish() == h.finish())
+    println(Hasher.new().finish() == Hasher.new().finish())
+}
+"#;
+    assert_eq!(run(src).unwrap(), "false\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_tuple_and_a_tuple_of_the_same_values_hash_alike() {
+    let src = format!("{DIGEST}fn main() void {{
+    let a = (1, \"x\")
+    let b = (1, \"x\")
+    let c = (2, \"x\")
+    println(digest(a) == digest(b))
+    println(digest(a) == digest(c))
+}}\n");
+    assert_eq!(run(&src).unwrap(), "true\nfalse\n");
+}
+
+#[test]
+fn hash_finish_is_a_u64() {
+    let src = "fn main() void {\n    let v: u64 = Hasher.new().finish()\n    println(v == Hasher.new().finish())\n}\n";
+    assert_eq!(run(src).unwrap(), "true\n");
+}
+
+#[test]
+fn hash_without_a_hasher_argument_is_a_type_error() {
+    let src = with_types("fn main() void {\n    let a = All { n = 1 }\n    a.hash(3)\n}\n");
+    let (stage, c) = codes(&src);
+    assert_eq!(stage, Stage::Sema);
+    assert_eq!(c.len(), 1, "got {c:?}");
+}
+
+#[test]
+fn hash_on_a_type_without_the_trait_is_no_such_method() {
+    let src = with_types("fn main() void {\n    let b = Bare { n = 1 }\n    b.hash(Hasher.new())\n}\n");
+    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-104"]));
+}
+
+#[test]
+fn hash_implies_eq_and_partial_eq_inside_a_body() {
+    let src = r#"fn same<T: Hash>(a: T, b: T) bool { return a == b and a.eq(b) }
+fn main() void { println(same(1, 1)) }
+"#;
+    assert_eq!(run(src).unwrap(), "true\n");
+}
+
+#[test]
+fn a_derive_of_hash_without_eq_is_still_a_prerequisite_error() {
+    let src = "@derive(Hash)\nstruct S { n: int }\nfn main() void { println(1) }\n";
+    let (stage, c) = codes(src);
+    assert_eq!(stage, Stage::Sema);
+    assert!(c.contains(&"TYPE-117"), "got {c:?}");
+}
+
+#[test]
+fn a_user_hasher_struct_takes_hash_with_it() {
+    let src = r#"struct Hasher { n: int }
+fn f<T: Hash>(x: T) int { return 1 }
+fn main() void { println(1) }
+"#;
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-122"]));
+}
+
+// ── Dictionary keys must be Hash ─────────────────────────────────
+
+#[test]
+fn dictionary_keys_of_hashable_types_are_accepted() {
+    let src = with_types(r#"fn main() void {
+    let a: Dictionary<string, int> = Dictionary.new()
+    let b: Dictionary<int, int> = Dictionary.new()
+    let c: Dictionary<bool, int> = Dictionary.new()
+    let d: Dictionary<char, int> = Dictionary.new()
+    let e: Dictionary<All, int> = Dictionary.new()
+    let f: Dictionary<Color, int> = Dictionary.new()
+    let u: Dictionary<u8, int> = Dictionary.new()
+    println(1)
+}
+"#);
+    assert_eq!(codes(&src), (Stage::Clean, vec![]));
+}
+
+#[test]
+fn a_dictionary_annotation_with_a_bad_key_is_one_diagnostic_at_the_annotation() {
+    let src = with_types("fn main() void {\n    let d: Dictionary<Bare, int> = Dictionary.new()\n    println(1)\n}\n");
+    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-126"]));
+    assert_eq!(lines(&src), vec![(body_line() + 1, 12)]);
+    assert!(messages(&src)[0].contains("Hash") && messages(&src)[0].contains("Bare"), "got {:?}", messages(&src));
+}
+
+#[test]
+fn a_float_key_is_rejected_because_of_nan() {
+    let src = "fn main() void {\n    let d: Dictionary<float, int> = Dictionary.new()\n    println(1)\n}\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-126"]));
+}
+
+#[test]
+fn an_inferred_dictionary_checks_the_key_it_is_given() {
+    let src = with_types(r#"fn main() void {
+    let a = Dictionary.new()
+    a.set(All { n = 1 }, 5)
+    let b = Dictionary.new()
+    b.set(Bare { n = 1 }, 5)
+    let c = Dictionary.new()
+    println(c.contains_key(Bare { n = 2 }))
+    let d = Dictionary.new()
+    println(d.get(2.5))
+}
+"#);
+    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-126", "TYPE-126", "TYPE-126"]));
+    let found = lines(&src);
+    assert_eq!(found[0].0, body_line() + 4);
+    assert_eq!(found[1].0, body_line() + 6);
+    assert_eq!(found[2].0, body_line() + 8);
+}
+
+#[test]
+fn an_unused_unannotated_dictionary_is_not_an_error() {
+    let src = "fn main() void {\n    let d = Dictionary.new()\n    println(1)\n}\n";
+    assert_eq!(codes(src), (Stage::Clean, vec![]));
+}
+
+#[test]
+fn a_bad_key_named_twice_on_one_line_is_one_diagnostic_and_on_two_lines_is_two() {
+    let one = with_types("fn main() void {\n    let d: Dictionary<Bare, int> = Dictionary.new()\n    println(1)\n}\n");
+    assert_eq!(codes(&one), (Stage::Sema, vec!["TYPE-126"]));
+    let two = with_types("fn main() void {\n    let d: Dictionary<Bare, int> =\n        Dictionary.new()\n    println(1)\n}\n");
+    assert_eq!(codes(&two), (Stage::Sema, vec!["TYPE-126", "TYPE-126"]));
+}
+
+#[test]
+fn a_dictionary_in_a_signature_is_checked() {
+    let src = with_types("fn f(d: Dictionary<Bare, int>) void { }\nfn g(x: Dictionary<float, int>) void { }\nfn main() void { println(1) }\n");
+    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-126", "TYPE-126"]));
+    assert_eq!(lines(&src), vec![(body_line(), 9), (body_line() + 1, 9)]);
+}
+
+#[test]
+fn a_dictionary_nested_in_another_type_is_checked() {
+    let src = "fn f(l: List<Dictionary<float, int>>) void { }\nfn main() void { println(1) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-126"]));
+}
+
+#[test]
+fn a_generic_key_needs_the_hash_bound() {
+    let bad = "fn f<K>(d: Dictionary<K, int>) void { }\nfn main() void { println(1) }\n";
+    assert_eq!(codes(bad), (Stage::Sema, vec!["TYPE-126"]));
+    let good = "fn f<K: Hash>(d: Dictionary<K, int>) void { }\nfn main() void { println(1) }\n";
+    assert_eq!(codes(good), (Stage::Clean, vec![]));
+}
+
+#[test]
+fn a_dictionary_alias_is_checked_where_it_is_used_not_where_it_is_declared() {
+    let src = r#"type Pairs<K, V> = Dictionary<K, V>
+type Names = Dictionary<float, int>
+fn main() void {
+    let a: Pairs<string, int> = Dictionary.new()
+    let b: Pairs<float, int> = Dictionary.new()
+    let c: Names = Dictionary.new()
+    println(1)
+}
+"#;
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-126", "TYPE-126"]));
+    assert_eq!(lines(src), vec![(5, 12), (6, 12)]);
+}
+
+#[test]
+fn a_hashable_dictionary_still_works_at_run_time() {
+    let src = with_types(r#"fn main() void {
+    let d: Dictionary<All, int> = Dictionary.new()
+    d.set(All { n = 1 }, 10)
+    d.set(All { n = 2 }, 20)
+    println(d.get(All { n = 2 }))
+    println(d.contains_key(All { n = 3 }))
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "20\nfalse\n");
 }
 
 // ── @derive still validates as before ────────────────────────────

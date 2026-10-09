@@ -325,6 +325,10 @@ struct Obligation {
     ty:        TypeId,
     trait_def: DefId,
     span:      Span,
+    /// A `Dictionary` key requirement: `let d: Dictionary<float, int> =
+    /// Dictionary.new()` names the key type twice on one line, and one
+    /// mistake is one diagnostic (see `reported_dict_keys`).
+    dict_key:  bool,
 }
 
 /// The generic scope `push_generic_scope` replaced, handed back to
@@ -344,20 +348,16 @@ struct BoundsScope {
     names:  HashMap<TypeId, String>,
 }
 
-/// Trait names that exist only as `@derive` names until the prelude trait
-/// is built (`Hash` waits for the hasher, slice S2a part 2). A bound written
-/// with one is reported as not built yet instead of being ignored.
-const BUILTIN_TRAIT_NAMES: [&str; 1] = ["Hash"];
-
 /// The prelude traits, and the traits each one implies (the derive
 /// prerequisite chain, written as supertraits because `trait B: A` is not
 /// parsed until S3).
-const PRELUDE_TRAITS: [(&str, &[&str]); 5] = [
+const PRELUDE_TRAITS: [(&str, &[&str]); 6] = [
     ("PartialEq",  &[]),
     ("Eq",         &["PartialEq"]),
     ("PartialOrd", &["PartialEq"]),
     ("Ord",        &["PartialOrd", "Eq", "PartialEq"]),
     ("Clone",      &[]),
+    ("Hash",       &["Eq", "PartialEq"]),
 ];
 
 /// What a checked pattern definitively covers, for exhaustiveness.
@@ -460,6 +460,8 @@ struct InferCtx<'a> {
     /// Obligations already reported, so one mistake reached twice (a call
     /// inferred more than once) is one diagnostic.
     reported_obligations: HashSet<(Span, DefId)>,
+    /// Dictionary key mistakes already reported, by line and key type.
+    reported_dict_keys: HashSet<(usize, TypeId)>,
     /// The prelude traits (`PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Clone`),
     /// by definition, and back by name. Present only for a prelude item the
     /// program did not shadow with its own.
@@ -562,6 +564,7 @@ impl<'a> InferCtx<'a> {
             param_names:       HashMap::new(),
             pending_obligations: Vec::new(),
             reported_obligations: HashSet::new(),
+            reported_dict_keys: HashSet::new(),
             prelude_traits:    HashMap::new(),
             prelude_defs:      HashMap::new(),
             impls_registered:  false,
@@ -846,7 +849,7 @@ impl<'a> InferCtx<'a> {
     ///
     /// Keep this in sync with `constructors.rs` and `BUILTIN_NAMESPACES` if
     /// a new collection constructor is added (e.g. a future `Pool.new()`).
-    fn builtin_constructor_type(&mut self, namespace: &str) -> Option<TypeId> {
+    fn builtin_constructor_type(&mut self, namespace: &str, span: Span) -> Option<TypeId> {
         match namespace {
             "List" => {
                 let elem = self.fresh_var();
@@ -855,6 +858,7 @@ impl<'a> InferCtx<'a> {
             "Dictionary" => {
                 let k = self.fresh_var();
                 let v = self.fresh_var();
+                self.require_dict_key(k, span);
                 Some(self.ctx.types.insert(SemaType::Dictionary(k, v)))
             }
             "Queue" => {
@@ -1035,6 +1039,7 @@ impl<'a> InferCtx<'a> {
             TypeKind::Dictionary(kv) => {
                 let (k, v) = kv.map(|(k, v)| (self.ast_type_to_sema(k), self.ast_type_to_sema(v)))
                     .unwrap_or_else(|| (self.fresh_var(), self.fresh_var()));
+                self.require_dict_key(k, ty.span);
                 self.ctx.types.insert(SemaType::Dictionary(k, v))
             }
             TypeKind::Set(inner) => {
@@ -1267,6 +1272,55 @@ impl<'a> InferCtx<'a> {
         }))
     }
 
+    /// Record which traits are the prelude's, before any signature is
+    /// collected: an annotation such as `Dictionary<K, V>` needs to know
+    /// `Hash` while the signature that contains it is being built.
+    fn register_prelude_traits<'ast>(&mut self, program: &Program<'ast>) {
+        for item in program.items {
+            let Item::Trait(t) = item else { continue; };
+            if !t.span.is_prelude() { continue; }
+            let Some((name, _)) = PRELUDE_TRAITS.iter().find(|(n, _)| *n == t.name) else { continue; };
+            if let Some(def_id) = self.ctx.top_level_def(t.name) {
+                self.prelude_traits.insert(def_id, name);
+                self.prelude_defs.insert(name, def_id);
+            }
+        }
+    }
+
+    /// A `Dictionary` key type must implement `Hash` (which implies `Eq`).
+    /// Raised where a dictionary type comes into being: `Dictionary.new()`
+    /// and a `Dictionary<K, V>` annotation. A key that is still unresolved
+    /// at the end of the body is not an error.
+    ///
+    /// Not raised while a `type` alias is being expanded: an alias such as
+    /// `type Pairs<K, V> = Dictionary<K, V>` has no way to declare `K: Hash`
+    /// (bounds on alias parameters are not built), so the requirement is
+    /// checked where the alias is used (`require_dict_keys_in`).
+    fn require_dict_key(&mut self, key: TypeId, span: Span) {
+        if self.alias_prepass { return; }
+        if let Some(hash) = self.prelude_defs.get("Hash").copied() {
+            self.require_bound_with(key, hash, span, true);
+        }
+    }
+
+    /// Every `Dictionary` inside `ty` (an alias's expansion at a use site)
+    /// has a key type that must be `Hash`.
+    fn require_dict_keys_in(&mut self, ty: TypeId, span: Span) {
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Dictionary(k, v) => {
+                self.require_dict_key(k, span);
+                self.require_dict_keys_in(k, span);
+                self.require_dict_keys_in(v, span);
+            }
+            SemaType::List(e) | SemaType::Queue(e) | SemaType::Stack(e) | SemaType::Optional(e) =>
+                self.require_dict_keys_in(e, span),
+            SemaType::Tuple(elems) => {
+                for e in elems { self.require_dict_keys_in(e, span); }
+            }
+            _ => {}
+        }
+    }
+
     // ── Bounds (docs/TRAITS_DESIGN.md, slice S1b) ───────────────────
     //
     // `fn f<T: Shape>(x: T)`: the bound names are validated once per
@@ -1412,12 +1466,6 @@ impl<'a> InferCtx<'a> {
             for name in gp.bounds {
                 match self.resolve_trait_name(name) {
                     Ok(id) => { if !ids.contains(&id) { ids.push(id); } }
-                    Err(None) if BUILTIN_TRAIT_NAMES.contains(name) => {
-                        self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                            feature: "a bound on a built-in trait",
-                            span:    gp.span,
-                        });
-                    }
                     Err(found) => {
                         self.errors.add_type_error(TypeError::NotATrait {
                             name: name.to_string(), found, span: gp.span,
@@ -1459,19 +1507,19 @@ impl<'a> InferCtx<'a> {
     /// with that kind of value today (docs/TRAITS_DESIGN.md, "What S2
     /// settled"). `None` while the type is an unresolved variable.
     ///
-    /// - Integers and `string`: all five. `float` and `double` (and `f32`,
-    ///   `f64`): `PartialEq`, `PartialOrd` and `Clone`, not `Eq` or `Ord`,
-    ///   because of NaN. `bool` and `char`: `PartialEq`, `Eq` and `Clone`
-    ///   (`<` is not defined on them, so neither is ordering).
-    /// - A tuple or an optional: `PartialEq`, `Eq` and `Clone` when its
-    ///   elements have them, never ordering.
-    /// - A struct: the traits it derives. An enum: `PartialEq` and `Eq`.
+    /// - Integers and `string`: all six. `float` and `double` (and `f32`,
+    ///   `f64`): `PartialEq`, `PartialOrd` and `Clone`, not `Eq`, `Hash` or
+    ///   `Ord`, because of NaN. `bool` and `char`: `PartialEq`, `Eq`, `Hash`
+    ///   and `Clone` (`<` is not defined on them, so neither is ordering).
+    /// - A tuple or an optional: `PartialEq`, `Eq`, `Hash` and `Clone` when
+    ///   its elements have them, never ordering.
+    /// - A struct: the traits it derives. An enum: `PartialEq`, `Eq`, `Hash`.
     /// - Every other built-in type: none (`==` on a collection is reference
     ///   identity, so it is not `PartialEq` here).
     fn prelude_status(&mut self, name: &str, ty: TypeId) -> Option<bool> {
         let ty = self.peel_wrappers(ty);
         if ty == TypeId::ERROR { return Some(true); }
-        let eq_like  = matches!(name, "PartialEq" | "Eq" | "Clone");
+        let eq_like  = matches!(name, "PartialEq" | "Eq" | "Clone" | "Hash");
         let all_five = true;
         match self.ctx.types.get(ty).clone() {
             SemaType::Unknown => Some(true),
@@ -1498,7 +1546,7 @@ impl<'a> InferCtx<'a> {
             SemaType::Optional(inner) => if eq_like { self.prelude_status(name, inner) } else { Some(false) },
             SemaType::Named { def, .. } => match self.ctx.symbols.lookup(def).kind {
                 DefKind::Struct { .. } => Some(self.struct_derives.get(&def).is_some_and(|d| d.contains(name))),
-                DefKind::Enum          => Some(matches!(name, "PartialEq" | "Eq")),
+                DefKind::Enum          => Some(matches!(name, "PartialEq" | "Eq" | "Hash")),
                 _                      => Some(false),
             },
             SemaType::Param(_) => Some(self.prelude_defs.get(name)
@@ -1540,19 +1588,24 @@ impl<'a> InferCtx<'a> {
     /// for the impls to be registered. In a body everything waits for the
     /// end of the body, where the diagnostics come out in source order.
     fn require_bound(&mut self, ty: TypeId, trait_def: DefId, span: Span) {
+        self.require_bound_with(ty, trait_def, span, false);
+    }
+
+    fn require_bound_with(&mut self, ty: TypeId, trait_def: DefId, span: Span, dict_key: bool) {
         if !self.impls_registered {
             match self.bound_status(ty, trait_def) {
                 Some(true)  => return,
-                Some(false) => { self.report_unsatisfied(ty, trait_def, span); return; }
+                Some(false) => { self.report_unsatisfied(ty, trait_def, span, dict_key); return; }
                 None        => {}
             }
         }
-        self.pending_obligations.push(Obligation { ty, trait_def, span });
+        self.pending_obligations.push(Obligation { ty, trait_def, span, dict_key });
     }
 
-    fn report_unsatisfied(&mut self, ty: TypeId, trait_def: DefId, span: Span) {
+    fn report_unsatisfied(&mut self, ty: TypeId, trait_def: DefId, span: Span, dict_key: bool) {
         if !self.reported_obligations.insert((span, trait_def)) { return; }
         let ty = self.peel_wrappers(ty);
+        if dict_key && !self.reported_dict_keys.insert((span.line, ty)) { return; }
         let trait_name = self.traits.get(&trait_def)
             .map(|t| t.name.clone())
             .unwrap_or_else(|| self.ctx.symbols.lookup(trait_def).name.clone());
@@ -1572,7 +1625,7 @@ impl<'a> InferCtx<'a> {
         pending.sort_by_key(|o| o.span.start);
         for o in pending {
             if self.bound_status(o.ty, o.trait_def) == Some(false) {
-                self.report_unsatisfied(o.ty, o.trait_def, o.span);
+                self.report_unsatisfied(o.ty, o.trait_def, o.span, o.dict_key);
             }
         }
     }
@@ -1615,12 +1668,6 @@ impl<'a> InferCtx<'a> {
     /// all written in terms of the abstract `Self`.
     fn collect_trait_info<'ast>(&mut self, t: &TraitDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(t.name) else { return; };
-        if t.span.is_prelude() {
-            if let Some((name, _)) = PRELUDE_TRAITS.iter().find(|(n, _)| *n == t.name) {
-                self.prelude_traits.insert(def_id, name);
-                self.prelude_defs.insert(name, def_id);
-            }
-        }
         if !t.generic_params.is_empty() {
             self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
                 feature: "a generic trait",
@@ -2108,10 +2155,13 @@ impl<'a> InferCtx<'a> {
             });
             return self.unknown();
         }
-        self.substitute(exp.target, &args)
+        let expanded = self.substitute(exp.target, &args);
+        self.require_dict_keys_in(expanded, span);
+        expanded
     }
 
     fn collect_signatures<'ast>(&mut self, program: &Program<'ast>) {
+        self.register_prelude_traits(program);
         self.register_generic_arities(program);
         self.register_generic_bounds(program);
         self.collect_alias_sigs(program);
@@ -3559,7 +3609,7 @@ impl<'a> InferCtx<'a> {
                                     _        => SemaType::SyncShared(arg_ty), // exhaustive via the outer matches! guard
                                 });
                             }
-                            if let Some(ctor_ty) = self.builtin_constructor_type(ns) {
+                            if let Some(ctor_ty) = self.builtin_constructor_type(ns, expr.span) {
                                 // §9 FIX (MEMORY_MODEL.md) — LOW tier has
                                 // no memory model of its own yet
                                 // (`OwnedRef` + borrow checker are Phase 4,
@@ -3816,6 +3866,30 @@ impl<'a> InferCtx<'a> {
                                     let value_list = self.ctx.types.insert(SemaType::List(elem));
                                     let dict = self.ctx.types.insert(SemaType::Dictionary(selector_ret, value_list));
                                     return self.apply_receiver_wrap(wrap, dict);
+                                }
+                            }
+
+                            // A key handed to a dictionary whose own key type is
+                            // not written anywhere (`let d = Dictionary.new()`)
+                            // must be `Hash`: the annotation check cannot see
+                            // it. A written key type was checked where it is
+                            // written.
+                            if kind == instance::ReceiverKind::Dict
+                                && matches!(field, "set" | "get" | "contains_key")
+                            {
+                                if let SemaType::Dictionary(k, _) = self.ctx.types.get(bare_ty).clone() {
+                                    let k = self.apply(k);
+                                    if matches!(self.ctx.types.get(k), SemaType::Var(_) | SemaType::Unknown) {
+                                        let key_span = args.first().map(|a| match &a.kind {
+                                            ArgKind::Positional(e)       => e.span,
+                                            ArgKind::Named { value, .. } => value.span,
+                                        });
+                                        if let Some(sp) = key_span {
+                                            if let Some(arg_ty) = self.ctx.expr_type(sp) {
+                                                self.require_dict_key(arg_ty, sp);
+                                            }
+                                        }
+                                    }
                                 }
                             }
 

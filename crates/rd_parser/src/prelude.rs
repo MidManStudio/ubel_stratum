@@ -10,7 +10,8 @@
 //! the prelude items that depend on the shadowed one are left out with it
 //! (`DEPENDS_ON`), so a prelude signature never binds to a user's type.
 //!
-//! The trait names are the ones `@derive` already uses. What a built-in or
+//! The trait names are the ones `@derive` already uses. `Hasher` is the
+//! state `Hash.hash` writes into; `Hash.hash` itself is native. What a built-in or
 //! derived type does for each method is native, see
 //! `ubel_stratum::sema` (satisfaction) and the interpreter (the methods).
 
@@ -66,6 +67,16 @@ trait Ord {
 trait Clone {
     fn clone(self) Self
 }
+
+struct Hasher {
+    state: u64,
+    fn new() Hasher { return Hasher { state = 1469598103934665603u64 } }
+    fn finish(self) u64 { return self.state }
+}
+
+trait Hash {
+    fn hash(self, state: Hasher) void
+}
 "#;
 
 /// Prelude names and what each one needs declared before it can stand. A
@@ -78,6 +89,8 @@ const DEPENDS_ON: &[(&str, &[&str])] = &[
     ("PartialOrd", &["PartialEq", "Ordering"]),
     ("Ord",        &["PartialOrd", "Eq", "Ordering"]),
     ("Clone",      &[]),
+    ("Hasher",     &[]),
+    ("Hash",       &["Hasher", "Eq", "PartialEq"]),
 ];
 
 /// The prelude's tokens with their spans shifted. Lexed once per process.
@@ -153,22 +166,32 @@ mod tests {
 
     #[test]
     fn nothing_declared_keeps_everything() {
-        assert_eq!(kept_names(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone"]);
+        assert_eq!(kept_names(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_ordering_takes_the_ordering_traits_with_it() {
-        assert_eq!(kept_names(&["Ordering"]), vec!["PartialEq", "Eq", "Clone"]);
+        assert_eq!(kept_names(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_partial_eq_takes_every_trait_built_on_it() {
-        assert_eq!(kept_names(&["PartialEq"]), vec!["Ordering", "Clone"]);
+        assert_eq!(kept_names(&["PartialEq"]), vec!["Ordering", "Clone", "Hasher"]);
     }
 
     #[test]
     fn a_user_clone_loses_only_clone() {
-        assert_eq!(kept_names(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord"]);
+        assert_eq!(kept_names(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Hasher", "Hash"]);
+    }
+
+    #[test]
+    fn a_user_hasher_takes_hash_with_it() {
+        assert_eq!(kept_names(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone"]);
+    }
+
+    #[test]
+    fn a_user_eq_takes_ord_and_hash_but_leaves_partial_eq() {
+        assert_eq!(kept_names(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Hasher"]);
     }
 
     #[test]

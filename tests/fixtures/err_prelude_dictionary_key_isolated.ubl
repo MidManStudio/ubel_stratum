@@ -1,0 +1,24 @@
+// tests/fixtures/err_prelude_dictionary_key_isolated.ubl
+// A `Dictionary` key that is not `Hash`: a struct that derives nothing in an
+// annotation, a `float` (NaN) in an annotation, a struct handed to the
+// first `set` of an unannotated dictionary, a `contains_key` on another one,
+// and an unbounded generic key. Before this, a struct key without `Hash` and
+// `Eq` compiled and `get` quietly returned null for an equal key.
+// One diagnostic each, at the key.
+// Expected: sema FAIL (UnsatisfiedBound, TYPE-126, five times).
+
+struct Bare {
+    n: int,
+}
+
+fn generic<K>(d: Dictionary<K, int>) void {
+}
+
+fn main() void {
+    let a: Dictionary<Bare, int> = Dictionary.new()
+    let b: Dictionary<float, int> = Dictionary.new()
+    let c = Dictionary.new()
+    c.set(Bare { n = 1 }, 5)
+    let d = Dictionary.new()
+    println(d.contains_key(Bare { n = 2 }))
+}

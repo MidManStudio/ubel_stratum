@@ -1,0 +1,49 @@
+// tests/fixtures/ok_prelude_hash_isolated.ubl
+// `Hash` is a prelude trait and `Hasher` a prelude struct: a generic function
+// bounded by `Hash` writes any hashable value into a fresh `Hasher` and reads
+// the result back with `finish()`. Equal values give equal hashes, different
+// values different hashes, and the order values are written in matters.
+// Integers, strings, booleans, a derived struct, an enum and a tuple are all
+// `Hash`. Printed results are comparisons, never raw hash values.
+// Expected: sema OK, interpret OK.
+
+@derive(PartialEq, Eq, Hash)
+struct Key {
+    id: int,
+    name: string,
+}
+
+enum Suit {
+    Hearts,
+    Spades,
+}
+
+fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+
+fn main() void {
+    println(digest(5) == digest(5))
+    println(digest(5) == digest(6))
+    println(digest("a") == digest("b"))
+    println(digest(true) == digest(false))
+    println(digest(Key { id = 1, name = "x" }) == digest(Key { id = 1, name = "x" }))
+    println(digest(Key { id = 1, name = "x" }) == digest(Key { id = 2, name = "x" }))
+    println(digest(Suit.Hearts) == digest(Suit.Spades))
+    let pair = (1, "x")
+    let same = (1, "x")
+    println(digest(pair) == digest(same))
+
+    let a = Hasher.new()
+    let b = Hasher.new()
+    let n = 7
+    let s = "z"
+    n.hash(a)
+    s.hash(a)
+    s.hash(b)
+    n.hash(b)
+    println(a.finish() == b.finish())
+    println(a.finish() == a.finish())
+}

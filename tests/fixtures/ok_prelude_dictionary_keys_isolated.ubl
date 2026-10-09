@@ -1,0 +1,49 @@
+// tests/fixtures/ok_prelude_dictionary_keys_isolated.ubl
+// A `Dictionary` key must be `Hash`. Strings, integers, booleans, characters,
+// a struct that derives `Hash`, an enum and a sized integer are all fine,
+// whether the key type is written in an annotation or learned from the first
+// `set`. A dictionary that never gets a key is not an error, a generic key
+// that declares `K: Hash` is fine, and an alias is checked where it is used.
+// Expected: sema OK, interpret OK.
+
+@derive(PartialEq, Eq, Hash)
+struct Pos {
+    x: int,
+    y: int,
+}
+
+enum Color {
+    Red,
+    Green,
+}
+
+type Table<K, V> = Dictionary<K, V>
+
+fn count<K: Hash>(d: Dictionary<K, int>) int {
+    return d.len()
+}
+
+fn main() void {
+    let names: Dictionary<string, int> = Dictionary.new()
+    let ids: Dictionary<int, string> = Dictionary.new()
+    let flags: Dictionary<bool, int> = Dictionary.new()
+    let letters: Dictionary<char, int> = Dictionary.new()
+    let small: Dictionary<u8, int> = Dictionary.new()
+    let by_color: Dictionary<Color, int> = Dictionary.new()
+    let unused = Dictionary.new()
+
+    let grid: Dictionary<Pos, string> = Dictionary.new()
+    grid.set(Pos { x = 1, y = 2 }, "a")
+    grid.set(Pos { x = 3, y = 4 }, "b")
+    println(grid.get(Pos { x = 3, y = 4 }))
+    println(grid.contains_key(Pos { x = 9, y = 9 }))
+
+    let learned = Dictionary.new()
+    learned.set(Pos { x = 0, y = 0 }, 1)
+    println(learned.contains_key(Pos { x = 0, y = 0 }))
+
+    let aliased: Table<string, int> = Dictionary.new()
+    aliased.set("k", 5)
+    println(aliased.get("k"))
+    println(count(aliased))
+}

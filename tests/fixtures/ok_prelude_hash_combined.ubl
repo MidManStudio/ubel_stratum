@@ -1,0 +1,50 @@
+// tests/fixtures/ok_prelude_hash_combined.ubl
+// `Hash` beside the features it lives with: a generic function that writes
+// two values of different types into one hasher, a generic struct whose
+// parameter is `Hash + Eq` and whose method hashes its field, `Hash` implying
+// `Eq` and `PartialEq` inside a body, a bounded function held in a variable,
+// and a dictionary keyed by a derived struct used from a generic function.
+// Expected: sema OK, interpret OK.
+
+@derive(PartialEq, Eq, Hash, Clone)
+struct Id {
+    n: int,
+}
+
+fn combine<A: Hash, B: Hash>(a: A, b: B) u64 {
+    let h = Hasher.new()
+    a.hash(h)
+    b.hash(h)
+    return h.finish()
+}
+
+struct Bucket<T: Hash> {
+    item: T,
+    fn code(self) u64 {
+        let h = Hasher.new()
+        self.item.hash(h)
+        return h.finish()
+    }
+}
+
+fn same_key<T: Hash>(a: T, b: T) bool {
+    return a == b and a.eq(b)
+}
+
+fn lookup<K: Hash>(d: Dictionary<K, int>, k: K) int {
+    return d.get(k)
+}
+
+fn main() void {
+    println(combine(1, "x") == combine(1, "x"))
+    println(combine(1, "x") == combine("x", 1))
+    let b = Bucket { item = Id { n = 3 } }
+    let c = Bucket { item = Id { n = 3 } }
+    println(b.code() == c.code())
+    println(same_key(Id { n = 1 }, Id { n = 1 }))
+    let f = combine
+    println(f(2, 3) == combine(2, 3))
+    let d: Dictionary<Id, int> = Dictionary.new()
+    d.set(Id { n = 7 }, 70)
+    println(lookup(d, Id { n = 7 }))
+}

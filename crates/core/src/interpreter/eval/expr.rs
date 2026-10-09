@@ -1176,7 +1176,7 @@ fn eval_call_with_receiver<'ast>(
 
 /// The traits declared in the prelude (`ubel_stratum_rd::prelude`).
 fn is_prelude_trait(name: &str) -> bool {
-    matches!(name, "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Clone")
+    matches!(name, "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Clone" | "Hash")
 }
 
 /// Strip the ownership wrappers (`Unique`, `Shared`, `SyncShared`) so a
@@ -1211,12 +1211,33 @@ fn order_of(a: &Value, b: &Value) -> Result<Option<std::cmp::Ordering>, Signal> 
     Ok(None)
 }
 
+/// `value.hash(state)`: mix the value's hash into the prelude `Hasher`'s
+/// `state` field. Order matters (the old state is rotated before the new
+/// hash is folded in), so hashing `a` then `b` differs from `b` then `a`,
+/// and the same values in the same order always give the same `finish()`.
+fn native_hash_into(value: &Value, args: &[Value]) -> EvalResult {
+    let Some(Value::Struct { fields, .. }) = args.first() else {
+        return Err(Signal::Panic("'hash' needs a Hasher argument".into()));
+    };
+    let mut fields = fields.borrow_mut();
+    let old = match fields.get("state") {
+        Some(Value::UInt(s)) => *s,
+        _ => return Err(Signal::Panic("'hash' needs a Hasher argument".into())),
+    };
+    let next = (old.rotate_left(5) ^ value.compute_hash()).wrapping_mul(0x517c_c1b7_2722_0a95);
+    fields.insert("state".to_string(), Value::UInt(next));
+    Ok(Value::Void)
+}
+
 /// The methods of the prelude traits on a built-in or derived value:
 /// `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `partial_cmp`, `cmp`, `clone`.
 fn native_prelude_method(receiver: Value, method: &str, args: &[Value]) -> EvalResult {
     let receiver = unwrap_ownership(receiver);
     if method == "clone" {
         return Ok(receiver.deep_clone());
+    }
+    if method == "hash" {
+        return native_hash_into(&receiver, args);
     }
     let other = match args.first() {
         Some(v) => unwrap_ownership(v.clone()),

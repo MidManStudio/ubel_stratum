@@ -95,9 +95,10 @@ test needs runtime values.
 
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-`Clone`) as Ubel source. `parse()` calls `prelude::inject` after parsing the
-program. `tests/prelude_traits.rs` (40 tests) covers what each kind of type
-satisfies, the methods, the operators on a type parameter, hand-written impls
+`Clone`, `Hasher`, `Hash`) as Ubel source. `parse()` calls `prelude::inject` after parsing the
+program. `tests/prelude_traits.rs` (59 tests) covers what each kind of type
+satisfies, the methods, hashing, the `Dictionary` key requirement, the
+operators on a type parameter, hand-written impls
 and shadowing.
 
 **Decisions:**
@@ -107,7 +108,7 @@ and shadowing.
   by span, so this needs no other change.
 - A name the program declares itself is not injected, nor is anything that
   depends on it (`DEPENDS_ON`), so a prelude signature never binds to a user's
-  type. Five unit tests in `prelude.rs` pin the dependency table and the
+  type. Seven unit tests in `prelude.rs` pin the dependency table and the
   shadowing sets.
 - The tests pin the satisfaction table kind by kind, the exact code and
   position of `TYPE-126`, `TYPE-131` and `TYPE-129`, and that a call through a
@@ -117,11 +118,17 @@ and shadowing.
   prelude methods on values fails one; accepting hand-written impls fails two;
   no native prelude methods fails six; a shadowing rule that does not cascade
   fails five; enums that are not `PartialEq` fail one; collections that
-  satisfy fail two; ordered tuples fail one.
+  satisfy fail two; ordered tuples fail one. For part 2: floats that are
+  `Hash` fail seven tests; enums that are not `Hash` fail three; no key check
+  at an annotation fails five, at `Dictionary.new()` one, at the first `set` of
+  an inferred dictionary one; an alias not checked at its use fails one and an
+  alias checked at its declaration fails one; no same-line dedupe fails four; a
+  `hash` that does nothing fails three; hashing that is not order-sensitive
+  fails one; `Hash` without its supertraits fails one.
 
 ### `tests/bounds.rs`
 
-**What it does:** Integration tests for trait bounds, slice S1b (46
+**What it does:** Integration tests for trait bounds, slice S1b (45
 tests). Source goes through `check_source` for the stage, codes, messages and
 positions, and through the interpreter (sema, then both setters, then
 `run_program`) where a test needs runtime values.

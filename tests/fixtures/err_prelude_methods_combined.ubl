@@ -1,9 +1,8 @@
 // tests/fixtures/err_prelude_methods_combined.ubl
 // Prelude methods only exist where the trait does: `cmp` on a struct that
 // derives nothing, `eq` on a list, `cmp` through a `PartialEq` bound (which
-// does not include it), an `Ord` bound given a `double`, and a `Hash` bound
-// (the hasher is not built yet, so it is reported, never ignored).
-// Expected: sema FAIL (TYPE-104 three times, TYPE-126, TYPE-129).
+// does not include it), and an `Ord` bound given a `double`.
+// Expected: sema FAIL (TYPE-104 three times, TYPE-126).
 
 struct Bare {
     n: int,
@@ -11,10 +10,6 @@ struct Bare {
 
 fn through<T: PartialEq>(a: T, b: T) bool {
     return a.cmp(b) == Ordering.Less
-}
-
-fn hashed<T: Hash>(x: T) int {
-    return 1
 }
 
 fn need_ord<T: Ord>(x: T) void { }

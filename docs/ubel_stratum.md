@@ -1191,6 +1191,30 @@ and no others of the file, and the one mutation that first failed nothing (the
 span sort) led to an added test. Same discipline: every line it wrote was
 checked for em dashes and first or second person.
 
+**Decisions (traits, slice S2a part 2):**
+- The prelude gains `struct Hasher` (a `u64` `state`, an associated `new()`,
+  `finish()`) and `trait Hash` (`hash(self, state: Hasher) void`), both Ubel
+  source in `prelude.rs`; `Hash` depends on `Hasher`, `Eq` and `PartialEq` for
+  shadowing. `PRELUDE_TRAITS` gives `Hash` the supertraits `Eq` and
+  `PartialEq`, matching the `@derive(Hash)` prerequisite rule.
+- `register_prelude_traits` records the prelude traits in the first step of
+  `collect_signatures`, before any signature is built, because an annotation
+  such as `Dictionary<K, V>` needs `Hash` while its own signature is collected
+  (it used to be recorded in `collect_trait_info`).
+- `prelude_status` answers `Hash` like `Eq` for every kind except the floats,
+  and an enum is `Hash`. `BUILTIN_TRAIT_NAMES` and its `TYPE-129` arm are gone.
+- `require_dict_key` raises a `Hash` obligation with `dict_key` set. It is
+  called from `builtin_constructor_type` (`Dictionary.new()`) and the
+  `TypeKind::Dictionary` annotation arm, never while `alias_prepass` is set;
+  `expand_alias` calls `require_dict_keys_in` on the expansion, so an alias is
+  checked where it is used. The builtin-kind method branch checks the first
+  argument of `set`, `get` and `contains_key` when the dictionary's key type is
+  still unresolved. `report_unsatisfied` reports a dictionary key once per line
+  and key type (`reported_dict_keys`).
+- `native_hash_into` (`eval/expr.rs`) folds `Value::compute_hash` into the
+  `Hasher`'s `state` (rotate, xor, multiply), and `Hash` joined
+  `is_prelude_trait`.
+
 A thirteenth delivery (traits slice S2a, part 1) touched `rd_parser/lib.rs`
 (`parse()` injects the prelude), `lexer/token.rs` (the reserved span range),
 `sema/type_infer.rs`, `interpreter/eval/expr.rs` and the TypeError enum
@@ -1205,3 +1229,16 @@ reverted fixes fails the tests that guard it; one mutation (supertrait
 expansion) first failed nothing because it reverted only one of two paths, and
 was redone on the function itself. Same discipline: every line it wrote was
 checked for em dashes and first or second person.
+
+A fourteenth delivery (traits slice S2a, part 2) touched `rd_parser/src/prelude.rs`
+(`Hasher`, `Hash`), `sema/type_infer.rs` and `interpreter/eval/expr.rs`, and
+grew `tests/prelude_traits.rs` from 40 to 59 tests (and changed ten of the old ones to include `Hash`), the unit
+tests in `prelude.rs` to seven, and `tests/fixtures` with five new files and
+two edited ones (`err_bound_unsupported_combined`, `err_prelude_methods_combined`,
+which had used a `Hash` bound as their unsupported example). `tests/bounds.rs`
+lost one test, the `Hash` bound as `TYPE-129`. It is cumulative on part 1. The
+fixture sweep went from 231 lexed, 223 parsed, 119 through sema, interpreter and
+full pipeline to 236, 228, 122, 122 and 122, and the only changes were the five
+new files. Each of eleven reverted fixes fails the tests that guard it. Same
+discipline: every line it wrote was checked for em dashes and first or second
+person.

@@ -36,7 +36,7 @@
 | **S1a** | **Built** | Trait impls registered in sema and interpreter dispatch; conformance checks (missing method, method not in the trait, signature mismatch with `Self`); default methods inherited or overridden; `Self` in signatures and default bodies; overlap; inherent-first; ambiguity and the qualified call `Trait.method(value)`; calls made through a trait run the trait's method; every trait feature not built yet reported as `TYPE-129` instead of ignored. |
 | **S1b** | **Built** | Bounds: declared bounds validated, bound obligations checked wherever a bounded parameter is instantiated, method calls on a type parameter resolved through its bounds, a method call on an unbounded type parameter an error (`TYPE-130`). |
 | **S2a, part 1** | **Built** | The prelude traits `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Clone` with real signatures, the `Ordering` enum, what built-in and derived types satisfy, supertrait bounds, the methods callable through a bound and directly on a value, operator checks on type parameters (`TYPE-131`), hand-written impls reported (`TYPE-129`). See "What S2a part 1 settled" below. |
-| **S2a, part 2** | Designed, not built | `Hash` and the `Hasher` type, and `Hash` and `Eq` required of `Dictionary` keys. |
+| **S2a, part 2** | **Built** | `Hash` and the `Hasher` struct, `Hash` satisfaction, and `Hash` (which implies `Eq`) required of `Dictionary` keys. See "What S2a part 2 settled" below. |
 | **S2b** | Designed, not built | Runtime dispatch: `==`, `!=`, ordering operators, list `contains`, dictionary keys, Linqerizer ordering and `clone` call hand-written impls. |
 | S3 to S6 | Planned | As in section 4. |
 
@@ -66,9 +66,8 @@
   derive names (`PartialEq`, `Eq`, `Hash`, `Ord`, `PartialOrd`, `Clone`) are
   not declared traits until S2, so a bound written with one is `TYPE-129`
   rather than being accepted and ignored. A user trait that happens to use
-  one of those names is a real bound. (Since S2a part 1 the five that are
-  prelude traits are ordinary bounds; `Hash` is still `TYPE-129` until the
-  hasher exists.) A bound on a type alias parameter or on
+  one of those names is a real bound. (Since S2a all six are prelude traits
+  and ordinary bounds.) A bound on a type alias parameter or on
   a method's own generic parameter is `TYPE-129` too, because neither scope
   exists in sema yet.
 - **Where a bound is enforced.** Each place a bounded parameter is
@@ -124,9 +123,9 @@ traits):
 | `Clone` | `clone(self) Self` | |
 
   `Ordering` is a prelude enum `{ Less, Equal, Greater }`. `Hasher` is a
-  built-in type. Its surface is proposed as `Hasher.new()` and
-  `state.finish() u64`, with each primitive's `hash` writing into the state;
-  it is confirmed when S2a part 2 starts.
+  built-in type. Its surface is `Hasher.new()` and `state.finish() u64`, with
+  each value's `hash` writing into the state (confirmed 2026-10-08, built in
+  S2a part 2).
 - **Two deliveries.** S2a is the static side and S2b the runtime dispatch. Until
   S2b lands, a hand-written `impl PartialEq for X` (and the other five) is
   `TYPE-129`, so an impl that `==` would ignore is never accepted silently.
@@ -178,15 +177,15 @@ What reading the code established before this was decided:
 - **What satisfies a prelude trait** follows what the runtime does with the
   value:
 
-| Type | `PartialEq` | `Eq` | `PartialOrd` | `Ord` | `Clone` |
-|---|---|---|---|---|---|
-| integers (every width), `string` | yes | yes | yes | yes | yes |
-| `float`, `double`, `f32`, `f64` | yes | no | yes | no | yes |
-| `bool`, `char` | yes | yes | no | no | yes |
-| tuple, optional | when elements are | when elements are | no | no | when elements are |
-| struct | if derived | if derived | if derived | if derived | if derived |
-| enum | yes | yes | no | no | no |
-| every other built-in type | no | no | no | no | no |
+| Type | `PartialEq` | `Eq` | `PartialOrd` | `Ord` | `Clone` | `Hash` |
+|---|---|---|---|---|---|---|
+| integers (every width), `string` | yes | yes | yes | yes | yes | yes |
+| `float`, `double`, `f32`, `f64` | yes | no | yes | no | yes | no |
+| `bool`, `char` | yes | yes | no | no | yes | yes |
+| tuple, optional | when elements are | when elements are | no | no | when elements are | when elements are |
+| struct | if derived | if derived | if derived | if derived | if derived | if derived |
+| enum | yes | yes | no | no | no | yes |
+| every other built-in type | no | no | no | no | no | no |
 
   Ordering is limited to what `<` accepts (it is not defined on `bool` or
   `char`). `==` on a collection is reference identity, so a collection is not
@@ -205,13 +204,53 @@ What reading the code established before this was decided:
   `Ord` imply them). Without it the operator is `TYPE-131`
   (`OperatorNeedsBound`), at the expression. Operators on a concrete type are
   unchanged: `==` on a struct without `PartialEq` stays reference identity.
-- **Hand-written impls** of the five traits are `TYPE-129` until S2b, and a
-  `Hash` bound is `TYPE-129` until part 2.
+- **Hand-written impls** of the five traits are `TYPE-129` until S2b.
 - **Not in part 1:** `Hash`, `Hasher`, the `Dictionary` key requirement
-  (part 2); dispatch to hand-written impls (S2b).
+  (part 2, below); dispatch to hand-written impls (S2b).
 - **Limits recorded:** an enum is `PartialEq` and `Eq` whatever its payload
   types are (its comparison is structural at run time); a struct is the
   traits it derives, nothing else.
+
+### What S2a part 2 settled
+
+- **`Hasher` is an ordinary struct in the prelude**, with one field
+  (`state: u64`), an associated `new()` and a `finish()`:
+  `let h = Hasher.new()`, `x.hash(h)`, `h.finish()`. `Hash` is a prelude trait
+  with `hash(self, state: Hasher) void`. It depends on `Hasher`, `Eq` and
+  `PartialEq` for shadowing (a program that declares `Hasher` loses `Hash`).
+- **`hash` is native.** It folds `Value::compute_hash` of the receiver into
+  `state`, rotating the old state first, so hashing `a` then `b` differs from
+  `b` then `a`, and the same values in the same order always give the same
+  `finish()`. Raw hash values are not part of the language contract: they come
+  from the standard library's `DefaultHasher` and can change with the
+  toolchain, so tests and fixtures compare hashes and never print them.
+- **What is `Hash`:** integers of every width, `string`, `bool` and `char`; a
+  tuple or optional when its elements are; a struct that derives `Hash`; an
+  enum. Not `float`, `double`, `f32` or `f64` (NaN), and no other built-in
+  type. `Hash` implies `Eq` and `PartialEq` inside a body, matching the derive
+  prerequisite rule (`@derive(Hash)` needs `Eq`, `TYPE-117`).
+- **`Dictionary` keys must be `Hash`** (which implies `Eq`). One obligation,
+  `Hash`, because every `Hash` type is also `Eq`; the diagnostic is the usual
+  `TYPE-126`. It is raised where a dictionary type is written or created:
+  a `Dictionary<K, V>` annotation (in a signature, a field, a `let` or nested
+  in another type), `Dictionary.new()`, and the first key handed to
+  `set`, `get` or `contains_key` of a dictionary whose key type is not written
+  anywhere. A key type that is written is checked where it is written, not
+  again at each call. An unannotated dictionary that never receives a key is
+  not an error.
+- **One mistake, one diagnostic.** `let d: Dictionary<float, int> =
+  Dictionary.new()` names the key twice on one line; a key mistake is reported
+  once per line and key type. The same mistake on two lines is two diagnostics.
+- **Aliases.** `type Pairs<K, V> = Dictionary<K, V>` cannot declare `K: Hash`
+  (bounds on alias parameters are not built), so nothing is checked where an
+  alias is declared; every use is checked after expansion, so `Pairs<float, int>`
+  is `TYPE-126` at the use.
+- **Generic keys.** `fn f<K>(d: Dictionary<K, int>)` is `TYPE-126` for the
+  unbounded `K`; `K: Hash` is accepted.
+- **Hand-written `impl Hash`** is `TYPE-129` until S2b, with the other five.
+- **Not covered:** the runtime `Dict` is still a `Vec` of pairs searched by
+  `equals`, so hashing has no consumer yet and the requirement is a static
+  contract; `Set<T>` elements and `Linqerizer.group_by` keys are not checked.
 
 ### D7: what has to be specified before S4
 

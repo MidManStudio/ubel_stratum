@@ -841,8 +841,7 @@ Known gaps of S1b, recorded rather than hidden:
 - `eq`, `ne`, `partial_cmp`, `lt`, `le`, `gt`, `ge`, `cmp` and `clone` can be
   called on a built-in or derived value directly, and through the qualified
   form `Ord.cmp(a, b)`.
-- A hand-written impl of one of the five is `TYPE-129` until S2b, and a `Hash`
-  bound is `TYPE-129` until S2a part 2.
+- A hand-written impl of one of the five is `TYPE-129` until S2b.
 
 Known gaps of S2a part 1, recorded rather than hidden:
 
@@ -856,7 +855,38 @@ Known gaps of S2a part 1, recorded rather than hidden:
   (`need((1, "a"))` is a parse error); bind it first. Found while testing, not
   related to traits.
 
-**Traits, slices S2a part 2 to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S2a part 2.** `Hash`, `Hasher` and the `Dictionary` key
+requirement. See `docs/TRAITS_DESIGN.md`, "What S2a part 2 settled".
+
+- `Hasher` is a prelude struct (`Hasher.new()`, `state.finish() u64`) and
+  `Hash` a prelude trait (`hash(self, state: Hasher) void`). `hash` is native:
+  it folds the receiver's `compute_hash` into the state, order-sensitively.
+- `Hash` is satisfied by integers, `string`, `bool`, `char`, tuples and
+  optionals of hashable elements, enums and structs that derive it; not by
+  floats, and `Hash` implies `Eq` and `PartialEq` inside a body.
+- A `Dictionary` key must be `Hash`: at an annotation, at `Dictionary.new()`
+  and at the first key given to `set`, `get` or `contains_key` of an
+  unannotated dictionary. Before this a struct key without `Hash` and `Eq`
+  compiled and `get` returned null for an equal key.
+- An alias to a dictionary is checked where it is used.
+
+Known gaps of S2a part 2, recorded rather than hidden:
+
+- The runtime `Dict` is a `Vec` of pairs searched by `equals`; hashing has no
+  consumer, so the requirement is static only.
+- `Set<T>` elements and `Linqerizer.group_by` keys are not required to be
+  `Hash`.
+- An unannotated dictionary learns nothing from `set`: its key type stays
+  unresolved, so only the first-key check applies, and a second `set` with a
+  different key type is not compared with the first.
+- Raw hash values come from `DefaultHasher` and are not stable across
+  toolchains; nothing may depend on them.
+- `fn g() Dictionary<float, int> { return Dictionary.new() }` reports a type
+  mismatch ("found void") on the returned `Dictionary.new()`, besides the key
+  error. Found while testing; the `Dictionary.new()` return typing is not
+  related to traits.
+
+**Traits, slices S2b to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

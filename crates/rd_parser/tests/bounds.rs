@@ -548,13 +548,6 @@ fn main() void { println(1) }
 }
 
 #[test]
-fn a_bound_naming_hash_is_type_129_until_the_hasher_exists() {
-    // The other five derive names are prelude traits now (see prelude.rs).
-    let src = "fn a<T: Hash>(x: T) int { return 1 }\nfn main() void { println(1) }\n";
-    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
-}
-
-#[test]
 fn a_user_trait_named_like_a_derive_is_a_real_bound() {
     let src = r#"trait Ord { fn rank(self) int }
 struct A { v: int }

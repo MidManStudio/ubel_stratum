@@ -1,17 +1,11 @@
 // tests/fixtures/err_bound_unsupported_combined.ubl
 // Bounds that parse but cannot be enforced yet are reported, never
-// silently ignored: a built-in trait name that has no prelude trait yet
-// (`Hash`, which waits for the hasher), a bound on a type alias parameter,
-// and a bound on a method's own generic parameter. Each is one TYPE-129 for
-// now.
-// Expected: sema FAIL (UnsupportedTraitFeature, TYPE-129, three times).
+// silently ignored: a bound on a type alias parameter and a bound on a
+// method's own generic parameter. Each is one TYPE-129 for now.
+// Expected: sema FAIL (UnsupportedTraitFeature, TYPE-129, twice).
 
 trait Shape {
     fn area(self) int
-}
-
-fn largest<T: Hash>(a: T, b: T) T {
-    return a
 }
 
 type Pair<T: Shape> = List<T>
