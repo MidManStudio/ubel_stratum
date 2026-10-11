@@ -252,6 +252,16 @@ pub enum TypeError {
         span:       Span,
     },
 
+    /// A hand-written impl of a prelude trait for a type that does not
+    /// implement the traits that trait builds on (`impl Ord for P` needs
+    /// `PartialOrd` and `Eq`, and through them `PartialEq`).
+    MissingSupertraitImpl {
+        trait_name: String,
+        supertrait: &'static str,
+        type_name:  String,
+        span:       Span,
+    },
+
     /// A `type` alias that refers to itself, directly (`type A = A`) or
     /// through other aliases (`type A = B  type B = A`), so it has no
     /// finite expansion. Also reported for an alias that depends on one
@@ -352,6 +362,7 @@ impl TypeError {
             TypeError::UnsupportedTraitFeature     { span, .. } => *span,
             TypeError::MethodOnUnboundedParam      { span, .. } => *span,
             TypeError::OperatorNeedsBound          { span, .. } => *span,
+            TypeError::MissingSupertraitImpl       { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -439,6 +450,9 @@ impl TypeError {
 
             TypeError::OperatorNeedsBound { op, param, trait_name, .. } =>
                 format!("`{}` on a value of type parameter `{}` needs a `{}` bound", op, param, trait_name),
+
+            TypeError::MissingSupertraitImpl { trait_name, supertrait, type_name, .. } =>
+                format!("`impl {} for {}` needs `{}`, which `{}` does not implement", trait_name, type_name, supertrait, type_name),
 
             TypeError::TypeAliasCycle { name, .. } =>
                 format!("type alias `{}` refers to itself, directly or through other aliases", name),
@@ -550,6 +564,9 @@ impl TypeError {
             TypeError::OperatorNeedsBound { param, trait_name, .. } =>
                 Some(format!("declare the bound, as in `<{}: {}>`", param, trait_name)),
 
+            TypeError::MissingSupertraitImpl { supertrait, type_name, .. } =>
+                Some(format!("add `@derive({})` or `impl {} for {} {{ .. }}`", supertrait, supertrait, type_name)),
+
             TypeError::TypeAliasCycle { .. } =>
                 Some("an alias is just another name for a type, so it must end in a type that is not itself an alias of the same chain".to_string()),
 
@@ -610,6 +627,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::UnsupportedTraitFeature { .. }       => "TYPE-129",
             TypeError::MethodOnUnboundedParam { .. }        => "TYPE-130",
             TypeError::OperatorNeedsBound { .. }            => "TYPE-131",
+            TypeError::MissingSupertraitImpl { .. }         => "TYPE-132",
         }
     }
     fn span(&self) -> Span { self.span() }

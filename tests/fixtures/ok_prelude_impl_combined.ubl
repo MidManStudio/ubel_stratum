@@ -1,0 +1,80 @@
+// tests/fixtures/ok_prelude_impl_combined.ubl
+// Hand-written impls beside the features they meet: a user type with `Ord`
+// used as the parameter of a generic struct with an `Ord` bound, an enum
+// that replaces its automatic `PartialEq` with its own, a dictionary keyed
+// by a type with its own `eq` and reached through an alias, a `static`
+// counting how often `eq` runs, and a tuple-free comparison of derived
+// structs whose fields carry impls.
+// Expected: sema OK, interpret OK.
+
+static EQ_CALLS: int = 0
+
+struct Id {
+    n: int,
+}
+
+impl PartialEq for Id {
+    fn eq(self, other: Id) bool {
+        EQ_CALLS += 1
+        return self.n % 10 == other.n % 10
+    }
+}
+
+impl Eq for Id {
+}
+
+impl Hash for Id {
+    fn hash(self, state: Hasher) void {
+        let last = self.n % 10
+        last.hash(state)
+    }
+}
+
+impl PartialOrd for Id {
+    fn partial_cmp(self, other: Id) Ordering? {
+        let a = self.n % 10
+        let b = other.n % 10
+        if a < b { return Ordering.Less }
+        if a > b { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+
+impl Ord for Id {
+    fn cmp(self, other: Id) Ordering {
+        let a = self.n % 10
+        let b = other.n % 10
+        if a < b { return Ordering.Less }
+        if a > b { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+
+enum Mode {
+    Fast,
+    Slow,
+}
+
+impl PartialEq for Mode {
+    fn eq(self, other: Mode) bool { return true }
+}
+
+struct SortedPair<T: Ord> {
+    lo: T,
+    hi: T,
+    fn ordered(self) bool { return self.lo <= self.hi }
+}
+
+type Table<K, V> = Dictionary<K, V>
+
+fn main() void {
+    let p = SortedPair { lo = Id { n = 13 }, hi = Id { n = 27 } }
+    println(p.ordered())
+    println(Mode.Fast == Mode.Slow)
+
+    let t: Table<Id, string> = Dictionary.new()
+    t.set(Id { n = 5 }, "five")
+    println(t.get(Id { n = 15 }))
+    println(t.contains_key(Id { n = 6 }))
+    println(EQ_CALLS > 0)
+}

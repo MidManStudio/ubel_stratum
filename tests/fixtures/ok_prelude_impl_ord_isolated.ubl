@@ -1,0 +1,97 @@
+// tests/fixtures/ok_prelude_impl_ord_isolated.ubl
+// A hand-written `impl PartialOrd` and `impl Ord`: the ordering operators
+// call the impl (an impl's own `lt` overrides the default), a generic
+// `T: Ord` function reaches `cmp`, an enum can order itself, and the
+// Linqerizer's `order_by` sorts by the impl's `partial_cmp`. An impl needs the
+// traits beneath it: `PartialEq` and `Eq` are written too.
+// Expected: sema OK, interpret OK.
+
+enum Level {
+    Low,
+    Mid,
+    High,
+}
+
+fn rank(l: Level) int {
+    match l {
+        Level.Low => { return 0 }
+        Level.Mid => { return 1 }
+        Level.High => { return 2 }
+    }
+}
+
+impl PartialOrd for Level {
+    fn partial_cmp(self, other: Level) Ordering? {
+        let a = rank(self)
+        let b = rank(other)
+        if a < b { return Ordering.Less }
+        if a > b { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+
+struct Score {
+    points: int,
+}
+
+impl PartialEq for Score {
+    fn eq(self, other: Score) bool { return self.points == other.points }
+}
+
+impl Eq for Score {
+}
+
+impl PartialOrd for Score {
+    fn partial_cmp(self, other: Score) Ordering? {
+        // Higher scores sort first.
+        if self.points > other.points { return Ordering.Less }
+        if self.points < other.points { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+
+impl Ord for Score {
+    fn cmp(self, other: Score) Ordering {
+        if self.points > other.points { return Ordering.Less }
+        if self.points < other.points { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+
+struct Odd {
+    v: int,
+}
+
+impl PartialEq for Odd {
+    fn eq(self, other: Odd) bool { return self.v == other.v }
+}
+
+impl PartialOrd for Odd {
+    fn partial_cmp(self, other: Odd) Ordering? { return Ordering.Equal }
+    fn lt(self, other: Odd) bool { return true }
+}
+
+fn first<T: Ord>(a: T, b: T) T {
+    if a < b { return a }
+    return b
+}
+
+fn main() void {
+    println(Level.Low < Level.High)
+    println(Level.High <= Level.Mid)
+    println(Level.Mid.gt(Level.Low))
+
+    let best = Score { points = 90 }
+    let worst = Score { points = 10 }
+    println(best < worst)
+    println(best.cmp(worst) == Ordering.Less)
+    println(first(worst, best).points)
+
+    println(Odd { v = 1 } < Odd { v = 1 })
+    println(Odd { v = 1 } > Odd { v = 1 })
+
+    let scores = [worst, Score { points = 50 }, best]
+    let sorted = scores.query().order_by(fn(s) s).to_list()
+    println(sorted[0].points)
+    println(sorted[2].points)
+}

@@ -7,7 +7,9 @@
 //! value (docs/TRAITS_DESIGN.md, "What S2 settled"): the tests pin that table,
 //! the exact code, count and position of every diagnostic, and that a call
 //! through a bound or directly on a value runs the right native method.
-//! Hand-written impls of these traits are `TYPE-129` until slice S2b.
+//! Hand-written impls of these traits (slice S2b) are in the last sections:
+//! they are checked like any trait impl, and `==`, `<`, `contains`, dictionary
+//! keys, `order_by` and the rest call them.
 
 use ubel_stratum::ast::arena::AstArena;
 use ubel_stratum::interpreter::Interpreter;
@@ -462,23 +464,6 @@ fn main() void { println(1) }
     assert_eq!(lines(src)[0].0, 4);
 }
 
-// ── Hand-written impls wait for S2b ──────────────────────────────
-
-#[test]
-fn a_hand_written_impl_of_each_prelude_trait_is_type_129() {
-    for name in ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hash"] {
-        let src = format!("struct P {{ n: int }}\nimpl {name} for P {{ }}\nfn main() void {{ println(1) }}\n");
-        assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-129"]), "impl {name}");
-        assert_eq!(lines(&src)[0].0, 2, "impl {name}");
-    }
-}
-
-#[test]
-fn a_hand_written_impl_for_an_enum_is_type_129_too() {
-    let src = "enum C { A }\nimpl PartialEq for C {\n    fn eq(self, other: C) bool { return true }\n}\nfn main() void { println(1) }\n";
-    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
-}
-
 // ── Shadowing ────────────────────────────────────────────────────
 
 #[test]
@@ -746,4 +731,387 @@ fn derive_prerequisites_are_still_enforced() {
     let (stage, c) = codes(src);
     assert_eq!(stage, Stage::Sema);
     assert!(c.contains(&"TYPE-117"), "got {c:?}");
+}
+
+// ── Hand-written impls (slice S2b) ───────────────────────────────
+
+/// `Money` compares, orders and hashes by whole dollars, so two amounts in
+/// the same dollar are equal even though their cents differ.
+const MONEY: &str = r#"struct Money { cents: int }
+
+impl PartialEq for Money {
+    fn eq(self, other: Money) bool { return self.cents / 100 == other.cents / 100 }
+}
+
+impl Eq for Money {
+}
+
+impl Hash for Money {
+    fn hash(self, state: Hasher) void {
+        let dollars = self.cents / 100
+        dollars.hash(state)
+    }
+}
+
+impl PartialOrd for Money {
+    fn partial_cmp(self, other: Money) Ordering? {
+        let a = self.cents / 100
+        let b = other.cents / 100
+        if a < b { return Ordering.Less }
+        if a > b { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+
+impl Ord for Money {
+    fn cmp(self, other: Money) Ordering {
+        let a = self.cents / 100
+        let b = other.cents / 100
+        if a < b { return Ordering.Less }
+        if a > b { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+
+impl Clone for Money {
+    fn clone(self) Money { return Money { cents = self.cents + 1 } }
+}
+"#;
+
+fn with_money(body: &str) -> String {
+    format!("{MONEY}{body}")
+}
+
+fn money_line() -> usize {
+    MONEY.lines().count() + 1
+}
+
+#[test]
+fn a_hand_written_impl_of_every_prelude_trait_is_accepted() {
+    let src = with_money("fn main() void { println(1) }\n");
+    assert_eq!(codes(&src), (Stage::Clean, vec![]));
+}
+
+#[test]
+fn equals_and_not_equals_call_the_impls_eq() {
+    let src = with_money(r#"fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let c = Money { cents = 250 }
+    println(a == b)
+    println(a != b)
+    println(a == c)
+    println(a != c)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\nfalse\ntrue\n");
+}
+
+#[test]
+fn an_impls_own_ne_overrides_the_default() {
+    let src = r#"struct Flag { on: bool }
+impl PartialEq for Flag {
+    fn eq(self, other: Flag) bool { return true }
+    fn ne(self, other: Flag) bool { return true }
+}
+fn main() void {
+    let a = Flag { on = true }
+    let b = Flag { on = false }
+    println(a == b)
+    println(a != b)
+}
+"#;
+    assert_eq!(run(src).unwrap(), "true\ntrue\n");
+}
+
+#[test]
+fn the_ordering_operators_call_the_impl() {
+    let src = with_money(r#"fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let c = Money { cents = 250 }
+    println(a < c)
+    println(a < b)
+    println(a <= b)
+    println(c > a)
+    println(c >= c)
+    println(a.lt(c))
+    println(a.cmp(c) == Ordering.Less)
+    println(c.partial_cmp(a) == Ordering.Greater)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n");
+}
+
+#[test]
+fn an_impls_own_lt_overrides_the_default() {
+    let src = r#"struct N { v: int }
+@derive(PartialEq)
+struct M { v: int }
+impl PartialEq for N {
+    fn eq(self, other: N) bool { return self.v == other.v }
+}
+impl PartialOrd for N {
+    fn partial_cmp(self, other: N) Ordering? { return Ordering.Equal }
+    fn lt(self, other: N) bool { return true }
+}
+fn main() void {
+    let a = N { v = 1 }
+    let b = N { v = 1 }
+    println(a < b)
+    println(a <= b)
+    println(a > b)
+}
+"#;
+    assert_eq!(run(src).unwrap(), "true\ntrue\nfalse\n");
+}
+
+#[test]
+fn a_call_through_a_bound_runs_the_impl() {
+    let src = with_money(r#"fn same<T: PartialEq>(a: T, b: T) bool { return a == b and a.eq(b) }
+fn biggest<T: Ord>(a: T, b: T) T {
+    if a > b { return a }
+    return b
+}
+fn dup<T: Clone>(x: T) T { return x.clone() }
+fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let c = Money { cents = 250 }
+    println(same(a, b))
+    println(same(a, c))
+    println(biggest(a, c).cents)
+    println(dup(a).cents)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\n250\n151\n");
+}
+
+#[test]
+fn hashing_goes_through_the_impls_hash() {
+    let src = with_money(r#"fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let c = Money { cents = 250 }
+    println(digest(a) == digest(b))
+    println(digest(a) == digest(c))
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\n");
+}
+
+#[test]
+fn clone_calls_the_impls_clone_directly_on_a_value() {
+    let src = with_money("fn main() void {\n    let a = Money { cents = 5 }\n    println(a.clone().cents)\n}\n");
+    assert_eq!(run(&src).unwrap(), "6\n");
+}
+
+#[test]
+fn contains_on_every_collection_uses_the_impls_eq() {
+    let src = with_money(r#"fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let far = Money { cents = 900 }
+    let l = [a]
+    println(l.contains(b))
+    println(l.contains(far))
+    let q: Queue<Money> = Queue.new()
+    q.enqueue(a)
+    println(q.contains(b))
+    let st: Stack<Money> = Stack.new()
+    st.push(a)
+    println(st.contains(b))
+    println(st.contains(far))
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\ntrue\ntrue\nfalse\n");
+}
+
+#[test]
+fn dictionary_keys_are_found_by_the_impls_eq() {
+    let src = with_money(r#"fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let c = Money { cents = 250 }
+    let d: Dictionary<Money, string> = Dictionary.new()
+    d.set(a, "one")
+    println(d.get(b))
+    println(d.contains_key(c))
+    d.set(b, "again")
+    println(d.len())
+    println(d.get(a))
+    d[c] = "three"
+    println(d[c])
+    d[a] = "replaced"
+    println(d.len())
+    println(d[b])
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "one\nfalse\n1\nagain\nthree\n2\nreplaced\n");
+}
+
+#[test]
+fn order_by_and_group_by_use_the_impls() {
+    let src = r#"@derive(PartialEq)
+struct Job { name: string, rank: Rank }
+struct Rank { n: int }
+impl PartialEq for Rank {
+    fn eq(self, other: Rank) bool { return self.n / 10 == other.n / 10 }
+}
+impl PartialOrd for Rank {
+    fn partial_cmp(self, other: Rank) Ordering? {
+        let a = other.n / 10
+        let b = self.n / 10
+        if a < b { return Ordering.Less }
+        if a > b { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+fn main() void {
+    let jobs = [Job { name = "a", rank = Rank { n = 1 } }, Job { name = "b", rank = Rank { n = 95 } }, Job { name = "c", rank = Rank { n = 50 } }]
+    let sorted = jobs.query().order_by(fn(j) j.rank).to_list()
+    println(sorted[0].name)
+    println(sorted[2].name)
+    let groups = jobs.query().group_by(fn(j) j.rank)
+    println(groups.len())
+}
+"#;
+    assert_eq!(run(src).unwrap(), "b\na\n3\n");
+}
+
+#[test]
+fn a_derived_struct_compares_a_field_by_that_fields_impl() {
+    let src = with_money(r#"@derive(PartialEq, Eq, PartialOrd, Ord)
+struct Wallet { m: Money, n: int }
+fn main() void {
+    let a = Wallet { m = Money { cents = 150 }, n = 1 }
+    let b = Wallet { m = Money { cents = 199 }, n = 1 }
+    let c = Wallet { m = Money { cents = 250 }, n = 1 }
+    println(a == b)
+    println(a == c)
+    println(a < c)
+    println(a < b)
+    println(a <= b)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\ntrue\nfalse\ntrue\n");
+}
+
+#[test]
+fn an_enum_may_order_itself_and_replace_its_automatic_eq() {
+    let src = r#"enum Level { Low, Mid, High }
+fn rank(l: Level) int {
+    match l {
+        Level.Low => { return 0 }
+        Level.Mid => { return 1 }
+        Level.High => { return 2 }
+    }
+}
+impl PartialOrd for Level {
+    fn partial_cmp(self, other: Level) Ordering? {
+        let a = rank(self)
+        let b = rank(other)
+        if a < b { return Ordering.Less }
+        if a > b { return Ordering.Greater }
+        return Ordering.Equal
+    }
+}
+impl PartialEq for Level {
+    fn eq(self, other: Level) bool { return rank(self) / 2 == rank(other) / 2 }
+}
+fn main() void {
+    println(Level.Low < Level.High)
+    println(Level.High <= Level.Mid)
+    println(Level.Mid.gt(Level.Low))
+    println(Level.Mid == Level.Low)
+    println(Level.High == Level.Low)
+}
+"#;
+    assert_eq!(run(src).unwrap(), "true\nfalse\ntrue\ntrue\nfalse\n");
+}
+
+#[test]
+fn an_enum_without_an_ordering_impl_still_cannot_be_ordered() {
+    let src = "enum Level { Low, High }\nfn main() void { println(Level.Low < Level.High) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-118"]));
+}
+
+#[test]
+fn a_user_type_with_an_impl_satisfies_the_bound_and_one_without_does_not() {
+    let src = with_money(r#"struct Plain { n: int }
+fn need<T: Ord>(x: T) void { }
+fn main() void {
+    need(Money { cents = 1 })
+    need(Plain { n = 1 })
+}
+"#);
+    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-126"]));
+    assert_eq!(lines(&src)[0].0, money_line() + 4);
+}
+
+#[test]
+fn a_derive_and_an_impl_of_the_same_trait_overlap() {
+    let src = "@derive(PartialEq)\nstruct A { n: int }\nimpl PartialEq for A {\n    fn eq(self, other: A) bool { return true }\n}\nfn main() void { println(1) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-128"]));
+    assert_eq!(lines(src), vec![(3, 1)]);
+}
+
+#[test]
+fn an_impl_needs_the_traits_it_builds_on_and_reports_the_first_missing() {
+    let cases = [
+        ("Ord", "fn cmp(self, other: B) Ordering { return Ordering.Equal }", "PartialOrd"),
+        ("PartialOrd", "fn partial_cmp(self, other: B) Ordering? { return Ordering.Equal }", "PartialEq"),
+        ("Hash", "fn hash(self, state: Hasher) void { }", "Eq"),
+    ];
+    for (name, method, missing) in cases {
+        let src = format!("struct B {{ n: int }}\nimpl {name} for B {{\n    {method}\n}}\nfn main() void {{ println(1) }}\n");
+        assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-132"]), "impl {name}");
+        assert!(messages(&src)[0].contains(missing), "impl {name}: {:?}", messages(&src));
+        assert_eq!(lines(&src), vec![(2, 1)], "impl {name}");
+    }
+}
+
+#[test]
+fn eq_needs_partial_eq() {
+    let src = "struct B { n: int }\nimpl Eq for B {\n}\nfn main() void { println(1) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-132"]));
+}
+
+#[test]
+fn an_impl_missing_a_required_method_is_type_123() {
+    let src = "struct B { n: int }\nimpl PartialEq for B {\n}\nfn main() void { println(1) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-123"]));
+}
+
+#[test]
+fn an_impl_with_the_wrong_signature_is_type_125() {
+    let src = "struct B { n: int }\nimpl PartialEq for B {\n    fn eq(self, other: int) bool { return true }\n}\nfn main() void { println(1) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-125"]));
+}
+
+#[test]
+fn an_impl_for_a_built_in_type_is_still_not_supported() {
+    let src = "impl PartialEq for int {\n    fn eq(self, other: int) bool { return true }\n}\nfn main() void { println(1) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
+}
+
+#[test]
+fn types_without_impls_behave_as_before() {
+    // `==` on a struct with no PartialEq is still reference identity, and a
+    // derived comparison still goes field by field.
+    let src = with_types(r#"fn main() void {
+    let a = Bare { n = 1 }
+    let b = Bare { n = 1 }
+    println(a == b)
+    println(a == a)
+    println(All { n = 1 } == All { n = 1 })
+    println(All { n = 1 } < All { n = 2 })
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "false\ntrue\ntrue\ntrue\n");
 }

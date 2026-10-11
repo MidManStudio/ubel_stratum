@@ -1,0 +1,72 @@
+// tests/fixtures/ok_prelude_impl_eq_isolated.ubl
+// A hand-written `impl PartialEq` is what `==` and `!=` call, what a generic
+// `T: PartialEq` function reaches, what `contains` on a list, queue and stack
+// uses, and what finds a dictionary key. Two amounts in the same dollar are
+// equal here although their cents differ. An impl's own `ne` overrides the
+// default.
+// Expected: sema OK, interpret OK.
+
+struct Money {
+    cents: int,
+}
+
+impl PartialEq for Money {
+    fn eq(self, other: Money) bool { return self.cents / 100 == other.cents / 100 }
+}
+
+impl Eq for Money {
+}
+
+impl Hash for Money {
+    fn hash(self, state: Hasher) void {
+        let dollars = self.cents / 100
+        dollars.hash(state)
+    }
+}
+
+struct Flag {
+    on: bool,
+}
+
+impl PartialEq for Flag {
+    fn eq(self, other: Flag) bool { return true }
+    fn ne(self, other: Flag) bool { return true }
+}
+
+fn same<T: PartialEq>(a: T, b: T) bool {
+    return a == b and a.eq(b)
+}
+
+fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let c = Money { cents = 250 }
+    println(a == b)
+    println(a != c)
+    println(same(a, b))
+    println(same(a, c))
+
+    let l = [a]
+    println(l.contains(b))
+    println(l.contains(c))
+    let q: Queue<Money> = Queue.new()
+    q.enqueue(a)
+    println(q.contains(b))
+    let st: Stack<Money> = Stack.new()
+    st.push(a)
+    println(st.contains(c))
+
+    let d: Dictionary<Money, string> = Dictionary.new()
+    d.set(a, "one")
+    println(d.get(b))
+    println(d.contains_key(c))
+    d.set(b, "again")
+    println(d.len())
+    d[c] = "three"
+    println(d[c])
+
+    let x = Flag { on = true }
+    let y = Flag { on = false }
+    println(x == y)
+    println(x != y)
+}

@@ -17,7 +17,7 @@ use crate::ast::expressions::{
 };
 use crate::ast::literals::{Align, FormatSpec, InterpolationPart, IntSuffix, Literal, NumericBase};
 use crate::ast::types::{Type, TypeKind};
-use crate::interpreter::eval::{stmt, pattern, FunctionBody, FunctionDef, Interpreter};
+use crate::interpreter::eval::{stmt, pattern, user_ops, FunctionBody, FunctionDef, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
 
 // ── Main entry ────────────────────────────────────────────────────
@@ -84,6 +84,9 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 _ => {
                     let lv = eval_expr(interp, lhs)?;
                     let rv = eval_expr(interp, rhs)?;
+                    if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+                        if let Some(v) = interp.user_comparison(*op, &lv, &rv)? { return Ok(v); }
+                    }
                     eval_binop(*op, lv, rv)
                 }
             }
@@ -199,6 +202,14 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         ExprKind::Index { target, index } => {
             let coll = eval_expr(interp, target)?;
             let idx  = eval_expr(interp, index)?;
+            if let Value::Dict(rc) = &coll {
+                if user_ops::may_have_user_ops(&idx) {
+                    return match interp.dict_position(rc, &idx)? {
+                        Some(i) => Ok(rc.borrow()[i].1.clone()),
+                        None    => Err(Signal::Panic("key not found in dictionary".into())),
+                    };
+                }
+            }
             eval_index(coll, idx)
         }
 
@@ -975,6 +986,13 @@ fn write_lvalue<'ast>(
                         )))
                     }
                 }
+                (Value::Dict(rc), key) if user_ops::may_have_user_ops(&key) => {
+                    match interp.dict_position(&rc, &key)? {
+                        Some(i) => rc.borrow_mut()[i].1 = value,
+                        None    => rc.borrow_mut().push((key, value)),
+                    }
+                    Ok(Value::Void)
+                }
                 (Value::Dict(rc), key) => {
                     let mut dict = rc.borrow_mut();
                     if let Some(entry) = dict.iter_mut().find(|(k, _)| k.equals(&key)) {
@@ -1168,7 +1186,7 @@ fn eval_call_with_receiver<'ast>(
         // A prelude trait has no impl block to find: what a built-in or
         // derived type does for `eq`, `cmp`, `clone` and the rest is native.
         if is_prelude_trait(trait_name) {
-            return native_prelude_method(receiver, method_name, &args);
+            return native_prelude_method(interp, receiver, method_name, &args);
         }
     }
     eval_method_call(interp, receiver, method_name, &args)
@@ -1201,7 +1219,11 @@ fn ordering_value(variant: &str) -> Value {
 /// The order of two values, through the same `==` and `<` the operators use
 /// (so every numeric width, string and derived struct behaves as it does
 /// there). `None` when they are unordered (a NaN).
-fn order_of(a: &Value, b: &Value) -> Result<Option<std::cmp::Ordering>, Signal> {
+fn order_of(interp: &mut Interpreter<'_>, a: &Value, b: &Value) -> Result<Option<std::cmp::Ordering>, Signal> {
+    // A struct, enum or tuple may hold a user's impl somewhere inside.
+    if user_ops::may_have_user_ops(a) || user_ops::may_have_user_ops(b) {
+        return interp.values_cmp(a, b);
+    }
     let truth = |op: BinOp| -> Result<bool, Signal> {
         Ok(matches!(eval_binop(op, a.clone(), b.clone())?, Value::Bool(true)))
     };
@@ -1231,7 +1253,7 @@ fn native_hash_into(value: &Value, args: &[Value]) -> EvalResult {
 
 /// The methods of the prelude traits on a built-in or derived value:
 /// `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `partial_cmp`, `cmp`, `clone`.
-fn native_prelude_method(receiver: Value, method: &str, args: &[Value]) -> EvalResult {
+fn native_prelude_method(interp: &mut Interpreter<'_>, receiver: Value, method: &str, args: &[Value]) -> EvalResult {
     let receiver = unwrap_ownership(receiver);
     if method == "clone" {
         return Ok(receiver.deep_clone());
@@ -1244,7 +1266,22 @@ fn native_prelude_method(receiver: Value, method: &str, args: &[Value]) -> EvalR
         None => return Err(Signal::Panic(format!("'{}' needs one argument", method))),
     };
     let as_bool = |v: Value| matches!(v, Value::Bool(true));
+    // A struct, enum or tuple is compared through the interpreter, so a
+    // user's impl on a field or an element is called.
+    let user = user_ops::may_have_user_ops(&receiver) || user_ops::may_have_user_ops(&other);
     match method {
+        "eq" if user => Ok(Value::Bool(interp.values_equal(&receiver, &other)?)),
+        "ne" if user => Ok(Value::Bool(!interp.values_equal(&receiver, &other)?)),
+        "lt" | "le" | "gt" | "ge" if user => {
+            let o = interp.values_cmp(&receiver, &other)?;
+            Ok(Value::Bool(match (method, o) {
+                (_, None)         => false,
+                ("lt", Some(o))   => o.is_lt(),
+                ("le", Some(o))   => o.is_le(),
+                ("gt", Some(o))   => o.is_gt(),
+                (_, Some(o))      => o.is_ge(),
+            }))
+        }
         "eq" => eval_binop(BinOp::Eq, receiver, other),
         "ne" => Ok(Value::Bool(!as_bool(eval_binop(BinOp::Eq, receiver, other)?))),
         "lt" => eval_binop(BinOp::Lt, receiver, other),
@@ -1253,7 +1290,7 @@ fn native_prelude_method(receiver: Value, method: &str, args: &[Value]) -> EvalR
         "ge" => eval_binop(BinOp::Ge, receiver, other),
         "partial_cmp" | "cmp" => {
             use std::cmp::Ordering;
-            match order_of(&receiver, &other)? {
+            match order_of(interp, &receiver, &other)? {
                 Some(Ordering::Less)    => Ok(ordering_value("Less")),
                 Some(Ordering::Equal)   => Ok(ordering_value("Equal")),
                 Some(Ordering::Greater) => Ok(ordering_value("Greater")),
@@ -1300,7 +1337,13 @@ fn eval_method_call(
                 "len"      => return Ok(m::len(rc)),
                 "push"     => return m::push(rc, args),
                 "pop"      => return Ok(m::pop(rc)),
-                "contains" => return m::contains(rc, args),
+                "contains" => {
+                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                        let items: Vec<Value> = rc.borrow().iter().cloned().collect();
+                        return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
+                    }
+                    return m::contains(rc, args);
+                }
                 "first"    => return Ok(m::first(rc)),
                 "last"     => return Ok(m::last(rc)),
                 "is_empty" => return Ok(m::is_empty(rc)),
@@ -1323,7 +1366,13 @@ fn eval_method_call(
                 "enqueue"  => return m::enqueue(rc, args),
                 "dequeue"  => return Ok(m::dequeue(rc)),
                 "peek"     => return Ok(m::peek(rc)),
-                "contains" => return m::contains(rc, args),
+                "contains" => {
+                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                        let items: Vec<Value> = rc.borrow().iter().cloned().collect();
+                        return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
+                    }
+                    return m::contains(rc, args);
+                }
                 "clear"    => return Ok(m::clear(rc)),
                 _ => {}
             }
@@ -1338,7 +1387,13 @@ fn eval_method_call(
                 "push"     => return m::push(rc, args),
                 "pop"      => return Ok(m::pop(rc)),
                 "peek"     => return Ok(m::peek(rc)),
-                "contains" => return m::contains(rc, args),
+                "contains" => {
+                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                        let items: Vec<Value> = rc.borrow().iter().cloned().collect();
+                        return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
+                    }
+                    return m::contains(rc, args);
+                }
                 "clear"    => return Ok(m::clear(rc)),
                 _ => {}
             }
@@ -1364,7 +1419,13 @@ fn eval_method_call(
                 "len"      => return Ok(m::len(rc)),
                 "push"     => return m::push(rc, args),
                 "pop"      => return Ok(m::pop(rc)),
-                "contains" => return m::contains(rc, args),
+                "contains" => {
+                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                        let items: Vec<Value> = rc.borrow().items.iter().cloned().collect();
+                        return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
+                    }
+                    return m::contains(rc, args);
+                }
                 "first"    => return Ok(m::first(rc)),
                 "last"     => return Ok(m::last(rc)),
                 "is_empty" => return Ok(m::is_empty(rc)),
@@ -1454,6 +1515,11 @@ fn eval_method_call(
         // ── Built-in Dict methods ──────────────────────────────────
         Value::Dict(rc) => {
             use crate::builtins::instance::dict_methods as m;
+            if matches!(method_name, "contains_key" | "get" | "set")
+                && args.first().is_some_and(user_ops::may_have_user_ops)
+            {
+                return interp.dict_op_user(rc, method_name, args);
+            }
             match method_name {
                 "len"          => return Ok(m::len(rc)),
                 "is_empty"     => return Ok(m::is_empty(rc)),
@@ -1544,7 +1610,7 @@ fn eval_qualified_trait_call<'ast>(
             _ => false,
         };
         if !has_table_entry {
-            return native_prelude_method(receiver, method, &values);
+            return native_prelude_method(interp, receiver, method, &values);
         }
     }
     let type_name = match &receiver {

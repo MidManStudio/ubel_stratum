@@ -1,0 +1,41 @@
+// tests/fixtures/err_prelude_impl_supertraits_isolated.ubl
+// An impl needs the traits it builds on, and a missing one is reported once
+// per impl, at the impl, naming the first missing trait in the chain: an
+// `impl Ord` with no `PartialOrd`, an `impl PartialOrd` with no `PartialEq`,
+// an `impl Hash` with no `Eq`, and an `impl Eq` with no `PartialEq`.
+// Expected: sema FAIL (MissingSupertraitImpl, TYPE-132, four times).
+
+struct A {
+    n: int,
+}
+
+impl Ord for A {
+    fn cmp(self, other: A) Ordering { return Ordering.Equal }
+}
+
+struct B {
+    n: int,
+}
+
+impl PartialOrd for B {
+    fn partial_cmp(self, other: B) Ordering? { return Ordering.Equal }
+}
+
+struct C {
+    n: int,
+}
+
+impl Hash for C {
+    fn hash(self, state: Hasher) void { }
+}
+
+struct D {
+    n: int,
+}
+
+impl Eq for D {
+}
+
+fn main() void {
+    println(1)
+}

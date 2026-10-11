@@ -1,9 +1,8 @@
 // tests/fixtures/err_prelude_hash_combined.ubl
 // `Hash` misuse together: a `double` given to a `Hash` bound (NaN), a
 // struct that derives only `PartialEq` given to one, `hash` called on a value
-// whose type has no `Hash`, a dictionary alias used with a `float` key, and a
-// hand-written `impl Hash` (not accepted until the runtime dispatch of S2b).
-// Expected: sema FAIL (TYPE-126 three times, TYPE-104, TYPE-129).
+// whose type has no `Hash`, and a dictionary alias used with a `float` key.
+// Expected: sema FAIL (TYPE-126 three times, TYPE-104).
 
 @derive(PartialEq)
 struct Half {
@@ -12,10 +11,6 @@ struct Half {
 
 struct Bare {
     n: int,
-}
-
-impl Hash for Bare {
-    fn hash(self, state: Hasher) void { }
 }
 
 type Table<K> = Dictionary<K, int>

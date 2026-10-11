@@ -10,6 +10,7 @@
 pub mod expr;
 pub mod stmt;
 pub mod pattern;
+pub mod user_ops;
 
 #[cfg(test)]
 mod tests;

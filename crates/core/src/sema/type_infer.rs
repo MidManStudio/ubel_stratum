@@ -329,6 +329,9 @@ struct Obligation {
     /// Dictionary.new()` names the key type twice on one line, and one
     /// mistake is one diagnostic (see `reported_dict_keys`).
     dict_key:  bool,
+    /// Already known to fail (decided while the scope it was written in was
+    /// live); kept so it is reported in source order with the rest.
+    failed:    bool,
 }
 
 /// The generic scope `push_generic_scope` replaced, handed back to
@@ -1272,6 +1275,31 @@ impl<'a> InferCtx<'a> {
         }))
     }
 
+    /// A hand-written impl of a prelude trait needs the traits it builds on:
+    /// `impl Ord` needs `PartialOrd` and `Eq` (so `PartialEq`), `impl Hash`
+    /// needs `Eq`. Each missing one is reported at the impl.
+    fn check_prelude_impl_supertraits(&mut self) {
+        let mut impls: Vec<(DefId, DefId, Span)> = self.trait_impls.iter()
+            .filter(|((t, _), _)| self.prelude_traits.contains_key(t))
+            .map(|((t, d), s)| (*t, *d, *s))
+            .collect();
+        impls.sort_by_key(|(_, _, s)| s.start);
+        for (trait_def, target, span) in impls {
+            let Some(name) = self.prelude_traits.get(&trait_def).copied() else { continue; };
+            let supers = PRELUDE_TRAITS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s).unwrap_or(&[]);
+            let ty = self.ctx.types.insert(SemaType::Named { def: target, args: Vec::new() });
+            // One missing supertrait per impl, the first in the chain: the rest
+            // follow from it (`PartialOrd` itself needs `PartialEq`), and one
+            // mistake is one diagnostic.
+            if let Some(s) = supers.iter().find(|s| self.prelude_status(s, ty) != Some(true)) {
+                let type_name = self.ctx.symbols.lookup(target).name.clone();
+                self.errors.add_type_error(TypeError::MissingSupertraitImpl {
+                    trait_name: name.to_string(), supertrait: s, type_name, span,
+                });
+            }
+        }
+    }
+
     /// Record which traits are the prelude's, before any signature is
     /// collected: an annotation such as `Dictionary<K, V>` needs to know
     /// `Hash` while the signature that contains it is being built.
@@ -1544,11 +1572,20 @@ impl<'a> InferCtx<'a> {
                 all
             }
             SemaType::Optional(inner) => if eq_like { self.prelude_status(name, inner) } else { Some(false) },
-            SemaType::Named { def, .. } => match self.ctx.symbols.lookup(def).kind {
-                DefKind::Struct { .. } => Some(self.struct_derives.get(&def).is_some_and(|d| d.contains(name))),
-                DefKind::Enum          => Some(matches!(name, "PartialEq" | "Eq" | "Hash")),
-                _                      => Some(false),
-            },
+            SemaType::Named { def, .. } => {
+                let kind = &self.ctx.symbols.lookup(def).kind;
+                let by_default = match kind {
+                    DefKind::Struct { .. } => self.struct_derives.get(&def).is_some_and(|d| d.contains(name)),
+                    DefKind::Enum          => matches!(name, "PartialEq" | "Eq" | "Hash"),
+                    _                      => return Some(false),
+                };
+                // A hand-written impl is the other way to have the trait.
+                let written = self.prelude_defs.get(name)
+                    .is_some_and(|t| self.trait_impls.contains_key(&(*t, def)));
+                if by_default || written { Some(true) }
+                else if self.impls_registered { Some(false) }
+                else { None }
+            }
             SemaType::Param(_) => Some(self.prelude_defs.get(name)
                 .and_then(|d| self.current_bounds.get(&ty).map(|bs| bs.contains(d)))
                 .unwrap_or(false)),
@@ -1592,14 +1629,15 @@ impl<'a> InferCtx<'a> {
     }
 
     fn require_bound_with(&mut self, ty: TypeId, trait_def: DefId, span: Span, dict_key: bool) {
+        let mut failed = false;
         if !self.impls_registered {
             match self.bound_status(ty, trait_def) {
                 Some(true)  => return,
-                Some(false) => { self.report_unsatisfied(ty, trait_def, span, dict_key); return; }
+                Some(false) => failed = true,
                 None        => {}
             }
         }
-        self.pending_obligations.push(Obligation { ty, trait_def, span, dict_key });
+        self.pending_obligations.push(Obligation { ty, trait_def, span, dict_key, failed });
     }
 
     fn report_unsatisfied(&mut self, ty: TypeId, trait_def: DefId, span: Span, dict_key: bool) {
@@ -1624,7 +1662,7 @@ impl<'a> InferCtx<'a> {
         let mut pending = std::mem::take(&mut self.pending_obligations);
         pending.sort_by_key(|o| o.span.start);
         for o in pending {
-            if self.bound_status(o.ty, o.trait_def) == Some(false) {
+            if o.failed || self.bound_status(o.ty, o.trait_def) == Some(false) {
                 self.report_unsatisfied(o.ty, o.trait_def, o.span, o.dict_key);
             }
         }
@@ -1804,12 +1842,17 @@ impl<'a> InferCtx<'a> {
                     continue;
                 }
             };
-            if self.prelude_traits.contains_key(&trait_def) {
-                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                    feature: "a hand-written impl of a prelude trait (use @derive; hand-written impls arrive with the runtime dispatch, slice S2b)",
-                    span:    i.span,
-                });
-                continue;
+            // `@derive(X)` and `impl X for T` are two sources of the same impl.
+            if let Some(pname) = self.prelude_traits.get(&trait_def).copied() {
+                if let Some(td) = self.target_type_def_id(i.target_type) {
+                    if self.struct_derives.get(&td).is_some_and(|d| d.contains(pname)) {
+                        let type_name = self.ctx.symbols.lookup(td).name.clone();
+                        self.errors.add_type_error(TypeError::OverlappingImpl {
+                            trait_name: pname.to_string(), type_name, span: i.span,
+                        });
+                        continue;
+                    }
+                }
             }
             let target_def = self.target_type_def_id(i.target_type).filter(|d|
                 matches!(self.ctx.symbols.lookup(*d).kind, DefKind::Struct { .. } | DefKind::Enum));
@@ -2209,6 +2252,7 @@ impl<'a> InferCtx<'a> {
         self.register_extend_impl_methods(program);
         self.register_trait_impls(program);
         self.impls_registered = true;
+        self.check_prelude_impl_supertraits();
         // Requirements raised by signatures that had to wait for the impls.
         self.check_obligations();
     }
@@ -4879,8 +4923,15 @@ impl<'a> InferCtx<'a> {
                     // Two unconstrained literals (`1 < 2`) are still just
                     // an integer of some width, and integers are ordered.
                     SemaType::Var(n) if self.int_lit_vars.contains_key(n) => true,
-                    SemaType::Named { def, .. } => self.struct_derives.get(def)
-                        .is_some_and(|d| d.contains("PartialOrd") || d.contains("Ord")),
+                    // Derived, or hand-written (`impl PartialOrd`, or `impl Ord`
+                    // which needs it).
+                    SemaType::Named { def, .. } => {
+                        let written = |name: &str| self.prelude_defs.get(name)
+                            .is_some_and(|t| self.trait_impls.contains_key(&(*t, *def)));
+                        self.struct_derives.get(def)
+                            .is_some_and(|d| d.contains("PartialOrd") || d.contains("Ord"))
+                            || written("PartialOrd") || written("Ord")
+                    }
                     // Genuinely unresolved (e.g. a Linqerizer lambda
                     // parameter's type, still pending unification with
                     // the pipeline's element type at the point this

@@ -1,0 +1,60 @@
+// tests/fixtures/ok_prelude_impl_hash_clone_isolated.ubl
+// A hand-written `impl Hash` and `impl Clone`: `hash` through a `T: Hash`
+// bound goes to the impl (equal dollars hash alike), `clone` calls the impl
+// directly on a value and through a `T: Clone` bound, and a derived struct
+// with a field of such a type compares that field by the field's own `eq`.
+// Expected: sema OK, interpret OK.
+
+struct Money {
+    cents: int,
+}
+
+impl PartialEq for Money {
+    fn eq(self, other: Money) bool { return self.cents / 100 == other.cents / 100 }
+}
+
+impl Eq for Money {
+}
+
+impl Hash for Money {
+    fn hash(self, state: Hasher) void {
+        let dollars = self.cents / 100
+        dollars.hash(state)
+    }
+}
+
+impl Clone for Money {
+    fn clone(self) Money { return Money { cents = self.cents + 1 } }
+}
+
+@derive(PartialEq, Eq, PartialOrd, Ord)
+struct Wallet {
+    amount: Money,
+    count: int,
+}
+
+fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+
+fn dup<T: Clone>(x: T) T {
+    return x.clone()
+}
+
+fn main() void {
+    let a = Money { cents = 150 }
+    let b = Money { cents = 199 }
+    let c = Money { cents = 250 }
+    println(digest(a) == digest(b))
+    println(digest(a) == digest(c))
+    println(a.clone().cents)
+    println(dup(c).cents)
+
+    let w1 = Wallet { amount = a, count = 1 }
+    let w2 = Wallet { amount = b, count = 1 }
+    let w3 = Wallet { amount = c, count = 1 }
+    println(w1 == w2)
+    println(w1 == w3)
+}

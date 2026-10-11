@@ -128,9 +128,16 @@ fn materialize(interp: &mut Interpreter<'_>, pipeline: &LinqPipeline) -> Result<
                     let key = interp.call_function(*key_id, &[item.clone()])?;
                     keyed.push((key, item));
                 }
+                // Keys compare through the interpreter, so a user's `partial_cmp`
+                // orders them; the first error a comparison raises is kept.
+                let mut failure: Option<Signal> = None;
                 keyed.sort_by(|(ka, _), (kb, _)| {
-                    ka.partial_cmp(kb).unwrap_or(std::cmp::Ordering::Equal)
+                    match interp.values_cmp(ka, kb) {
+                        Ok(o)  => o.unwrap_or(std::cmp::Ordering::Equal),
+                        Err(e) => { if failure.is_none() { failure = Some(e); } std::cmp::Ordering::Equal }
+                    }
                 });
+                if let Some(e) = failure { return Err(e); }
                 if *descending {
                     keyed.reverse();
                 }
@@ -169,7 +176,11 @@ pub fn group_by(interp: &mut Interpreter<'_>, pipeline: &LinqPipeline, args: &[V
     let mut groups: Vec<(Value, Value)> = Vec::new();
     for item in result {
         let key = interp.call_function(key_id, &[item.clone()])?;
-        match groups.iter_mut().find(|(k, _)| k.equals(&key)) {
+        let mut at: Option<usize> = None;
+        for (i, (k, _)) in groups.iter().enumerate() {
+            if interp.values_equal(k, &key)? { at = Some(i); break; }
+        }
+        match at.map(|i| &mut groups[i]) {
             Some((_, Value::List(list_rc))) => {
                 list_rc.borrow_mut().push(item);
             }
