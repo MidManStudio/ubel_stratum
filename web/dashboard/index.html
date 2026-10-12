@@ -539,19 +539,52 @@ function highlightUbel(source) {
   return out;
 }
 
+// report.json is only an index: stage counts, benchmarks and one summary per
+// fixture. The text of a fixture (source, tokens, parse, sema, interpret)
+// lives in its own file, named by the fixture's `detail` field, and is
+// fetched the first time that fixture is opened. A report that still carries
+// the text inline (no `detail` field) is read directly.
+const DETAIL_CACHE = {};
+
+function fixtureDetail(name) {
+  const entry = REPORT.fixtures[name];
+  if (!entry.detail) return Promise.resolve(entry);
+  if (!DETAIL_CACHE[name]) {
+    DETAIL_CACHE[name] = fetch(entry.detail, { cache: 'no-store' })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .catch(e => { delete DETAIL_CACHE[name]; throw e; });
+  }
+  return DETAIL_CACHE[name];
+}
+
 function renderPanelBody() {
   const body = document.getElementById('panel-body');
-  const f = REPORT.fixtures[ACTIVE_FIXTURE];
-  if (!f) { body.innerHTML = '<div class="empty-note">Select a fixture on the left.</div>'; return; }
-  const content = f[ACTIVE_TAB] || '(empty)';
-  const pre = document.createElement('pre');
-  if (ACTIVE_TAB === 'source') {
-    pre.innerHTML = highlightUbel(content);
-  } else {
-    pre.textContent = content;
+  const name = ACTIVE_FIXTURE;
+  const tab = ACTIVE_TAB;
+  if (!REPORT.fixtures[name]) {
+    body.innerHTML = '<div class="empty-note">Select a fixture on the left.</div>';
+    return;
   }
-  body.innerHTML = '';
-  body.appendChild(pre);
+  body.innerHTML = '<div class="empty-note">Loading...</div>';
+  fixtureDetail(name).then(detail => {
+    // A later click may have changed the fixture or the tab while this loaded.
+    if (name !== ACTIVE_FIXTURE || tab !== ACTIVE_TAB) return;
+    const content = detail[tab] || '(empty)';
+    const pre = document.createElement('pre');
+    if (tab === 'source') {
+      pre.innerHTML = highlightUbel(content);
+    } else {
+      pre.textContent = content;
+    }
+    body.innerHTML = '';
+    body.appendChild(pre);
+  }).catch(e => {
+    if (name !== ACTIVE_FIXTURE || tab !== ACTIVE_TAB) return;
+    body.innerHTML = `<div class="empty-note">Couldn't load ${REPORT.fixtures[name].detail} (${e.message}).</div>`;
+  });
 }
 
 function selectFixture(name) {

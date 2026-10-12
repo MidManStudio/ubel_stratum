@@ -12,9 +12,36 @@
 // a real regression; this tool is purely diagnostic.)
 
 use std::env;
+use std::fmt;
 use std::fs;
 use std::process;
 use ubel_stratum::ast::arena::AstArena;
+use ubel_stratum::ast::{Item, Program};
+
+// rd_parser::parse() injects the prelude (Ubel source for Ordering, the
+// comparison traits, Hasher and Hash) in front of every program's items.
+// Dumping it with `{:#?}` repeats roughly 100 KB of identical AST in the
+// PARSE section of every fixture report, which is what pushed the combined
+// report.json past Cloudflare Pages' 25 MiB per-file limit. This view prints
+// the program exactly as `{:#?}` does, minus the items the prelude added.
+struct UserProgram<'a, 'ast>(&'a Program<'ast>);
+
+impl<'a, 'ast> UserProgram<'a, 'ast> {
+    fn user_items(&self) -> Vec<&'a Item<'ast>> {
+        self.0.items.iter().filter(|i| !i.span().is_prelude()).collect()
+    }
+}
+
+impl fmt::Debug for UserProgram<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Program")
+            .field("package", &self.0.package)
+            .field("imports", &self.0.imports)
+            .field("items", &self.user_items())
+            .field("span", &self.0.span)
+            .finish()
+    }
+}
 
 fn section(name: &str) {
     println!("\n=== {name} ===");
@@ -73,8 +100,9 @@ fn main() {
     let arena = AstArena::new();
     let program = match ubel_stratum_rd::parse(&arena, &tokens, source.clone()) {
         Ok(p) => {
-            println!("status: OK ({} top-level items)", p.items.len());
-            println!("{:#?}", p);
+            let view = UserProgram(&p);
+            println!("status: OK ({} top-level items)", view.user_items().len());
+            println!("{:#?}", view);
             p
         }
         Err(mut errs) => {

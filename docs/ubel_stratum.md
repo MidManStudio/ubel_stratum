@@ -798,10 +798,25 @@ type checking (TYPE-1xx range).
   runs on every push and pull request to `master`/`main`.
 - `.github/workflows/pipeline-dashboard.yml`: builds the full
   tokenize, parse, sema, interpret diagnostic report plus benchmarks
-  for every fixture in `tests/fixtures`, publishes as a static site via
-  GitHub Pages. Kept separate from `ci-check.yml` since the benchmark
-  step is slow and this produces a deployable artifact rather than a
-  pass/fail gate.
+  for every fixture in `tests/fixtures`, the mdBook docs site and the
+  wasm playground, and publishes all of them as one static site on
+  Cloudflare Pages. Kept separate from `ci-check.yml` since the
+  benchmark step is slow and this produces a deployable artifact rather
+  than a pass/fail gate.
+  The dashboard report is split on purpose. Cloudflare Pages rejects
+  any single file over 25 MiB, and the original single `report.json`,
+  which embedded every fixture's token, parse and sema dumps, reached
+  43.3 MiB (about half of it the identical prelude AST repeated in the
+  PARSE dump of every fixture) and failed the deploy.
+  `scripts/build_dashboard_report.py` now writes `report.json` as an
+  index (stage counts, benchmarks, one summary per fixture) plus one
+  `fixtures/<name>.json` per fixture, which the dashboard fetches when
+  that fixture is opened. A section over 2,000,000 characters is
+  truncated with a marker, and the script exits non-zero if any file it
+  writes passes 20 MiB, so a size failure shows up in the build step
+  instead of the deploy. `diagnose.rs` leaves the prelude items out of
+  its PARSE dump, which removes about 100 KB of identical output from
+  every fixture.
 - `.github/workflows/run-replacements.yml`: applies a `.mdix/replacements`
   bundle to the repo, dry run only unless manually dispatched with
   `dry_run: false`.
