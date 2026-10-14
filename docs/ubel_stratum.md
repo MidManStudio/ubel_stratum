@@ -848,6 +848,18 @@ type checking (TYPE-1xx range).
   instead of the deploy. `diagnose.rs` leaves the prelude items out of
   its PARSE dump, which removes about 100 KB of identical output from
   every fixture.
+  The benchmark step cost grows with the fixture count, because
+  `bench_fixtures` in `crates/rd_parser/benches/pipeline_bench.rs`
+  registers one criterion benchmark per fixture. With criterion's default
+  timing (3 s warm-up, 5 s measurement) a fixture took about 14 s when
+  measured locally, so at 245 fixtures every push run reached the 30
+  minute job limit and was cancelled, while the runs that looked green
+  were manual dispatches with `run_benchmarks` set to `false`. The
+  fixtures group now uses 10 samples, a 100 ms warm-up, a 300 ms
+  measurement and 10,000 resamples (about 1 s per fixture), and the whole
+  suite finishes in about five and a half minutes. Estimates from the
+  short window are less precise than from a full-length run, so a small
+  difference between two runs is noise.
 - `.github/workflows/run-replacements.yml`: applies a `.mdix/replacements`
   bundle to the repo, dry run only unless manually dispatched with
   `dry_run: false`.
