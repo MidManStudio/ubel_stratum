@@ -498,6 +498,37 @@ this end to end. No unit tests for this function specifically, same
 precedent the original precision-only version of this feature already
 set (fixture-tested only).
 
+### `interpreter/eval/user_ops.rs`
+
+**What it does:** The interpreter-aware comparison, clone and hash used wherever
+a hand-written `impl PartialEq`, `PartialOrd`, `Ord`, `Hash` or `Clone` may be
+involved. `Value::equals`, `partial_cmp`, `deep_clone` and `compute_hash` take no
+interpreter, so none of them can call a user's method; this module is the route
+back into it.
+
+**Decisions:**
+- `user_trait_fn` finds an impl's method for a struct or enum value.
+  `values_equal` and `values_cmp` call it first, then recurse through derived
+  structs, tuples, enum payloads and `Unique`; any other value uses the
+  structural `Value` method.
+- `may_have_user_ops` is the guard: only a struct, enum, tuple or `Unique`
+  operand takes the slow path, so integers, strings and the rest keep the old
+  fast path.
+- `user_comparison` serves the binary operators (the impl's own `eq`, `ne`,
+  `lt`, `le`, `gt` and `ge`, so an override is honored; a derived struct field by
+  field). `contains_value`, `dict_position` and `dict_op_user` serve list, queue,
+  stack and inline-list `contains` and the dictionary methods and indexing.
+- `values_clone` and `hash_value` do the same for a derived `Clone` and a derived
+  `Hash`. `mix_into_hasher` folds one hash into a `Hasher` (rotate, xor,
+  multiply), so hashing is order-sensitive. A derived struct folds its type name,
+  then each field name and value; a tuple its length and elements; an enum its
+  type name, variant name and payload; every other value folds
+  `Value::compute_hash`. Raw hash values are not a contract.
+
+**Tests:** `tests/prelude_traits.rs` (95 tests) and the fixtures
+`ok_prelude_impl_*` and `err_prelude_impl_supertraits_isolated`. Mutation-checked,
+see `ubel_stratum_rd.md`.
+
 ### `builtins/instance.rs`
 
 **What it does:** The canonical registry for every builtin instance
@@ -1189,8 +1220,8 @@ every line it wrote was checked for em dashes and first or second person.
   built-in-kind path, and yields to a method the type declares itself.
 - `check_operator_bound` raises `TYPE-131` for `==`, `!=` and the ordering
   operators on a type-parameter operand without the trait.
-- A hand-written impl of a prelude trait is `TYPE-129` in
-  `register_trait_impls` and is skipped. The interpreter runs a prelude trait's
+- A hand-written impl of a prelude trait was `TYPE-129` in
+  `register_trait_impls` and was skipped (S2b accepts it, see below). The interpreter runs a prelude trait's
   method natively (`native_prelude_method` in `eval/expr.rs`, reached from the
   trait call site table and from the qualified call) through `eval_binop`.
 
@@ -1268,3 +1299,68 @@ overflows the 32-bit `usize` of `wasm32`. It is now `(1u32 << 31) as usize`
 cannot be built in the authoring sandbox (no `wasm32` target, and a dependency
 that needs a newer toolchain), so the width of every constant added since the
 playground last built is the thing that was checked by test instead.
+
+**Decisions (traits, slice S2b):**
+- The `TYPE-129` rejection of a hand-written impl of a prelude trait is gone from
+  `register_trait_impls`; such an impl is checked like any trait impl
+  (`TYPE-122` to `TYPE-125`). `@derive(X)` together with `impl X` is `TYPE-128`
+  at the impl. `check_prelude_impl_supertraits` runs once `impls_registered` is
+  set and reports `TYPE-132` once per impl, for the first missing supertrait in
+  the `PRELUDE_TRAITS` chain.
+- `prelude_status` counts a hand-written impl for a struct or enum, and answers
+  `None` for a named type while impls are not registered yet, so a signature that
+  names a type whose impl comes later in the file is not failed early. The
+  ordering operators accept a type with `impl PartialOrd` or `impl Ord`, and an
+  enum may replace its automatic `PartialEq`, `Eq` or `Hash` with an impl.
+  `Obligation` has a `failed` flag so a failure found at signature time is
+  reported in source order with the pending ones.
+- The `Binary` arm in `eval/expr.rs` calls `Interpreter::user_comparison` before
+  `eval_binop`, and `contains` on a list, queue, stack or inline list, the
+  dictionary methods and dictionary indexing (read and assign) go through
+  `contains_value`, `dict_position` and `dict_op_user` when the argument may carry
+  a user impl. `native_prelude_method` and `order_of` take the interpreter. The
+  Linqerizer's `order_by` sorts with `values_cmp` (the first error is kept) and
+  `group_by` finds groups with `values_equal`.
+- The rule is applied inside values: `values_equal` has an enum arm (the same
+  type and variant, payloads compared through `values_equal`), and a derived
+  `Hash` and a derived `Clone` call a nested field's, element's or payload's impl
+  (`hash_value`, `values_clone`; both `.clone()` call sites in `eval/expr.rs` and
+  `native_hash_into` use them). Probes run before this was documented showed an
+  enum payload, a derived `Hash` and a derived `Clone` ignoring a nested impl, so
+  `a == b` was false for two enums whose payloads were equal by their type's
+  `eq`; all three are fixed here.
+- Hand-written impls for built-in types, generic types and generic traits stay
+  `TYPE-129` until S3. `a < b` on a derived struct with an unordered field still
+  panics while `a.lt(b)` is `false`; recorded in `docs/PARKED_IDEAS.md`.
+
+A sixteenth delivery (traits slice S2b) added `interpreter/eval/user_ops.rs` and
+touched `eval/expr.rs`, `builtins/instance/linqerizer_methods.rs`,
+`sema/type_infer.rs`, the TypeError enum (`TYPE-132`) and `tests/prelude_traits.rs`,
+which grew from 59 to 95 tests (the two `TYPE-129` impl tests were removed). It
+added seven fixtures (`ok_prelude_impl_eq_isolated`, `ok_prelude_impl_ord_isolated`,
+`ok_prelude_impl_hash_clone_isolated`, `ok_prelude_impl_combined`,
+`err_prelude_impl_supertraits_isolated`, `ok_prelude_impl_nested_isolated`,
+`ok_prelude_impl_nested_combined`) and rewrote two (`err_prelude_handwritten_impl_isolated`,
+`err_prelude_hash_combined`). The workspace has 537 passing tests. The fixture
+sweep went from 236 lexed, 228 parsed and 122 through sema to 243, 235 and 128,
+with 127 interpreted (`tests/fixtures/random.ubl` is a one-byte file with no
+`fn main`, so the interpreter skips it), and the only changes were the new files.
+Every fix was mutation-checked on the function itself: 69 mutations, 68 caught.
+The first pass left 17 alive and exposed missing tests, which were added and
+re-run; the one that stays alive, the bit rotation in the hash mixer, changes no
+result a program can observe. Every line it wrote was checked for em dashes and
+first or second person.
+
+A seventeenth delivery fixed the Deploy Site failure "Pages only supports files
+up to 25 MiB in size: results/report.json is 43.3 MiB". The cause was the prelude
+that `parse()` injects: `diagnose.rs` printed the whole program with `{:#?}`, so
+every fixture's PARSE section repeated about 100 KB of prelude AST, and
+`build_dashboard_report.py` embedded every fixture's dumps in one `report.json`.
+`diagnose.rs` now leaves prelude items out of the PARSE section and its item
+count. `report.json` is an index of 55.7 KiB and each fixture's text is in
+`fixtures/<name>.json`, fetched by `web/dashboard/index.html` when the fixture is
+opened; a section over 2,000,000 characters is truncated with a marker and the
+script exits non-zero if any file passes 20 MiB. The largest file is 844 KiB.
+Twelve mutations of the script and the page are all caught. It touched
+`rd_parser/examples/diagnose.rs`, `scripts/build_dashboard_report.py`,
+`web/dashboard/index.html` and this document.

@@ -1,0 +1,82 @@
+// tests/fixtures/ok_prelude_impl_nested_isolated.ubl
+// A hand-written impl is honored inside other values, not only on a value
+// directly: an enum payload compares through the payload type's `eq`, a
+// derived `Hash` folds a field in through the field's `hash` (so two values
+// that are equal hash alike), and a derived `Clone` calls the field's `clone`.
+// `Money` treats amounts in the same dollar as equal, hashes by dollars and
+// clones with one extra cent, so each result below shows which code ran.
+// Expected: sema OK, interpret OK, all assertions pass.
+
+struct Money {
+    cents: int,
+}
+
+impl PartialEq for Money {
+    fn eq(self, other: Money) bool { return self.cents / 100 == other.cents / 100 }
+}
+
+impl Eq for Money {
+}
+
+impl Hash for Money {
+    fn hash(self, state: Hasher) void {
+        let dollars = self.cents / 100
+        dollars.hash(state)
+    }
+}
+
+impl Clone for Money {
+    fn clone(self) Money { return Money { cents = self.cents + 1 } }
+}
+
+enum Pay {
+    Cash(Money),
+    Card(Money),
+    Check { amount: Money },
+    Nothing
+}
+
+@derive(PartialEq, Eq, Hash, Clone)
+struct Wallet {
+    amount: Money,
+    note: string,
+}
+
+fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+
+fn main() void {
+    let a = Pay.Cash(Money { cents = 150 })
+    let b = Pay.Cash(Money { cents = 199 })
+    let c = Pay.Cash(Money { cents = 250 })
+    assert(a == b, "enum payload: same dollar is equal")
+    assert(a != c, "enum payload: different dollar is not equal")
+    assert(Pay.Nothing == Pay.Nothing, "enum without a payload")
+    assert(a != Pay.Nothing, "different variants are never equal")
+    assert(a != Pay.Card(Money { cents = 150 }), "the same payload under another variant is not equal")
+    let l = [a]
+    assert(l.contains(b), "contains finds an enum by its payload's eq")
+    assert(!l.contains(c), "contains misses a different dollar")
+
+    let x = Pay.Check { amount = Money { cents = 101 } }
+    let y = Pay.Check { amount = Money { cents = 150 } }
+    assert(x == y, "struct-payload variant compares through eq")
+    assert(x != Pay.Check { amount = Money { cents = 250 } }, "a struct payload a dollar apart is not equal")
+    assert(digest(x) == digest(y), "equal enums hash alike")
+    assert(digest(a) == digest(b), "equal payloads hash alike")
+    assert(digest(a) != digest(c), "different payloads hash differently")
+
+    let w1 = Wallet { amount = Money { cents = 150 }, note = "n" }
+    let w2 = Wallet { amount = Money { cents = 199 }, note = "n" }
+    let w3 = Wallet { amount = Money { cents = 150 }, note = "m" }
+    assert(w1 == w2, "derived eq goes through the field's eq")
+    assert(digest(w1) == digest(w2), "derived hash agrees with derived eq")
+    assert(digest(w1) != digest(w3), "a differing plain field changes the hash")
+
+    let copy = w1.clone()
+    assert(copy.amount.cents == 151, "derived clone calls the field's clone")
+    assert(w1.amount.cents == 150, "the original is untouched")
+}

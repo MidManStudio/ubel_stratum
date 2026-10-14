@@ -37,7 +37,7 @@
 | **S1b** | **Built** | Bounds: declared bounds validated, bound obligations checked wherever a bounded parameter is instantiated, method calls on a type parameter resolved through its bounds, a method call on an unbounded type parameter an error (`TYPE-130`). |
 | **S2a, part 1** | **Built** | The prelude traits `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Clone` with real signatures, the `Ordering` enum, what built-in and derived types satisfy, supertrait bounds, the methods callable through a bound and directly on a value, operator checks on type parameters (`TYPE-131`), hand-written impls reported (`TYPE-129`). See "What S2a part 1 settled" below. |
 | **S2a, part 2** | **Built** | `Hash` and the `Hasher` struct, `Hash` satisfaction, and `Hash` (which implies `Eq`) required of `Dictionary` keys. See "What S2a part 2 settled" below. |
-| **S2b** | Designed, not built | Runtime dispatch: `==`, `!=`, ordering operators, list `contains`, dictionary keys, Linqerizer ordering and `clone` call hand-written impls. |
+| **S2b** | **Built** | Hand-written impls of the six prelude traits: checked like any trait impl, needing their supertraits (`TYPE-132`), and called by `==`, `!=`, the ordering operators, `contains` on every collection, dictionary lookup, assignment and indexing, `order_by`, `group_by`, and by derived comparison, `Hash` and `Clone` inside other values. See "What S2b settled" below. |
 | S3 to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
@@ -126,9 +126,10 @@ traits):
   built-in type. Its surface is `Hasher.new()` and `state.finish() u64`, with
   each value's `hash` writing into the state (confirmed 2026-10-08, built in
   S2a part 2).
-- **Two deliveries.** S2a is the static side and S2b the runtime dispatch. Until
-  S2b lands, a hand-written `impl PartialEq for X` (and the other five) is
-  `TYPE-129`, so an impl that `==` would ignore is never accepted silently.
+- **Two deliveries.** S2a was the static side and S2b the runtime dispatch.
+  Between them a hand-written `impl PartialEq for X` (and the other five) was
+  `TYPE-129`, so an impl that `==` would ignore was never accepted silently;
+  S2b lifted that restriction when the dispatch landed.
 - **Defaults taken without objection.** `@derive(X)` registers the impl and the
   derive prerequisite chain becomes the supertraits; lists, tuples and
   optionals satisfy a trait when their elements do, by a built-in rule rather
@@ -141,8 +142,8 @@ What reading the code established before this was decided:
 - `Value::equals` and `Value::partial_cmp` take no interpreter and are called
   from more than a dozen places (the binary operators, list, queue, stack and
   inline-list `contains`, the dictionary methods, indexing, the Linqerizer
-  grouping and ordering). S2b has to give each of them a route back into the
-  interpreter.
+  grouping and ordering). S2b gave each of them a route back into the
+  interpreter (`interpreter/eval/user_ops.rs`).
 - `Dict` is `Vec<(Value, Value)>` searched by `equals`; hashing has no consumer
   yet. A struct key without `PartialEq` is found by reference identity, so a
   lookup with an equal but distinct key returns `null`.
@@ -204,7 +205,8 @@ What reading the code established before this was decided:
   `Ord` imply them). Without it the operator is `TYPE-131`
   (`OperatorNeedsBound`), at the expression. Operators on a concrete type are
   unchanged: `==` on a struct without `PartialEq` stays reference identity.
-- **Hand-written impls** of the five traits are `TYPE-129` until S2b.
+- **Hand-written impls** of the five traits were `TYPE-129` in this part; S2b
+  accepts them.
 - **Not in part 1:** `Hash`, `Hasher`, the `Dictionary` key requirement
   (part 2, below); dispatch to hand-written impls (S2b).
 - **Limits recorded:** an enum is `PartialEq` and `Eq` whatever its payload
@@ -247,10 +249,61 @@ What reading the code established before this was decided:
   is `TYPE-126` at the use.
 - **Generic keys.** `fn f<K>(d: Dictionary<K, int>)` is `TYPE-126` for the
   unbounded `K`; `K: Hash` is accepted.
-- **Hand-written `impl Hash`** is `TYPE-129` until S2b, with the other five.
+- **Hand-written `impl Hash`** was `TYPE-129` in this part, with the other five;
+  S2b accepts it.
 - **Not covered:** the runtime `Dict` is still a `Vec` of pairs searched by
   `equals`, so hashing has no consumer yet and the requirement is a static
   contract; `Set<T>` elements and `Linqerizer.group_by` keys are not checked.
+
+### What S2b settled
+
+- **Hand-written impls of the six prelude traits are accepted** and checked like
+  any trait impl: `TYPE-122` to `TYPE-125` cover the trait name, a missing
+  method, an unknown method and a signature mismatch. The methods with defaults
+  (`ne`, `lt`, `le`, `gt`, `ge`) are inherited unless the impl overrides them.
+- **`@derive(X)` together with `impl X for T` is `TYPE-128`**, reported at the
+  impl: the derive and the impl are two sources of the same impl.
+- **An impl needs its supertraits (`TYPE-132`, `MissingSupertraitImpl`).**
+  `impl Ord` needs `PartialOrd` and `Eq` (so `PartialEq`), `impl PartialOrd`
+  and `impl Eq` need `PartialEq`, `impl Hash` needs `Eq`. A derive or a
+  hand-written impl satisfies a supertrait. One diagnostic per impl, at the
+  impl, naming the first missing supertrait in that chain, because the rest
+  follow from it.
+- **Impls for built-in types stay `TYPE-129`** ("a type that is not a struct or
+  enum"), as do impls for generic types and generic traits, until S3.
+- **What a type satisfies now counts hand-written impls.** A struct or enum
+  satisfies a prelude trait by a derive, by the automatic rule (an enum is
+  `PartialEq`, `Eq` and `Hash`) or by an impl. An enum may replace its automatic
+  `PartialEq`, `Eq` or `Hash` with a hand-written one and may order itself with
+  `impl PartialOrd`. The ordering operators accept a type with `impl PartialOrd`
+  or `impl Ord`. Before impls are registered a named type's status is undecided
+  rather than false, so a signature that names a type whose impl comes later in
+  the file waits for registration instead of failing.
+- **Runtime dispatch.** `==` calls the impl's `eq`. `!=` calls the impl's `ne`
+  (its override, or the prelude default). `<`, `<=`, `>` and `>=` call the
+  impl's `lt`, `le`, `gt` and `ge`, so an override is honored. The same rule is
+  used by `contains` on a list, queue, stack and inline list, by the dictionary
+  methods `get`, `set` and `contains_key` and by indexing a dictionary (read and
+  assign), by the Linqerizer's `order_by` and `group_by`, and by `x.eq(y)`,
+  `x.cmp(y)` and the other prelude methods called on a derived struct.
+- **The rule applies inside values.** A derived struct compares field by field,
+  a tuple element by element, an enum payload by payload and a `Unique` through
+  its content, each part through its own impl when it has one. `hash` and
+  `clone` follow the same rule: a derived `Hash` folds a field in through the
+  field's `hash`, so values that are equal hash alike, and a derived `Clone`
+  calls the `clone` of a field, element or payload, in lists, dictionaries,
+  queues, stacks, tuples, enums and `Unique`. `Shared` still aliases.
+- **One module.** `interpreter/eval/user_ops.rs` holds `values_equal`,
+  `values_cmp`, `user_comparison`, `contains_value`, `dict_position`,
+  `dict_op_user`, `values_clone` and `hash_value`. `Value::equals`,
+  `Value::partial_cmp`, `Value::deep_clone` and `Value::compute_hash` remain the
+  structural fallbacks and take no interpreter. Only a struct, enum, tuple or
+  `Unique` operand takes the slow path.
+- **Unordered results.** `a.lt(b)` is `false` when `partial_cmp` gives `null`.
+  The operator form `a < b` on a derived struct whose field has no order panics
+  with "comparison between incomparable values", as the operators already did
+  for incomparable values before the traits existed. The two forms disagree; see
+  `docs/PARKED_IDEAS.md`.
 
 ### D7: what has to be specified before S4
 

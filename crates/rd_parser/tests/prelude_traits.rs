@@ -1115,3 +1115,404 @@ fn types_without_impls_behave_as_before() {
 "#);
     assert_eq!(run(&src).unwrap(), "false\ntrue\ntrue\ntrue\n");
 }
+
+// ── Nested positions: enum payloads, derived Hash, derived Clone ──
+
+/// An enum with `Money` payloads, a struct deriving `Hash` and `Clone` over a
+/// `Money` field, one holding every kind of collection of `Money`, and the
+/// helpers the tests below call. `Money` clones with one extra cent and
+/// hashes and compares by whole dollars, so each result shows which code ran.
+const NESTED: &str = r#"enum Pay {
+    Cash(Money),
+    Card(Money),
+    Check { amount: Money },
+    Nothing
+}
+
+@derive(PartialEq, Eq, Hash, Clone)
+struct Wallet {
+    amount: Money,
+    note: string,
+}
+
+@derive(Clone)
+struct Holder {
+    items: List<Money>,
+    ledger: Dictionary<string, Money>,
+    line: Queue<Money>,
+    pile: Stack<Money>,
+    pay: Pay,
+    cash: Pay,
+}
+
+@derive(PartialEq, Eq, Hash, Clone)
+struct Plain {
+    n: int,
+    s: string,
+}
+
+fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+
+fn dup<T: Clone>(x: T) T {
+    return x.clone()
+}
+
+fn cents_of(p: Pay) int {
+    match p {
+        Cash(m) => return m.cents,
+        Card(m) => return m.cents,
+        Check { amount } => return amount.cents,
+        Nothing => return 0,
+    }
+}
+"#;
+
+fn with_nested(body: &str) -> String {
+    with_money(&format!("{NESTED}{body}"))
+}
+
+#[test]
+fn an_enum_payload_is_compared_through_its_types_eq() {
+    let src = with_nested(r#"fn main() void {
+    let a = Pay.Cash(Money { cents = 150 })
+    let b = Pay.Cash(Money { cents = 199 })
+    let c = Pay.Cash(Money { cents = 250 })
+    println(a == b)
+    println(a == c)
+    println(a != c)
+    println(Pay.Nothing == Pay.Nothing)
+    println(a == Pay.Nothing)
+    let x = Pay.Check { amount = Money { cents = 101 } }
+    let y = Pay.Check { amount = Money { cents = 150 } }
+    println(x == y)
+    println(a == x)
+    println(a == Pay.Card(Money { cents = 150 }))
+    println(x == Pay.Check { amount = Money { cents = 250 } })
+}
+"#);
+    // The last two: the same payload under another variant is not equal, and
+    // a struct payload that differs by a whole dollar is not equal.
+    assert_eq!(run(&src).unwrap(), "true\nfalse\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\n");
+}
+
+#[test]
+fn an_enum_is_found_by_its_payloads_eq_in_contains_and_dictionaries() {
+    let src = with_nested(r#"fn main() void {
+    let l = [Pay.Cash(Money { cents = 150 })]
+    println(l.contains(Pay.Cash(Money { cents = 199 })))
+    println(l.contains(Pay.Cash(Money { cents = 250 })))
+    let d: Dictionary<Pay, string> = Dictionary.new()
+    d.set(Pay.Cash(Money { cents = 150 }), "one")
+    d.set(Pay.Cash(Money { cents = 199 }), "uno")
+    d.set(Pay.Nothing, "none")
+    println(d.get(Pay.Cash(Money { cents = 101 })))
+    println(d.contains_key(Pay.Cash(Money { cents = 250 })))
+    println(d.len())
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\nuno\nfalse\n2\n");
+}
+
+#[test]
+fn derived_clone_calls_a_fields_clone_directly_and_through_a_bound() {
+    let src = with_nested(r#"fn main() void {
+    let w = Wallet { amount = Money { cents = 10 }, note = "n" }
+    println(w.clone().amount.cents)
+    println(dup(w).amount.cents)
+    println(w.amount.cents)
+    let t = (Money { cents = 199 }, 1)
+    println(digest(dup(t)) == digest(t))
+}
+"#);
+    // The last line: the tuple's `Money` was cloned (199 became 200, a
+    // different dollar), so the two digests differ.
+    assert_eq!(run(&src).unwrap(), "11\n11\n10\nfalse\n");
+}
+
+#[test]
+fn derived_clone_reaches_every_collection_and_an_enum_payload() {
+    let src = with_nested(r#"fn main() void {
+    let items: List<Money> = List.new()
+    items.push(Money { cents = 1 })
+    let ledger: Dictionary<string, Money> = Dictionary.new()
+    ledger.set("k", Money { cents = 7 })
+    let line: Queue<Money> = Queue.new()
+    line.enqueue(Money { cents = 20 })
+    let pile: Stack<Money> = Stack.new()
+    pile.push(Money { cents = 30 })
+    let h = Holder { items = items, ledger = ledger, line = line, pile = pile, pay = Pay.Check { amount = Money { cents = 40 } }, cash = Pay.Cash(Money { cents = 50 }) }
+    let k = h.clone()
+    println(k.items.get(0).cents)
+    println(k.ledger.get("k").cents)
+    println(k.line.dequeue().cents)
+    println(k.pile.pop().cents)
+    println(cents_of(k.pay))
+    println(cents_of(k.cash))
+    println(h.items.get(0).cents)
+    println(h.line.dequeue().cents)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "2\n8\n21\n31\n41\n51\n1\n20\n");
+}
+
+#[test]
+fn derived_hash_agrees_with_eq_through_fields_enum_payloads_and_tuples() {
+    let src = with_nested(r#"fn main() void {
+    let a = Wallet { amount = Money { cents = 150 }, note = "n" }
+    let b = Wallet { amount = Money { cents = 199 }, note = "n" }
+    let c = Wallet { amount = Money { cents = 250 }, note = "n" }
+    let d = Wallet { amount = Money { cents = 150 }, note = "m" }
+    println(a == b)
+    println(digest(a) == digest(b))
+    println(digest(a) == digest(c))
+    println(digest(a) == digest(d))
+    let p = Pay.Cash(Money { cents = 150 })
+    let q = Pay.Cash(Money { cents = 199 })
+    let r = Pay.Cash(Money { cents = 250 })
+    println(digest(p) == digest(q))
+    println(digest(p) == digest(r))
+    let x = Pay.Check { amount = Money { cents = 101 } }
+    let y = Pay.Check { amount = Money { cents = 150 } }
+    println(digest(x) == digest(y))
+    println(digest(p) == digest(x))
+    let t1 = (Money { cents = 150 }, 1)
+    let t2 = (Money { cents = 199 }, 1)
+    let t3 = (Money { cents = 250 }, 1)
+    println(digest(t1) == digest(t2))
+    println(digest(t1) == digest(t3))
+}
+"#);
+    assert_eq!(
+        run(&src).unwrap(),
+        "true\ntrue\nfalse\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\n"
+    );
+}
+
+#[test]
+fn types_without_impls_hash_and_clone_as_before() {
+    let src = with_nested(r#"fn main() void {
+    let a = Plain { n = 1, s = "x" }
+    let b = Plain { n = 1, s = "x" }
+    let c = Plain { n = 2, s = "x" }
+    println(digest(a) == digest(b))
+    println(digest(a) == digest(c))
+    println(a.clone() == a)
+    println(dup(c) == c)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_unique_field_is_compared_hashed_and_cloned_through_the_impl() {
+    let src = with_money(r#"@derive(PartialEq, Eq, Hash, Clone)
+struct Slot { m: Unique<Money> }
+
+@tier(low)
+fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+
+@tier(low)
+fn main() void {
+    let a = Slot { m = Unique.new(Money { cents = 150 }) }
+    let b = Slot { m = Unique.new(Money { cents = 199 }) }
+    let c = Slot { m = Unique.new(Money { cents = 250 }) }
+    println(a == b)
+    println(a == c)
+    println(digest(a) == digest(b))
+    println(digest(a) == digest(c))
+    let d = Slot { m = Unique.new(Money { cents = 199 }) }
+    let e = d.clone()
+    println(digest(e) == digest(d))
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\ntrue\nfalse\nfalse\n");
+}
+
+// ── Closing the gaps the S2b mutation pass found ──────────────────
+
+#[test]
+fn a_tuple_is_compared_element_by_element_through_the_impls_eq() {
+    let src = with_money(r#"fn main() void {
+    let t1 = (Money { cents = 150 }, Money { cents = 1 })
+    let t2 = (Money { cents = 199 }, Money { cents = 50 })
+    let t3 = (Money { cents = 250 }, Money { cents = 1 })
+    let l = [t1]
+    println(l.contains(t2))
+    println(l.contains(t3))
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\n");
+}
+
+#[test]
+fn a_derived_ordering_moves_on_to_the_next_field_when_one_compares_equal() {
+    let src = with_money(r#"@derive(PartialEq, Eq, PartialOrd, Ord)
+struct Bid { who: Money, n: int }
+
+fn main() void {
+    let a = Bid { who = Money { cents = 150 }, n = 1 }
+    let b = Bid { who = Money { cents = 199 }, n = 2 }
+    let c = Bid { who = Money { cents = 250 }, n = 0 }
+    let d = Bid { who = Money { cents = 199 }, n = 1 }
+    println(a < b)
+    println(b < c)
+    println(c < a)
+    println(a.lt(b))
+    println(a.eq(b))
+    println(a.eq(d))
+    println(a.cmp(b) == Ordering.Less)
+    println(c.cmp(a) == Ordering.Greater)
+    println(a.partial_cmp(c) == Ordering.Less)
+}
+"#);
+    // `a.eq(d)`: the same dollar and the same `n`, so equal by the field's impl.
+    assert_eq!(run(&src).unwrap(), "true\ntrue\nfalse\ntrue\nfalse\ntrue\ntrue\ntrue\ntrue\n");
+}
+
+#[test]
+fn the_comparison_methods_are_false_when_a_field_has_no_order() {
+    let src = r#"struct Odd { n: int }
+
+impl PartialEq for Odd {
+    fn eq(self, other: Odd) bool { return true }
+}
+
+impl PartialOrd for Odd {
+    fn partial_cmp(self, other: Odd) Ordering? { return null }
+}
+
+@derive(PartialEq, PartialOrd)
+struct Row { o: Odd }
+
+fn main() void {
+    let a = Row { o = Odd { n = 1 } }
+    let b = Row { o = Odd { n = 2 } }
+    println(a.lt(b))
+    println(a.le(b))
+    println(a.gt(b))
+    println(a.ge(b))
+}
+"#;
+    assert_eq!(run(src).unwrap(), "false\nfalse\nfalse\nfalse\n");
+}
+
+#[test]
+fn a_unique_operand_and_a_derived_ordering_over_unique_fields_use_the_impl() {
+    let src = with_money(r#"@derive(PartialEq, Eq, PartialOrd, Ord)
+struct Slot { m: Unique<Money> }
+
+@tier(low)
+fn main() void {
+    let u = Unique.new(Money { cents = 150 })
+    let v = Unique.new(Money { cents = 199 })
+    println(u == v)
+    let a = Slot { m = Unique.new(Money { cents = 150 }) }
+    let c = Slot { m = Unique.new(Money { cents = 250 }) }
+    println(a < c)
+    println(c < a)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\ntrue\nfalse\n");
+}
+
+#[test]
+fn assigning_through_a_dictionary_index_finds_the_key_by_the_impls_eq() {
+    let src = with_money(r#"fn main() void {
+    let d: Dictionary<Money, int> = Dictionary.new()
+    d.set(Money { cents = 150 }, 1)
+    d[Money { cents = 199 }] = 5
+    println(d.len())
+    println(d[Money { cents = 101 }])
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "1\n5\n");
+}
+
+#[test]
+fn group_by_merges_keys_that_are_equal_by_the_impl() {
+    let src = with_money(r#"fn main() void {
+    let ms = [Money { cents = 150 }, Money { cents = 199 }, Money { cents = 250 }]
+    let g = ms.query().group_by(fn(m) m)
+    println(g.len())
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "2\n");
+}
+
+#[test]
+fn contains_on_an_inline_list_uses_the_impls_eq() {
+    let src = with_money(r#"@tier(low)
+fn main() void {
+    let v = InlineList.new(3)
+    v.push(Money { cents = 150 })
+    println(v.contains(Money { cents = 199 }))
+    println(v.contains(Money { cents = 500 }))
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "true\nfalse\n");
+}
+
+#[test]
+fn clone_called_where_the_receivers_type_is_not_yet_known_still_uses_the_impl() {
+    let src = with_money(r#"@derive(Clone)
+struct Wallet { amount: Money }
+
+fn main() void {
+    let ws = [Wallet { amount = Money { cents = 10 } }]
+    let cs = ws.query().select(fn(w) w.clone()).to_list()
+    println(cs.get(0).amount.cents)
+}
+"#);
+    assert_eq!(run(&src).unwrap(), "11\n");
+}
+
+#[test]
+fn an_impl_written_after_the_signature_that_needs_it_is_still_found() {
+    // The signatures are collected before the impls are registered, so a
+    // dictionary key or a bounded struct argument naming a type whose impl
+    // comes later in the file must wait for the impls rather than fail.
+    let dict = r#"struct Key { n: int }
+
+fn count(d: Dictionary<Key, int>) int { return d.len() }
+
+impl PartialEq for Key {
+    fn eq(self, other: Key) bool { return self.n == other.n }
+}
+
+impl Eq for Key {
+}
+
+impl Hash for Key {
+    fn hash(self, state: Hasher) void { self.n.hash(state) }
+}
+
+fn main() void { println(1) }
+"#;
+    assert_eq!(codes(dict), (Stage::Clean, vec![]));
+
+    let bound = r#"trait Shape {
+    fn area(self) int
+}
+
+struct Boxed<T: Shape> { inner: T }
+
+struct Circle { r: int }
+
+fn make(b: Boxed<Circle>) int { return 1 }
+
+impl Shape for Circle {
+    fn area(self) int { return self.r }
+}
+
+fn main() void { println(1) }
+"#;
+    assert_eq!(codes(bound), (Stage::Clean, vec![]));
+}

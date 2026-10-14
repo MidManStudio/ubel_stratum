@@ -8,17 +8,48 @@
 //! interpreter and so cannot call a user's `eq` or `partial_cmp`. These
 //! helpers do, and fall back to the structural rules for everything else.
 //!
+//! Derived `Hash` and derived `Clone` go through the same dispatch: a field,
+//! tuple element, enum payload or collection element whose type has a
+//! hand-written `hash` or `clone` has it called, instead of the structural
+//! `Value::compute_hash` and `Value::deep_clone`, which take no interpreter.
+//!
 //! The fast path stays fast: only a struct, enum, tuple or `Unique` operand
-//! takes these paths; integers, strings and the rest go straight to the old
-//! code.
+//! takes the comparison paths; integers, strings and the rest go straight to
+//! the old code.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use crate::ast::common::BinOp;
 use crate::interpreter::eval::Interpreter;
-use crate::interpreter::value::{EvalResult, FunctionId, Signal, Value};
+use crate::interpreter::value::{EnumPayload, EvalResult, FunctionId, Signal, Value};
+
+/// Folds one 64-bit hash into a prelude `Hasher`'s `state` field. Order
+/// matters: the old state is rotated before the new hash is folded in, so
+/// hashing `a` then `b` differs from `b` then `a`.
+pub(crate) fn mix_into_hasher(hasher: &Value, h: u64) -> Result<(), Signal> {
+    let Value::Struct { fields, .. } = hasher else {
+        return Err(Signal::Panic("'hash' needs a Hasher argument".into()));
+    };
+    let mut fields = fields.borrow_mut();
+    let old = match fields.get("state") {
+        Some(Value::UInt(s)) => *s,
+        _ => return Err(Signal::Panic("'hash' needs a Hasher argument".into())),
+    };
+    let next = (old.rotate_left(5) ^ h).wrapping_mul(0x517c_c1b7_2722_0a95);
+    fields.insert("state".to_string(), Value::UInt(next));
+    Ok(())
+}
+
+fn hash_of_str(s: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
 
 /// Whether comparing this value could involve a user's impl.
 #[inline]
@@ -91,6 +122,31 @@ impl<'ast> Interpreter<'ast> {
                     if !self.values_equal(p, q)? { return Ok(false); }
                 }
                 Ok(true)
+            }
+            (Value::Enum { type_name: ta, variant: va, payload: pa },
+             Value::Enum { type_name: tb, variant: vb, payload: pb }) => {
+                if ta != tb || va != vb { return Ok(false); }
+                match (pa.as_ref(), pb.as_ref()) {
+                    (EnumPayload::None, EnumPayload::None) => Ok(true),
+                    (EnumPayload::Tuple(x), EnumPayload::Tuple(y)) => {
+                        if x.len() != y.len() { return Ok(false); }
+                        for (p, q) in x.iter().zip(y.iter()) {
+                            if !self.values_equal(p, q)? { return Ok(false); }
+                        }
+                        Ok(true)
+                    }
+                    (EnumPayload::Struct(x), EnumPayload::Struct(y)) => {
+                        if x.len() != y.len() { return Ok(false); }
+                        for (k, p) in x.iter() {
+                            match y.get(k) {
+                                Some(q) => if !self.values_equal(p, q)? { return Ok(false); },
+                                None    => return Ok(false),
+                            }
+                        }
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
             }
             (Value::Unique(x), Value::Unique(y)) => self.values_equal(x, y),
             _ => Ok(a.equals(b)),
@@ -206,6 +262,136 @@ impl<'ast> Interpreter<'ast> {
                 Ok(Value::Void)
             }
             other => Err(Signal::Panic(format!("no dictionary method '{}'", other))),
+        }
+    }
+
+    /// `.clone()` of a value that may hold a user's `impl Clone` somewhere
+    /// inside: a hand-written `clone` is called for a field, tuple element,
+    /// enum payload or collection element of a type that has one, and
+    /// everything else is copied as `Value::deep_clone` does (`Shared` and
+    /// `SyncShared` still alias).
+    pub(crate) fn values_clone(&mut self, v: &Value) -> EvalResult {
+        if let Some(f) = self.user_trait_fn(v, "Clone", "clone") {
+            return self.call_method(f, v.clone(), &[]);
+        }
+        match v {
+            Value::List(rc) => {
+                let items: Vec<Value> = rc.borrow().clone();
+                let mut out = Vec::with_capacity(items.len());
+                for item in &items { out.push(self.values_clone(item)?); }
+                Ok(Value::List(Rc::new(RefCell::new(out))))
+            }
+            Value::Dict(rc) => {
+                let pairs: Vec<(Value, Value)> = rc.borrow().clone();
+                let mut out = Vec::with_capacity(pairs.len());
+                for (k, val) in &pairs { out.push((self.values_clone(k)?, self.values_clone(val)?)); }
+                Ok(Value::Dict(Rc::new(RefCell::new(out))))
+            }
+            Value::Queue(rc) => {
+                let items: Vec<Value> = rc.borrow().iter().cloned().collect();
+                let mut out = VecDeque::with_capacity(items.len());
+                for item in &items { out.push_back(self.values_clone(item)?); }
+                Ok(Value::Queue(Rc::new(RefCell::new(out))))
+            }
+            Value::Stack(rc) => {
+                let items: Vec<Value> = rc.borrow().clone();
+                let mut out = Vec::with_capacity(items.len());
+                for item in &items { out.push(self.values_clone(item)?); }
+                Ok(Value::Stack(Rc::new(RefCell::new(out))))
+            }
+            Value::Tuple(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items.iter() { out.push(self.values_clone(item)?); }
+                Ok(Value::Tuple(out))
+            }
+            Value::Struct { type_name, fields, derives_partial_eq, derives_ord, derives_hash, derives_clone, field_order } => {
+                let pairs: Vec<(String, Value)> = fields.borrow().iter()
+                    .map(|(k, val)| (k.clone(), val.clone()))
+                    .collect();
+                let mut cloned: HashMap<String, Value> = HashMap::with_capacity(pairs.len());
+                for (k, val) in &pairs { cloned.insert(k.clone(), self.values_clone(val)?); }
+                Ok(Value::Struct {
+                    type_name:          type_name.clone(),
+                    fields:             Rc::new(RefCell::new(cloned)),
+                    derives_partial_eq: *derives_partial_eq,
+                    derives_ord:        *derives_ord,
+                    derives_hash:       *derives_hash,
+                    derives_clone:      *derives_clone,
+                    field_order:        Rc::clone(field_order),
+                })
+            }
+            Value::Enum { type_name, variant, payload } => {
+                let cloned = match payload.as_ref() {
+                    EnumPayload::None => EnumPayload::None,
+                    EnumPayload::Tuple(items) => {
+                        let mut out = Vec::with_capacity(items.len());
+                        for item in items.iter() { out.push(self.values_clone(item)?); }
+                        EnumPayload::Tuple(out)
+                    }
+                    EnumPayload::Struct(map) => {
+                        let mut out = HashMap::with_capacity(map.len());
+                        for (k, val) in map.iter() { out.insert(k.clone(), self.values_clone(val)?); }
+                        EnumPayload::Struct(out)
+                    }
+                };
+                Ok(Value::Enum { type_name: type_name.clone(), variant: variant.clone(), payload: Box::new(cloned) })
+            }
+            Value::Unique(inner) => Ok(Value::Unique(Box::new(self.values_clone(inner)?))),
+            other => Ok(other.deep_clone()),
+        }
+    }
+
+    /// `value.hash(state)` for a value that may hold a user's `impl Hash`
+    /// somewhere inside: a hand-written `hash` is called for a field, tuple
+    /// element or enum payload of a type that has one, a derived struct, a
+    /// tuple and an enum fold their parts in order, and every other value
+    /// folds in `Value::compute_hash`. Values that are equal under
+    /// `values_equal` therefore hash alike.
+    pub(crate) fn hash_value(&mut self, v: &Value, hasher: &Value) -> Result<(), Signal> {
+        if let Some(f) = self.user_trait_fn(v, "Hash", "hash") {
+            self.call_method(f, v.clone(), &[hasher.clone()])?;
+            return Ok(());
+        }
+        match v {
+            Value::Struct { type_name, fields, derives_hash: true, field_order, .. } => {
+                mix_into_hasher(hasher, hash_of_str(type_name))?;
+                let parts: Vec<(String, Option<Value>)> = {
+                    let fields = fields.borrow();
+                    field_order.iter().map(|n| (n.clone(), fields.get(n).cloned())).collect()
+                };
+                for (name, val) in &parts {
+                    mix_into_hasher(hasher, hash_of_str(name))?;
+                    if let Some(val) = val { self.hash_value(val, hasher)?; }
+                }
+                Ok(())
+            }
+            Value::Tuple(items) => {
+                mix_into_hasher(hasher, items.len() as u64)?;
+                for item in items.iter() { self.hash_value(item, hasher)?; }
+                Ok(())
+            }
+            Value::Enum { type_name, variant, payload } => {
+                mix_into_hasher(hasher, hash_of_str(type_name))?;
+                mix_into_hasher(hasher, hash_of_str(variant))?;
+                match payload.as_ref() {
+                    EnumPayload::None => Ok(()),
+                    EnumPayload::Tuple(items) => {
+                        for item in items.iter() { self.hash_value(item, hasher)?; }
+                        Ok(())
+                    }
+                    EnumPayload::Struct(map) => {
+                        let mut keys: Vec<&String> = map.keys().collect();
+                        keys.sort();
+                        for k in keys {
+                            mix_into_hasher(hasher, hash_of_str(k))?;
+                            self.hash_value(&map[k], hasher)?;
+                        }
+                        Ok(())
+                    }
+                }
+            }
+            Value::Unique(inner) => self.hash_value(inner, hasher),
+            other => mix_into_hasher(hasher, other.compute_hash()),
         }
     }
 }

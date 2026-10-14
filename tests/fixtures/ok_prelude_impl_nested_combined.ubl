@@ -1,0 +1,105 @@
+// tests/fixtures/ok_prelude_impl_nested_combined.ubl
+// Hand-written impls reached through several already-shipped features at
+// once: a Dictionary keyed by an enum whose payload has a hand-written `eq`,
+// the Linqerizer's `group_by` over such enums, generic functions bounded by
+// `Hash` and `Clone`, and a derived-Clone struct holding a List, Dictionary,
+// Queue, Stack and enum of `Money`, each element cloned through `Money`'s own
+// `clone`. `Money` equates amounts in the same dollar and clones with one
+// extra cent, so every count and amount below shows which code ran.
+// Expected: sema OK, interpret OK, all assertions pass.
+
+struct Money {
+    cents: int,
+}
+
+impl PartialEq for Money {
+    fn eq(self, other: Money) bool { return self.cents / 100 == other.cents / 100 }
+}
+
+impl Eq for Money {
+}
+
+impl Hash for Money {
+    fn hash(self, state: Hasher) void {
+        let dollars = self.cents / 100
+        dollars.hash(state)
+    }
+}
+
+impl Clone for Money {
+    fn clone(self) Money { return Money { cents = self.cents + 1 } }
+}
+
+enum Pay {
+    Cash(Money),
+    Card(Money),
+    Check { amount: Money },
+    Nothing
+}
+
+@derive(Clone)
+struct Holder {
+    items: List<Money>,
+    ledger: Dictionary<string, Money>,
+    line: Queue<Money>,
+    pile: Stack<Money>,
+    pay: Pay,
+    cash: Pay,
+}
+
+fn digest<T: Hash>(x: T) u64 {
+    let h = Hasher.new()
+    x.hash(h)
+    return h.finish()
+}
+
+fn dup<T: Clone>(x: T) T {
+    return x.clone()
+}
+
+fn cents_of(p: Pay) int {
+    match p {
+        Cash(m) => return m.cents,
+        Card(m) => return m.cents,
+        Check { amount } => return amount.cents,
+        Nothing => return 0,
+    }
+}
+
+fn main() void {
+    let seen: Dictionary<Pay, string> = Dictionary.new()
+    seen.set(Pay.Cash(Money { cents = 150 }), "first")
+    seen.set(Pay.Cash(Money { cents = 199 }), "second")
+    seen.set(Pay.Cash(Money { cents = 250 }), "third")
+    seen.set(Pay.Nothing, "none")
+    assert(seen.len() == 3, "two same-dollar keys share one entry")
+    assert(seen.get(Pay.Cash(Money { cents = 101 })) == "second", "the later set replaced the value")
+    assert(seen.contains_key(Pay.Cash(Money { cents = 299 })), "lookup by an equal payload")
+    assert(!seen.contains_key(Pay.Cash(Money { cents = 350 })), "lookup by a different payload misses")
+
+    let pays = [Pay.Cash(Money { cents = 150 }), Pay.Cash(Money { cents = 199 }), Pay.Cash(Money { cents = 250 })]
+    let groups = pays.query().group_by(fn(p) p)
+    assert(groups.len() == 2, "group_by merges payloads that are equal by eq")
+
+    assert(digest(Pay.Cash(Money { cents = 150 })) == digest(Pay.Cash(Money { cents = 199 })), "equal keys hash alike")
+
+    let items: List<Money> = List.new()
+    items.push(Money { cents = 1 })
+    let ledger: Dictionary<string, Money> = Dictionary.new()
+    ledger.set("k", Money { cents = 7 })
+    let line: Queue<Money> = Queue.new()
+    line.enqueue(Money { cents = 20 })
+    let pile: Stack<Money> = Stack.new()
+    pile.push(Money { cents = 30 })
+    let h = Holder { items = items, ledger = ledger, line = line, pile = pile, pay = Pay.Check { amount = Money { cents = 40 } }, cash = Pay.Cash(Money { cents = 50 }) }
+
+    let k = dup(h)
+    assert(k.items.get(0).cents == 2, "list element cloned through the impl")
+    assert(k.ledger.get("k").cents == 8, "dictionary value cloned through the impl")
+    assert(k.line.dequeue().cents == 21, "queue element cloned through the impl")
+    assert(k.pile.pop().cents == 31, "stack element cloned through the impl")
+    assert(cents_of(k.pay) == 41, "struct-payload variant cloned through the impl")
+    assert(cents_of(k.cash) == 51, "tuple-payload variant cloned through the impl")
+    assert(h.items.get(0).cents == 1, "the original list is untouched")
+    assert(h.line.dequeue().cents == 20, "the original queue is untouched")
+}

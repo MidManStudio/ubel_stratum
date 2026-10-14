@@ -116,9 +116,12 @@ verified safe.
   with no bound is an error. `PartialEq`, `Eq`, `PartialOrd`, `Ord` and
   `Clone` exist without being declared, with an `Ordering` enum, and work as
   bounds and as methods on built-in and derived types. `Hash` and a `Hasher`
-  struct exist too, and a `Dictionary` key must be `Hash`. Next: dispatch to
-  hand-written impls of those traits, supertraits and generic traits, tiers on
-  trait methods, language-item traits, and `dyn Trait`
+  struct exist too, and a `Dictionary` key must be `Hash`. Hand-written impls of
+  those traits are accepted and called by `==`, the ordering operators,
+  `contains`, dictionary lookups, sorting and grouping, and by derived
+  comparison, hashing and cloning inside other values. Next: supertraits and
+  generic traits, impls for built-in types, tiers on trait methods,
+  language-item traits, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

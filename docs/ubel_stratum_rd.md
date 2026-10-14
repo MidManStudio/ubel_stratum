@@ -96,10 +96,11 @@ test needs runtime values.
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
 `Clone`, `Hasher`, `Hash`) as Ubel source. `parse()` calls `prelude::inject` after parsing the
-program. `tests/prelude_traits.rs` (59 tests) covers what each kind of type
+program. `tests/prelude_traits.rs` (95 tests) covers what each kind of type
 satisfies, the methods, hashing, the `Dictionary` key requirement, the
-operators on a type parameter, hand-written impls
-and shadowing.
+operators on a type parameter, hand-written impls and what calls them
+(operators, `contains`, dictionaries, `order_by`, `group_by`, derived
+comparison, `Hash` and `Clone` inside other values) and shadowing.
 
 **Decisions:**
 - The prelude source is lexed once per process and every token span is
@@ -129,7 +130,15 @@ and shadowing.
   an inferred dictionary one; an alias not checked at its use fails one and an
   alias checked at its declaration fails one; no same-line dedupe fails four; a
   `hash` that does nothing fails three; hashing that is not order-sensitive
-  fails one; `Hash` without its supertraits fails one.
+  fails one; `Hash` without its supertraits fails one. For S2b: 69 mutations of
+  the dispatch and the impl checks, each on the function itself, 68 are caught.
+  The one that is not, the bit rotation in the hash mixer, changes no result a
+  program can observe, because hash values are not a contract. The first pass
+  left 17 alive and exposed missing tests (tuple, `Unique` and enum payload
+  operands, a derived ordering that must move on to the next field, the `x.eq(y)`
+  and `x.lt(y)` call forms, `group_by`, dictionary index assignment, inline-list
+  `contains`, an impl written after the signature that needs it); each now has
+  one.
 
 ### `tests/bounds.rs`
 

@@ -841,12 +841,12 @@ Known gaps of S1b, recorded rather than hidden:
 - `eq`, `ne`, `partial_cmp`, `lt`, `le`, `gt`, `ge`, `cmp` and `clone` can be
   called on a built-in or derived value directly, and through the qualified
   form `Ord.cmp(a, b)`.
-- A hand-written impl of one of the five is `TYPE-129` until S2b.
+- A hand-written impl of one of the five was `TYPE-129` in this part; S2b
+  accepts it.
 
 Known gaps of S2a part 1, recorded rather than hidden:
 
-- `==` on a struct without `PartialEq` is still reference identity, and a
-  user-written `eq` is not called by `==` (S2b).
+- `==` on a struct without `PartialEq` is still reference identity.
 - An enum is `PartialEq` and `Eq` whatever its payload types are.
 - Two lists with equal elements are not `==`, and a list is not `PartialEq`;
   list equality is reference identity at run time.
@@ -886,7 +886,36 @@ Known gaps of S2a part 2, recorded rather than hidden:
   error. Found while testing; the `Dictionary.new()` return typing is not
   related to traits.
 
-**Traits, slices S2b to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S2b.** Hand-written impls of the six prelude traits, and the
+runtime dispatch that makes `==` and the rest call them. See
+`docs/TRAITS_DESIGN.md`, "What S2b settled".
+
+- An impl of `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash` or `Clone` for a
+  struct or enum is accepted and checked like any trait impl. It needs its
+  supertraits (`TYPE-132`) and cannot repeat a derive (`TYPE-128`).
+- `==`, `!=`, `<`, `<=`, `>`, `>=`, `contains` on every collection, dictionary
+  lookup, assignment and indexing, `order_by` and `group_by` call the impl.
+  Derived comparison, derived `Hash` and derived `Clone` do too, inside fields,
+  tuple elements, enum payloads, collection elements and `Unique`.
+
+Known gaps of S2b, recorded rather than hidden:
+
+- `a < b` on a derived struct whose field has no order (`partial_cmp` gives
+  `null`) panics with "comparison between incomparable values", while
+  `a.lt(b)` is `false`. The operator convention predates the traits, so the two
+  forms disagree.
+- `order_by` accepts a key type that has no ordering (a tuple, for example) and
+  leaves the list in its original order; a key is not required to be
+  `PartialOrd`.
+- `@derive(Clone)` does not require its field types to be `Clone`: a struct with
+  an enum field derives it and clones the enum, although an enum is not `Clone`.
+- Impls for built-in types, generic types and generic traits are still
+  `TYPE-129` (S3).
+- Tuple comparison between two variables is rejected by sema (`TYPE-101`, found
+  while testing, not related to traits), so a tuple reaches the impls through
+  `contains` and the dictionary methods only.
+
+**Traits, slices S3 to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six
