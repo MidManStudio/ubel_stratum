@@ -44,7 +44,12 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The criterion suite registers one benchmark per fixture (245 now) and
+    # every push runs it, at roughly 8 to 14 s per fixture, so a push run
+    # needs 35 to 60 minutes and grows with each new fixture. 30 minutes
+    # cancelled every push run; manual runs with run_benchmarks set to
+    # false take about 3 minutes.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
