@@ -119,9 +119,11 @@ verified safe.
   struct exist too, and a `Dictionary` key must be `Hash`. Hand-written impls of
   those traits are accepted and called by `==`, the ordering operators,
   `contains`, dictionary lookups, sorting and grouping, and by derived
-  comparison, hashing and cloning inside other values. Next: supertraits and
-  generic traits, impls for built-in types, tiers on trait methods,
-  language-item traits, and `dyn Trait`
+  comparison, hashing and cloning inside other values. A trait can build on
+  others (`trait B: A + C`): an impl needs the impls beneath it, a bound on `B`
+  also gives what `A` and `C` provide, and a trait that builds on itself is an
+  error. Next: generic traits, impls for built-in types, tiers on trait
+  methods, language-item traits, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

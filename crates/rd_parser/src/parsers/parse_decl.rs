@@ -22,7 +22,7 @@ use ubel_stratum::{
             ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload, ExtendDecl,
             FieldDecl, FunctionDecl, ImplBlock, MethodDecl, MethodSig,
             Param, ParamKind, PropertyDecl, ReturnType, StaticDecl, StructDecl,
-            StructMember, TraitDecl, TraitItem, TypeAlias,
+            StructMember, SupertraitRef, TraitDecl, TraitItem, TypeAlias,
         },
         root::{Item, Import, ImportItems, ImportKind, PackageDecl},
     },
@@ -703,6 +703,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.cursor.advance(); // consume `trait`
         let (name, _) = self.expect_ident()?;
         let generic_params = self.parse_generic_params();
+        let supertraits = self.parse_supertraits();
 
         // Body is optional per EBNF: `("{ TraitItem* "}")?`
         let items: &'ast [TraitItem<'ast>] = if self.cursor.is_at(&TokenType::LeftBrace) {
@@ -726,7 +727,28 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         let span = lo.merge(&self.span());
         self.leave(prev);
 
-        Some(TraitDecl { attributes: attrs, visibility: vis, name, generic_params, items, span })
+        Some(TraitDecl { attributes: attrs, visibility: vis, name, generic_params, supertraits, items, span })
+    }
+
+    /// `: A + B` after a trait's name and generic parameters: the traits it
+    /// builds on. Returns an empty slice when no `:` follows. The names are
+    /// plain identifiers, written the way a bound on a type parameter is
+    /// (`T: A + B`); whether each one is a trait is sema's question.
+    fn parse_supertraits(&mut self) -> &'ast [SupertraitRef<'ast>] {
+        if !self.cursor.eat(&TokenType::Colon) { return &[]; }
+
+        let mut list: Vec<SupertraitRef<'ast>> = Vec::with_capacity(cap::SUPERTRAITS);
+        loop {
+            match self.eat_ident() {
+                Some((name, span)) => list.push(SupertraitRef { name, span }),
+                None => {
+                    self.expected(&["supertrait name"]);
+                    break;
+                }
+            }
+            if !self.cursor.eat(&TokenType::Plus) { break; }
+        }
+        self.arena.alloc_slice_clone(&list)
     }
 
     fn parse_trait_item(&mut self) -> Option<TraitItem<'ast>> {

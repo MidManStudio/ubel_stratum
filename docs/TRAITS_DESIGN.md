@@ -38,7 +38,8 @@
 | **S2a, part 1** | **Built** | The prelude traits `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Clone` with real signatures, the `Ordering` enum, what built-in and derived types satisfy, supertrait bounds, the methods callable through a bound and directly on a value, operator checks on type parameters (`TYPE-131`), hand-written impls reported (`TYPE-129`). See "What S2a part 1 settled" below. |
 | **S2a, part 2** | **Built** | `Hash` and the `Hasher` struct, `Hash` satisfaction, and `Hash` (which implies `Eq`) required of `Dictionary` keys. See "What S2a part 2 settled" below. |
 | **S2b** | **Built** | Hand-written impls of the six prelude traits: checked like any trait impl, needing their supertraits (`TYPE-132`), and called by `==`, `!=`, the ordering operators, `contains` on every collection, dictionary lookup, assignment and indexing, `order_by`, `group_by`, and by derived comparison, `Hash` and `Clone` inside other values. See "What S2b settled" below. |
-| S3 to S6 | Planned | As in section 4. |
+| **S3a** | **Built** | Supertraits: `trait B: A + C`. An impl needs the impls beneath it (`TYPE-132`, now for every trait), a bound implies them, a default body sees them, a cycle is an error (`TYPE-133`), and the prelude declares its own. See "What S3a settled" below. |
+| S3b to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -171,10 +172,11 @@ What reading the code established before this was decided:
   the prelude items that depend on it are dropped with it: `Eq` and
   `PartialOrd` depend on `PartialEq`, `PartialOrd` and `Ord` on `Ordering`,
   `Ord` on `PartialOrd` and `Eq`.
-- **Supertraits are a table in sema.** `trait B: A` is not parsed until S3, so
-  a bound `T: Ord` also puts `PartialOrd`, `Eq` and `PartialEq` in force inside
-  the body. Declared bounds stay as written, so a call site raises one
-  obligation per declared bound.
+- **Supertraits.** A bound `T: Ord` also puts `PartialOrd`, `Eq` and
+  `PartialEq` in force inside the body. Declared bounds stay as written, so a
+  call site raises one obligation per declared bound. Until S3a this was a table
+  in sema, because `trait B: A` was not parsed; the prelude now declares them
+  like any trait (see "What S3a settled").
 - **What satisfies a prelude trait** follows what the runtime does with the
   value:
 
@@ -304,6 +306,55 @@ What reading the code established before this was decided:
   with "comparison between incomparable values", as the operators already did
   for incomparable values before the traits existed. The two forms disagree; see
   `docs/PARKED_IDEAS.md`.
+
+### What S3a settled
+
+- **Syntax.** `trait B: A + C { .. }`. The supertraits follow the name and any
+  generic parameters and are written like a bound on a type parameter
+  (`T: A + C`). Each is a plain name, so a supertrait with arguments
+  (`trait B: A<int>`) is a parse error until generic traits arrive. The parser
+  records each name with its own span (`SupertraitRef`), so a diagnostic about a
+  supertrait points at the name.
+- **An impl needs the impls beneath it (`TYPE-132`).** The rule built for the
+  prelude in S2b now covers every trait: `impl B for T` needs an impl of each
+  trait `B` builds on, directly or through others. One diagnostic per impl, at
+  the impl, naming the first missing trait in the chain. The chain is the trait's
+  supertraits in the order written, then theirs level by level, so an `impl Ord`
+  with nothing beneath it names `PartialOrd`. A link missing further up is
+  reported at each impl that depends on it. The suggestion is `@derive(X)` or an
+  impl when the missing trait is one that can be derived, and an impl otherwise.
+- **A bound implies its supertraits, one way.** `T: B` puts `A` in force inside
+  the body, so `x.a_method()` resolves, and `T: B` satisfies a `T: A`
+  requirement at a call. The reverse does not hold: a `T: A` does not satisfy
+  `T: B` (`TYPE-126`). Declared bounds stay as written. A diamond is one trait to
+  the body: `Base` reached through `Left` and `Right` is one entry, so a method
+  of `Base` is not ambiguous.
+- **A default body sees its supertraits.** Inside a default method of `B`, `self`
+  is bounded by `B` and by everything `B` builds on. `self.a_method()` resolves,
+  and for a prelude supertrait the operators work (`trait Scored: PartialOrd`
+  allows `self > other` in a default).
+- **Names.** A supertrait that is unknown, or names something that is not a
+  trait, is `TYPE-122`, reported at the name. A repeated name is ignored.
+  Declaration order does not matter: a trait may build on one declared later.
+- **A trait cannot build on itself (`TYPE-133`, `SupertraitCycle`)**, directly or
+  through others. One diagnostic per cycle, at the supertrait name that closes
+  it, with the cycle as written (`A -> B -> A`). A trait that only leads into a
+  cycle is not reported, and a diamond is not a cycle.
+- **The prelude declares its own supertraits** in its source: `trait Eq:
+  PartialEq`, `trait PartialOrd: PartialEq`, `trait Ord: PartialOrd + Eq`,
+  `trait Hash: Eq`. Sema's table of prelude supertraits is gone; only the list of
+  prelude names remains. Shadowing reads the declarations: a prelude item depends
+  on its supertraits plus the types its signatures mention (`Ordering` for
+  `PartialOrd` and `Ord`, `Hasher` for `Hash`), and a program that declares a
+  name loses everything that depends on it, as before.
+- **Not changed.** The `@derive` prerequisite check (`DeriveRequiresOther`) still
+  works from the derive list, not from the declared supertraits; the two agree
+  for the six prelude traits. Generic traits, associated types, impls for
+  generic types and for built-in types, and the two bound limits are still
+  `TYPE-129`.
+- **Runtime.** No change. A call through a bound resolves to the supertrait's
+  method and runs the implementing type's impl, and a default of `B` that calls
+  `self.a()` runs whatever the type provides for `A`.
 
 ### D7: what has to be specified before S4
 
@@ -509,7 +560,8 @@ exact-count tests, and the docs updated in the same bundle.
 |---|---|---|
 | **S1** | Nominal traits with static checking: register trait impl methods in sema and interpreter dispatch; conformance checks (missing method, method not in the trait, signature mismatch with `Self`); default methods inherited; bounds enforced at call sites and through bodies; inherent-first resolution and the qualified call. | D1 A, D2 A, D3, D4 i, D6 b, D7 a, D8 |
 | **S2** | Prelude traits for the six derives; built-in impls for primitives; bounds on built-in collections; `@derive` becomes an impl generator. | D5 B |
-| **S3** | Supertraits and generic traits; the impl's trait path keeps its arguments. | D4 ii |
+| **S3a** | Supertraits (built). | D4 ii |
+| S3b onward | Generic traits, associated types, impls for generic types and for built-in types; the impl's trait path keeps its arguments. The order is chosen with the project owner. | D4 ii |
 | **S4** | Tier on trait method signatures. | D7 a |
 | **S5** | Language-item traits, one decision and one delivery each: `Display`/`Debug`, `Iterable<T>`, operators. | D5 C |
 | **S6** | `dyn Trait` in `HIGH`. | D2 B |

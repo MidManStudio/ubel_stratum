@@ -173,8 +173,20 @@ pub struct TraitDecl<'ast> {
     pub visibility:     Visibility,
     pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
+    /// The traits this one builds on: `A` and `C` in `trait B: A + C`.
+    /// Empty when no `:` follows the name.
+    pub supertraits:    &'ast [SupertraitRef<'ast>],
     pub items:          &'ast [TraitItem<'ast>],
     pub span:           Span,
+}
+
+/// One name in a trait's supertrait list, with the span of that name so a
+/// diagnostic about it (unknown trait, cycle) points at it and not at the
+/// whole declaration.
+#[derive(Debug, Clone, Copy)]
+pub struct SupertraitRef<'ast> {
+    pub name: &'ast str,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy)]

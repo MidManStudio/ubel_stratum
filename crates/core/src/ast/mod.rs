@@ -70,8 +70,8 @@ pub use declarations::{
     ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload,
     ExtendDecl, FieldDecl, FunctionDecl, ImplBlock,
     MethodDecl, MethodSig, Param, ParamKind, PropertyDecl,
-    ReturnType, StaticDecl, StructDecl, StructMember, TraitDecl, TraitItem,
-    TypeAlias,
+    ReturnType, StaticDecl, StructDecl, StructMember, SupertraitRef, TraitDecl,
+    TraitItem, TypeAlias,
 };
 
 pub use root::{Import, ImportItems, ImportKind, Item, PackageDecl, Program};

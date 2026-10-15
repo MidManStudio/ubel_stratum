@@ -1,0 +1,56 @@
+// tests/fixtures/ok_trait_supertrait_isolated.ubl
+// A trait can build on others: `trait B: A`. A default method of B may call
+// what A provides (through `self`), a type parameter bounded by B may call
+// A's methods too and satisfies a bound on A, and the chain is transitive
+// (`Loud` builds on `Greeter`, which builds on `Named`, so a `T: Loud` is
+// also a `Named`). Each impl is still its own: the impl of B for a type
+// needs the impl of A for that type.
+// Expected: sema OK, interpret OK.
+
+trait Named {
+    fn name(self) string
+}
+
+trait Greeter: Named {
+    fn greeting(self) string { return $"hello, {self.name()}" }
+}
+
+trait Loud: Greeter {
+    fn shout(self) string { return self.greeting() + "!" }
+    fn twice(self) string { return self.name() + self.name() }
+}
+
+struct Dog {
+    n: string,
+}
+
+impl Named for Dog {
+    fn name(self) string { return self.n }
+}
+
+impl Greeter for Dog {
+}
+
+impl Loud for Dog {
+}
+
+fn greet_all<T: Greeter>(x: T) string {
+    return x.greeting() + "/" + x.name()
+}
+
+fn only_named<T: Named>(x: T) string {
+    return x.name()
+}
+
+fn pass_down<T: Loud>(x: T) string {
+    return only_named(x)
+}
+
+fn main() void {
+    let d = Dog { n = "rex" }
+    assert(d.shout() == "hello, rex!", "a default calling a supertrait default, which calls the supertrait's required method")
+    assert(d.twice() == "rexrex", "a default calling a method two levels up")
+    assert(greet_all(d) == "hello, rex/rex", "a bound on B reaches A's method")
+    assert(pass_down(d) == "rex", "a T: Loud bound satisfies a T: Named requirement")
+    println(d.shout())
+}

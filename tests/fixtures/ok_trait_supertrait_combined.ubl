@@ -1,0 +1,99 @@
+// tests/fixtures/ok_trait_supertrait_combined.ubl
+// Supertraits together: a diamond (`Both` builds on `Left` and `Right`,
+// which both build on `Base`, and `Base` is one trait to the body, not two
+// that clash), a user trait built on a prelude trait (`Scored: Ord` gives a
+// default body `>` and a bounded function `>=` and `!=`), an enum
+// implementing a chain, and a sub-trait declared before the trait it builds
+// on, which is not an error because declaration order does not matter.
+// Expected: sema OK, interpret OK.
+
+trait Both: Left + Right {
+    fn both(self) int { return self.left() + self.right() + self.id() }
+}
+
+trait Left: Base {
+    fn left(self) int { return self.id() * 10 }
+}
+
+trait Right: Base {
+    fn right(self) int { return self.id() * 100 }
+}
+
+trait Base {
+    fn id(self) int
+}
+
+struct Node {
+    n: int,
+}
+
+impl Base for Node {
+    fn id(self) int { return self.n }
+}
+
+impl Left for Node {
+}
+
+impl Right for Node {
+}
+
+impl Both for Node {
+}
+
+enum Level {
+    Low,
+    High,
+}
+
+impl Base for Level {
+    fn id(self) int {
+        if self == Level.Low { return 1 }
+        return 2
+    }
+}
+
+impl Left for Level {
+    fn left(self) int { return 7 }
+}
+
+fn base_only<T: Base>(x: T) int {
+    return x.id()
+}
+
+fn via_both<T: Both>(x: T) int {
+    return base_only(x)
+}
+
+fn total<T: Both>(x: T) int {
+    return x.both() + x.left() + x.right() + x.id()
+}
+
+trait Scored: Ord {
+    fn score(self) int
+    fn better_than(self, other: Self) bool { return self > other }
+}
+
+@derive(PartialEq, Eq, PartialOrd, Ord)
+struct Card {
+    rank: int,
+}
+
+impl Scored for Card {
+    fn score(self) int { return self.rank }
+}
+
+fn best<T: Scored>(a: T, b: T) bool {
+    return a.better_than(b) and a >= b and a != b
+}
+
+fn main() void {
+    let node = Node { n = 2 }
+    assert(node.both() == 222, "the diamond's default reaches Left, Right and Base")
+    assert(via_both(node) == 2, "T: Both satisfies T: Base through two levels")
+    assert(total(node) == 222 + 20 + 200 + 2, "every level callable through one bound")
+    assert(Level.High.id() == 2, "an enum implementing the base")
+    assert(Level.Low.left() == 7, "an enum overriding a supertrait-dependent default")
+    assert(best(Card { rank = 5 }, Card { rank = 3 }), "a user trait over a prelude trait")
+    assert(!best(Card { rank = 3 }, Card { rank = 5 }), "and the other way round")
+    println(total(node))
+}

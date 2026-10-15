@@ -1,0 +1,51 @@
+// tests/fixtures/err_trait_supertrait_names_combined.ubl
+// What a supertrait list can get wrong: a name that is no trait (unknown,
+// or a struct), a trait that is its own supertrait (directly, and through
+// another trait, reported once per cycle), and a bound that is not enough
+// (`T: Base` does not satisfy a `T: Child` requirement even though `Child`
+// builds on `Base`; the implication runs the other way).
+// Expected: sema FAIL (NotATrait TYPE-122 twice, SupertraitCycle TYPE-133
+// twice, UnsatisfiedBound TYPE-126 once).
+
+trait Base {
+    fn id(self) int
+}
+
+trait Child: Base {
+    fn twice(self) int { return self.id() * 2 }
+}
+
+struct Thing {
+    n: int,
+}
+
+trait Unknown1: Nope {
+}
+
+trait OnStruct: Thing {
+}
+
+trait Selfish: Selfish {
+}
+
+trait P: Q {
+}
+
+trait Q: P {
+}
+
+impl Base for Thing {
+    fn id(self) int { return self.n }
+}
+
+fn needs_child<T: Child>(x: T) int {
+    return x.twice()
+}
+
+fn only_base<T: Base>(x: T) int {
+    return needs_child(x)
+}
+
+fn main() void {
+    println(only_base(Thing { n = 1 }))
+}

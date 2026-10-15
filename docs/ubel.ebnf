@@ -123,7 +123,8 @@ EnumVariant   ::= Ident ("=" Expr)?
 FieldDeclList ::= FieldDecl ("," FieldDecl)*
 
 (* ── Traits ── *)
-TraitDecl     ::= "pub"? "trait" Ident GenericParams? ("{" TraitItem* "}")?
+TraitDecl     ::= "pub"? "trait" Ident GenericParams? SuperTraits? ("{" TraitItem* "}")?
+SuperTraits   ::= ":" Ident ("+" Ident)*
 TraitItem     ::= MethodSignature
                 | AssociatedType
                 | DefaultMethod

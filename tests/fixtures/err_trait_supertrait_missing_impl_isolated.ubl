@@ -1,0 +1,51 @@
+// tests/fixtures/err_trait_supertrait_missing_impl_isolated.ubl
+// An impl of a trait needs an impl of every trait it builds on, and a
+// missing one is reported once per impl, at the impl, naming the first
+// missing trait in the chain: `impl Greeter for A` has no `Named`;
+// `impl Loud for B` has `Named` but not `Greeter`, the next link; and
+// `impl Ranked for C` has no `PartialOrd`, a prelude trait.
+// Expected: sema FAIL (MissingSupertraitImpl, TYPE-132, three times).
+
+trait Named {
+    fn name(self) string
+}
+
+trait Greeter: Named {
+    fn greeting(self) string { return self.name() }
+}
+
+trait Loud: Greeter {
+}
+
+struct A {
+    n: int,
+}
+
+impl Greeter for A {
+}
+
+struct B {
+    n: int,
+}
+
+impl Named for B {
+    fn name(self) string { return "b" }
+}
+
+impl Loud for B {
+}
+
+trait Ranked: PartialOrd {
+}
+
+@derive(PartialEq)
+struct C {
+    n: int,
+}
+
+impl Ranked for C {
+}
+
+fn main() void {
+    println(1)
+}

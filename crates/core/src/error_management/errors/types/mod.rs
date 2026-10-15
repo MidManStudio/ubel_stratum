@@ -252,13 +252,25 @@ pub enum TypeError {
         span:       Span,
     },
 
-    /// A hand-written impl of a prelude trait for a type that does not
-    /// implement the traits that trait builds on (`impl Ord for P` needs
-    /// `PartialOrd` and `Eq`, and through them `PartialEq`).
+    /// An impl of a trait for a type that does not implement the traits
+    /// that trait builds on (`impl Ord for P` needs `PartialOrd` and `Eq`,
+    /// and through them `PartialEq`; `impl B for P` with `trait B: A` needs
+    /// `A`). `derivable` is true when the missing trait is one `@derive`
+    /// can supply, which decides the suggestion.
     MissingSupertraitImpl {
         trait_name: String,
-        supertrait: &'static str,
+        supertrait: String,
+        derivable:  bool,
         type_name:  String,
+        span:       Span,
+    },
+
+    /// A trait that is its own supertrait, directly (`trait A: A`) or
+    /// through others (`trait A: B  trait B: A`). `path` is the cycle as
+    /// written, `A -> B -> A`, starting and ending at `trait_name`.
+    SupertraitCycle {
+        trait_name: String,
+        path:       String,
         span:       Span,
     },
 
@@ -363,6 +375,7 @@ impl TypeError {
             TypeError::MethodOnUnboundedParam      { span, .. } => *span,
             TypeError::OperatorNeedsBound          { span, .. } => *span,
             TypeError::MissingSupertraitImpl       { span, .. } => *span,
+            TypeError::SupertraitCycle             { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -453,6 +466,9 @@ impl TypeError {
 
             TypeError::MissingSupertraitImpl { trait_name, supertrait, type_name, .. } =>
                 format!("`impl {} for {}` needs `{}`, which `{}` does not implement", trait_name, type_name, supertrait, type_name),
+
+            TypeError::SupertraitCycle { trait_name, path, .. } =>
+                format!("trait `{}` is its own supertrait: {}", trait_name, path),
 
             TypeError::TypeAliasCycle { name, .. } =>
                 format!("type alias `{}` refers to itself, directly or through other aliases", name),
@@ -564,8 +580,14 @@ impl TypeError {
             TypeError::OperatorNeedsBound { param, trait_name, .. } =>
                 Some(format!("declare the bound, as in `<{}: {}>`", param, trait_name)),
 
-            TypeError::MissingSupertraitImpl { supertrait, type_name, .. } =>
+            TypeError::MissingSupertraitImpl { supertrait, derivable: true, type_name, .. } =>
                 Some(format!("add `@derive({})` or `impl {} for {} {{ .. }}`", supertrait, supertrait, type_name)),
+
+            TypeError::MissingSupertraitImpl { supertrait, type_name, .. } =>
+                Some(format!("add `impl {} for {} {{ .. }}`", supertrait, type_name)),
+
+            TypeError::SupertraitCycle { .. } =>
+                Some("a supertrait is required by the trait that builds on it, so the chain of `: ...` links must end; remove one of them".to_string()),
 
             TypeError::TypeAliasCycle { .. } =>
                 Some("an alias is just another name for a type, so it must end in a type that is not itself an alias of the same chain".to_string()),
@@ -628,6 +650,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::MethodOnUnboundedParam { .. }        => "TYPE-130",
             TypeError::OperatorNeedsBound { .. }            => "TYPE-131",
             TypeError::MissingSupertraitImpl { .. }         => "TYPE-132",
+            TypeError::SupertraitCycle { .. }               => "TYPE-133",
         }
     }
     fn span(&self) -> Span { self.span() }

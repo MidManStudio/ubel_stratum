@@ -32,6 +32,9 @@ traits, impls, parameters).
   `ConstDecl` still does not. It carries no tier: a static is always HIGH,
   and the only tier that can exist is an own `@tier(...)` attribute, which
   the parser checks.
+- `TraitDecl` has `supertraits: &[SupertraitRef]`, one entry per name in
+  `trait B: A + C`, each with the span of its own name so a diagnostic about a
+  supertrait points at it. The field is empty when no `:` follows the name.
 
 **Tests:** see `sema/tests.rs`, referenced under `sema/name_resolution.rs`
 and `sema/type_infer.rs` below.
@@ -1376,3 +1379,43 @@ script exits non-zero if any file passes 20 MiB. The largest file is 844 KiB.
 Twelve mutations of the script and the page are all caught. It touched
 `rd_parser/examples/diagnose.rs`, `scripts/build_dashboard_report.py`,
 `web/dashboard/index.html` and this document.
+
+**Decisions (traits, slice S3a):**
+- `parse_supertraits` reads `: A + B` after a trait's name and generic
+  parameters, in the shape of a bound. `register_trait_supertraits` runs in
+  `collect_signatures` right after `register_prelude_traits` and before any bound
+  is registered. It resolves each list into `trait_supers` (`TYPE-122` for a name
+  that is not a trait, a repeated name ignored) and walks the lists depth first
+  for cycles (`TYPE-133`, once per cycle, at the name that closes it).
+- `supertrait_closure` returns a set of traits plus everything beneath them, level
+  by level, each once, and is safe on a cycle. `expand_supertraits` is that
+  closure, so a bound, a trait's `Self` inside its default bodies and a call
+  through a bound all see the implied traits. Declared bounds stay as written.
+- `check_prelude_impl_supertraits` became `check_impl_supertraits` and reads
+  `trait_supers` for every trait, not only the prelude's. It still reports one
+  `TYPE-132` per impl, for the first missing trait in the closure, which for every
+  prelude impl is the trait the old table named. `MissingSupertraitImpl` carries
+  the supertrait as a `String` and a `derivable` flag that chooses between the
+  `@derive` suggestion and an impl-only one.
+- The `PRELUDE_TRAITS` table of supertraits is gone (`PRELUDE_TRAIT_NAMES` lists
+  the names). The prelude source declares them, and `prelude.rs` computes what an
+  item depends on for shadowing from its declaration plus `SIGNATURE_DEPS`
+  (`DEPENDS_ON` is gone), so the two cannot drift apart.
+- The `@derive` prerequisite check (`DeriveRequiresOther`) still reads the derive
+  list. A missing link two levels up is reported at each impl that depends on it;
+  both are recorded in `docs/PARKED_IDEAS.md`.
+
+An eighteenth delivery (traits slice S3a) touched `core/src/ast/declarations.rs`
+and `ast/mod.rs`, `rd_parser/src/parsers/parse_decl.rs`, `parser.rs` and
+`prelude.rs`, `sema/type_infer.rs` and the TypeError enum (`TYPE-132` extended,
+`TYPE-133` added). It added `tests/supertraits.rs` (65 tests), three unit tests
+in `prelude.rs` (eleven in all) and four fixtures
+(`ok_trait_supertrait_isolated`, `ok_trait_supertrait_combined`,
+`err_trait_supertrait_missing_impl_isolated`, `err_trait_supertrait_names_combined`).
+The workspace has 605 passing tests. The fixture sweep went from 243 lexed, 235
+parsed and 128 through sema to 247, 239 and 130, with 129 interpreted
+(`tests/fixtures/random.ubl` still has no `fn main`), and the only changes were
+the new files. The mutation pass is described under `tests/supertraits.rs` in
+`docs/ubel_stratum_rd.md`: 34 mutations, 32 caught, the other two changing
+nothing a program can observe. Every line it wrote was checked for em dashes and
+first or second person.

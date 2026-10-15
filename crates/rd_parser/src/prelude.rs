@@ -7,8 +7,10 @@
 //! the machinery a user trait does (signatures, default methods, bounds).
 //!
 //! Shadowing: a program that declares one of these names keeps its own, and
-//! the prelude items that depend on the shadowed one are left out with it
-//! (`DEPENDS_ON`), so a prelude signature never binds to a user's type.
+//! the prelude items that depend on the shadowed one are left out with it,
+//! so a prelude signature never binds to a user's type. What a trait depends
+//! on is what its declaration says: its supertraits (`trait Ord: PartialOrd
+//! + Eq`) plus the types its signatures mention (`SIGNATURE_DEPS`).
 //!
 //! The trait names are the ones `@derive` already uses. `Hasher` is the
 //! state `Hash.hash` writes into; `Hash.hash` itself is native. What a built-in or
@@ -37,10 +39,10 @@ trait PartialEq {
     fn ne(self, other: Self) bool { return !self.eq(other) }
 }
 
-trait Eq {
+trait Eq: PartialEq {
 }
 
-trait PartialOrd {
+trait PartialOrd: PartialEq {
     fn partial_cmp(self, other: Self) Ordering?
     fn lt(self, other: Self) bool {
         let c = self.partial_cmp(other)
@@ -60,7 +62,7 @@ trait PartialOrd {
     }
 }
 
-trait Ord {
+trait Ord: PartialOrd + Eq {
     fn cmp(self, other: Self) Ordering
 }
 
@@ -74,23 +76,26 @@ struct Hasher {
     fn finish(self) u64 { return self.state }
 }
 
-trait Hash {
+trait Hash: Eq {
     fn hash(self, state: Hasher) void
 }
 "#;
 
-/// Prelude names and what each one needs declared before it can stand. A
-/// program that declares a name on the left loses it and every name that
-/// (transitively) depends on it.
-const DEPENDS_ON: &[(&str, &[&str])] = &[
-    ("Ordering",   &[]),
-    ("PartialEq",  &[]),
-    ("Eq",         &["PartialEq"]),
-    ("PartialOrd", &["PartialEq", "Ordering"]),
-    ("Ord",        &["PartialOrd", "Eq", "Ordering"]),
-    ("Clone",      &[]),
-    ("Hasher",     &[]),
-    ("Hash",       &["Hasher", "Eq", "PartialEq"]),
+/// The prelude's names, in declaration order. A name comes after everything
+/// it depends on, so one pass over this list in `kept_names` reaches a
+/// fixpoint.
+const NAMES: &[&str] = &[
+    "Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hasher", "Hash",
+];
+
+/// What a prelude item needs besides its supertraits (those are read from
+/// the declaration): the types its signatures mention. A program that
+/// declares a name loses it and every name that (transitively) depends on
+/// it.
+const SIGNATURE_DEPS: &[(&str, &[&str])] = &[
+    ("PartialOrd", &["Ordering"]),
+    ("Ord",        &["Ordering"]),
+    ("Hash",       &["Hasher"]),
 ];
 
 /// The prelude's tokens with their spans shifted. Lexed once per process.
@@ -124,20 +129,39 @@ fn item_name<'a>(item: &'a Item<'_>) -> Option<&'a str> {
     }
 }
 
+/// What the prelude item called `name` needs declared before it can stand:
+/// the types its signatures mention (`SIGNATURE_DEPS`) and the supertraits
+/// its declaration lists, read from `parsed` so the two cannot drift apart.
+fn deps_of(name: &str, parsed: &[Item<'_>]) -> Vec<&'static str> {
+    let mut deps: Vec<&'static str> = Vec::with_capacity(3);
+    if let Some((_, sig)) = SIGNATURE_DEPS.iter().find(|(n, _)| *n == name) {
+        deps.extend(sig.iter().copied());
+    }
+    for item in parsed {
+        let Item::Trait(t) = item else { continue; };
+        if t.name != name { continue; }
+        for s in t.supertraits {
+            if let Some(n) = NAMES.iter().copied().find(|n| *n == s.name) {
+                deps.push(n);
+            }
+        }
+    }
+    deps
+}
+
 /// Which prelude names a program with these top-level names keeps.
-fn kept_names(user_names: &[&str]) -> Vec<&'static str> {
-    let mut lost: Vec<&str> = DEPENDS_ON.iter()
-        .map(|(n, _)| *n)
+fn kept_names(user_names: &[&str], parsed: &[Item<'_>]) -> Vec<&'static str> {
+    let mut lost: Vec<&'static str> = NAMES.iter().copied()
         .filter(|n| user_names.contains(n))
         .collect();
-    // Anything depending on a lost name is lost too (the table is ordered
-    // so one pass reaches a fixpoint).
-    for (name, deps) in DEPENDS_ON {
-        if !lost.contains(name) && deps.iter().any(|d| lost.contains(d)) {
+    // Anything depending on a lost name is lost too (`NAMES` lists a name
+    // after what it depends on, so one pass reaches a fixpoint).
+    for name in NAMES {
+        if !lost.contains(name) && deps_of(name, parsed).iter().any(|d| lost.contains(d)) {
             lost.push(name);
         }
     }
-    DEPENDS_ON.iter().map(|(n, _)| *n).filter(|n| !lost.contains(n)).collect()
+    NAMES.iter().copied().filter(|n| !lost.contains(n)).collect()
 }
 
 /// Put the prelude's items in front of `program`'s own items.
@@ -148,7 +172,7 @@ pub fn inject<'ast>(arena: &'ast AstArena, program: &mut Program<'ast>) {
         .unwrap_or_else(|_| panic!("the prelude must parse"));
 
     let user_names: Vec<&str> = program.items.iter().filter_map(item_name).collect();
-    let keep = kept_names(&user_names);
+    let keep = kept_names(&user_names, parsed.items);
 
     let mut items: Vec<Item<'ast>> = Vec::with_capacity(parsed.items.len() + program.items.len());
     for item in parsed.items.iter() {
@@ -178,34 +202,41 @@ mod tests {
         }
     }
 
+    /// `kept_names` for the prelude as parsed.
+    fn kept(user_names: &[&str]) -> Vec<&'static str> {
+        let arena = AstArena::new();
+        let parsed = Parser::new(&arena, prelude_tokens(), String::new()).parse_program().unwrap();
+        kept_names(user_names, parsed.items)
+    }
+
     #[test]
     fn nothing_declared_keeps_everything() {
-        assert_eq!(kept_names(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hasher", "Hash"]);
+        assert_eq!(kept(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_ordering_takes_the_ordering_traits_with_it() {
-        assert_eq!(kept_names(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_partial_eq_takes_every_trait_built_on_it() {
-        assert_eq!(kept_names(&["PartialEq"]), vec!["Ordering", "Clone", "Hasher"]);
+        assert_eq!(kept(&["PartialEq"]), vec!["Ordering", "Clone", "Hasher"]);
     }
 
     #[test]
     fn a_user_clone_loses_only_clone() {
-        assert_eq!(kept_names(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_hasher_takes_hash_with_it() {
-        assert_eq!(kept_names(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone"]);
+        assert_eq!(kept(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone"]);
     }
 
     #[test]
     fn a_user_eq_takes_ord_and_hash_but_leaves_partial_eq() {
-        assert_eq!(kept_names(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Hasher"]);
+        assert_eq!(kept(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Hasher"]);
     }
 
     #[test]
@@ -213,7 +244,45 @@ mod tests {
         let arena = AstArena::new();
         let parsed = Parser::new(&arena, prelude_tokens(), String::new()).parse_program().unwrap();
         let names: Vec<&str> = parsed.items.iter().filter_map(item_name).collect();
-        let table: Vec<&str> = DEPENDS_ON.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, table);
+        assert_eq!(names, NAMES);
+    }
+
+    #[test]
+    fn dependencies_come_from_the_declarations_and_the_signature_table() {
+        let arena = AstArena::new();
+        let parsed = Parser::new(&arena, prelude_tokens(), String::new()).parse_program().unwrap();
+        let deps = |n: &str| deps_of(n, parsed.items);
+        assert_eq!(deps("Ordering"),   Vec::<&str>::new());
+        assert_eq!(deps("PartialEq"),  Vec::<&str>::new());
+        assert_eq!(deps("Eq"),         vec!["PartialEq"]);
+        assert_eq!(deps("PartialOrd"), vec!["Ordering", "PartialEq"]);
+        assert_eq!(deps("Ord"),        vec!["Ordering", "PartialOrd", "Eq"]);
+        assert_eq!(deps("Clone"),      Vec::<&str>::new());
+        assert_eq!(deps("Hasher"),     Vec::<&str>::new());
+        assert_eq!(deps("Hash"),       vec!["Hasher", "Eq"]);
+    }
+
+    #[test]
+    fn every_dependency_is_declared_before_the_item_that_needs_it() {
+        let arena = AstArena::new();
+        let parsed = Parser::new(&arena, prelude_tokens(), String::new()).parse_program().unwrap();
+        for (i, name) in NAMES.iter().enumerate() {
+            for dep in deps_of(name, parsed.items) {
+                let at = NAMES.iter().position(|n| *n == dep).unwrap();
+                assert!(at < i, "{name} depends on {dep}, which is declared after it");
+            }
+        }
+    }
+
+    #[test]
+    fn a_prelude_supertrait_is_always_a_prelude_name() {
+        let arena = AstArena::new();
+        let parsed = Parser::new(&arena, prelude_tokens(), String::new()).parse_program().unwrap();
+        for item in parsed.items {
+            let Item::Trait(t) = item else { continue; };
+            for s in t.supertraits {
+                assert!(NAMES.contains(&s.name), "{} names {}, which is not a prelude name", t.name, s.name);
+            }
+        }
     }
 }

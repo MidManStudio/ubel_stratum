@@ -915,7 +915,24 @@ Known gaps of S2b, recorded rather than hidden:
   while testing, not related to traits), so a tuple reaches the impls through
   `contains` and the dictionary methods only.
 
-**Traits, slices S3 to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S3a (built).** Supertraits, `trait B: A + C`: an impl needs the
+impls beneath it (`TYPE-132`, for every trait), a bound implies them, a default
+body sees them, and a cycle is `TYPE-133`. The prelude declares its own. See
+`docs/TRAITS_DESIGN.md`, "What S3a settled".
+
+Known gaps of S3a, recorded rather than hidden:
+
+- A supertrait with arguments (`trait B: A<int>`) is a parse error, not a
+  diagnostic of its own; it waits for generic traits.
+- The `@derive` prerequisite check still reads the derive list
+  (`DeriveRequiresOther`) instead of the declared supertraits. The two agree for
+  the six prelude traits.
+- A link missing two levels up is reported at each impl that depends on it:
+  `impl Y for S` and `impl Z for S` with `trait Z: Y` and `trait Y: X` and no
+  `impl X for S` give two diagnostics. The prelude chain does the same: an
+  `impl Eq` with no `PartialEq` followed by an `impl Hash` gives two.
+
+**Traits, slices S3b to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

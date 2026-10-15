@@ -351,17 +351,10 @@ struct BoundsScope {
     names:  HashMap<TypeId, String>,
 }
 
-/// The prelude traits, and the traits each one implies (the derive
-/// prerequisite chain, written as supertraits because `trait B: A` is not
-/// parsed until S3).
-const PRELUDE_TRAITS: [(&str, &[&str]); 6] = [
-    ("PartialEq",  &[]),
-    ("Eq",         &["PartialEq"]),
-    ("PartialOrd", &["PartialEq"]),
-    ("Ord",        &["PartialOrd", "Eq", "PartialEq"]),
-    ("Clone",      &[]),
-    ("Hash",       &["Eq", "PartialEq"]),
-];
+/// The names of the prelude traits (declared in `rd_parser::prelude`). What
+/// each one builds on is its declared supertrait list (`trait Ord:
+/// PartialOrd + Eq`), read into `trait_supers` like any other trait's.
+const PRELUDE_TRAIT_NAMES: [&str; 6] = ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hash"];
 
 /// What a checked pattern definitively covers, for exhaustiveness.
 enum PatternCoverage {
@@ -470,6 +463,11 @@ struct InferCtx<'a> {
     /// program did not shadow with its own.
     prelude_traits:   HashMap<DefId, &'static str>,
     prelude_defs:     HashMap<&'static str, DefId>,
+    /// Each trait's declared supertraits (`trait B: A + C`), resolved, in
+    /// the order written and without repeats. Filled by
+    /// `register_trait_supertraits` before any bound is registered. A name
+    /// that is not a trait is reported there and left out.
+    trait_supers:     HashMap<DefId, Vec<DefId>>,
     /// Set once `register_trait_impls` has run: before that a named type
     /// cannot be said to lack an impl.
     impls_registered: bool,
@@ -570,6 +568,7 @@ impl<'a> InferCtx<'a> {
             reported_dict_keys: HashSet::new(),
             prelude_traits:    HashMap::new(),
             prelude_defs:      HashMap::new(),
+            trait_supers:      HashMap::new(),
             impls_registered:  false,
             current_struct_type:    None,
             callee_field_pending:   false,
@@ -1275,29 +1274,137 @@ impl<'a> InferCtx<'a> {
         }))
     }
 
-    /// A hand-written impl of a prelude trait needs the traits it builds on:
-    /// `impl Ord` needs `PartialOrd` and `Eq` (so `PartialEq`), `impl Hash`
-    /// needs `Eq`. Each missing one is reported at the impl.
-    fn check_prelude_impl_supertraits(&mut self) {
+    /// An impl needs the traits its trait builds on: `impl Ord` needs
+    /// `PartialOrd` and `Eq` (so `PartialEq`), `impl Hash` needs `Eq`, and
+    /// `impl B for T` with `trait B: A` needs `A`. Each impl is reported at
+    /// most once, for the first missing trait in the chain.
+    fn check_impl_supertraits(&mut self) {
         let mut impls: Vec<(DefId, DefId, Span)> = self.trait_impls.iter()
-            .filter(|((t, _), _)| self.prelude_traits.contains_key(t))
             .map(|((t, d), s)| (*t, *d, *s))
             .collect();
         impls.sort_by_key(|(_, _, s)| s.start);
         for (trait_def, target, span) in impls {
-            let Some(name) = self.prelude_traits.get(&trait_def).copied() else { continue; };
-            let supers = PRELUDE_TRAITS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s).unwrap_or(&[]);
+            let direct = self.trait_supers.get(&trait_def).cloned().unwrap_or_default();
+            // On a cycle the closure holds the trait itself; its impl exists
+            // (it is being checked), so that entry is always satisfied.
+            let supers = self.supertrait_closure(&direct);
             let ty = self.ctx.types.insert(SemaType::Named { def: target, args: Vec::new() });
             // One missing supertrait per impl, the first in the chain: the rest
             // follow from it (`PartialOrd` itself needs `PartialEq`), and one
             // mistake is one diagnostic.
-            if let Some(s) = supers.iter().find(|s| self.prelude_status(s, ty) != Some(true)) {
-                let type_name = self.ctx.symbols.lookup(target).name.clone();
-                self.errors.add_type_error(TypeError::MissingSupertraitImpl {
-                    trait_name: name.to_string(), supertrait: s, type_name, span,
-                });
+            let mut missing: Option<DefId> = None;
+            for s in supers {
+                if self.bound_status(ty, s) != Some(true) { missing = Some(s); break; }
+            }
+            let Some(s) = missing else { continue; };
+            let trait_name = self.trait_display_name(trait_def);
+            let supertrait = self.trait_display_name(s);
+            let derivable = self.prelude_traits.contains_key(&s);
+            let type_name = self.ctx.symbols.lookup(target).name.clone();
+            self.errors.add_type_error(TypeError::MissingSupertraitImpl {
+                trait_name, supertrait, derivable, type_name, span,
+            });
+        }
+    }
+
+    /// A trait's name as a diagnostic writes it.
+    fn trait_display_name(&self, trait_def: DefId) -> String {
+        self.traits.get(&trait_def)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| self.ctx.symbols.lookup(trait_def).name.clone())
+    }
+
+    /// Resolve every trait's supertrait list into `trait_supers`, and report
+    /// a name that is not a trait (`TYPE-122`) and a trait that is its own
+    /// supertrait, directly or through others (`TYPE-133`). Runs before any
+    /// bound is registered: a bound's meaning includes what its trait builds
+    /// on (`expand_supertraits`).
+    fn register_trait_supertraits<'ast>(&mut self, program: &Program<'ast>) {
+        let mut order: Vec<DefId> = Vec::new();
+        let mut edges: HashMap<DefId, Vec<(DefId, Span)>> = HashMap::new();
+        for item in program.items {
+            let Item::Trait(t) = item else { continue; };
+            let Some(def) = self.ctx.top_level_def(t.name) else { continue; };
+            let mut list: Vec<(DefId, Span)> = Vec::with_capacity(t.supertraits.len());
+            for s in t.supertraits {
+                match self.resolve_trait_name(s.name) {
+                    Ok(id) => {
+                        if !list.iter().any(|(d, _)| *d == id) { list.push((id, s.span)); }
+                    }
+                    Err(found) => {
+                        self.errors.add_type_error(TypeError::NotATrait {
+                            name: s.name.to_string(), found, span: s.span,
+                        });
+                    }
+                }
+            }
+            order.push(def);
+            self.trait_supers.insert(def, list.iter().map(|(d, _)| *d).collect());
+            edges.insert(def, list);
+        }
+        let mut state: HashMap<DefId, bool> = HashMap::new();
+        let mut stack: Vec<DefId> = Vec::new();
+        for root in order {
+            self.walk_supertraits(root, &edges, &mut state, &mut stack);
+        }
+    }
+
+    /// Depth-first walk over the supertrait edges. `state` holds `false` for
+    /// a trait on the current path and `true` once it is finished; an edge
+    /// back to a trait on the path closes a cycle, reported once at that
+    /// edge's name.
+    fn walk_supertraits(
+        &mut self,
+        id:    DefId,
+        edges: &HashMap<DefId, Vec<(DefId, Span)>>,
+        state: &mut HashMap<DefId, bool>,
+        stack: &mut Vec<DefId>,
+    ) {
+        if state.contains_key(&id) { return; }
+        state.insert(id, false);
+        stack.push(id);
+        if let Some(out) = edges.get(&id) {
+            for &(to, span) in out {
+                match state.get(&to).copied() {
+                    None => self.walk_supertraits(to, edges, state, stack),
+                    Some(false) => {
+                        let from = stack.iter().position(|d| *d == to).unwrap_or(0);
+                        let mut names: Vec<String> = stack[from..].iter()
+                            .map(|d| self.trait_display_name(*d))
+                            .collect();
+                        names.push(self.trait_display_name(to));
+                        self.errors.add_type_error(TypeError::SupertraitCycle {
+                            trait_name: names[0].clone(),
+                            path:       names.join(" -> "),
+                            span,
+                        });
+                    }
+                    Some(true) => {}
+                }
             }
         }
+        stack.pop();
+        state.insert(id, true);
+    }
+
+    /// `start` and every trait they build on, each once: first `start` in
+    /// the order given, then their supertraits level by level (so `Ord`
+    /// gives `Ord`, `PartialOrd`, `Eq`, `PartialEq`). Safe on a cycle.
+    fn supertrait_closure(&self, start: &[DefId]) -> Vec<DefId> {
+        let mut out: Vec<DefId> = Vec::with_capacity(start.len() + 2);
+        let mut frontier: Vec<DefId> = start.to_vec();
+        while !frontier.is_empty() {
+            let mut next: Vec<DefId> = Vec::new();
+            for id in frontier {
+                if out.contains(&id) { continue; }
+                out.push(id);
+                if let Some(supers) = self.trait_supers.get(&id) {
+                    next.extend(supers.iter().copied());
+                }
+            }
+            frontier = next;
+        }
+        out
     }
 
     /// Record which traits are the prelude's, before any signature is
@@ -1307,7 +1414,7 @@ impl<'a> InferCtx<'a> {
         for item in program.items {
             let Item::Trait(t) = item else { continue; };
             if !t.span.is_prelude() { continue; }
-            let Some((name, _)) = PRELUDE_TRAITS.iter().find(|(n, _)| *n == t.name) else { continue; };
+            let Some(name) = PRELUDE_TRAIT_NAMES.iter().find(|n| **n == t.name).copied() else { continue; };
             if let Some(def_id) = self.ctx.top_level_def(t.name) {
                 self.prelude_traits.insert(def_id, name);
                 self.prelude_defs.insert(name, def_id);
@@ -1369,22 +1476,13 @@ impl<'a> InferCtx<'a> {
         self.expand_supertraits(ids)
     }
 
-    /// `ids` plus the traits each prelude trait among them implies: a body
-    /// with `T: Ord` may also use what `PartialOrd`, `Eq` and `PartialEq`
-    /// provide. Declared bounds stay as written (an obligation for `Ord`
+    /// `ids` plus the traits each one builds on, however deep: a body with
+    /// `T: Ord` may also use what `PartialOrd`, `Eq` and `PartialEq`
+    /// provide, and one with `T: B` where `trait B: A` may use what `A`
+    /// provides. Declared bounds stay as written (an obligation for `Ord`
     /// is one obligation); only the bounds in force inside a body widen.
     fn expand_supertraits(&self, ids: Vec<DefId>) -> Vec<DefId> {
-        let mut out = ids.clone();
-        for id in &ids {
-            let Some(name) = self.prelude_traits.get(id) else { continue; };
-            let supers = PRELUDE_TRAITS.iter().find(|(n, _)| n == name).map(|(_, s)| *s).unwrap_or(&[]);
-            for s in supers {
-                if let Some(sid) = self.prelude_defs.get(s) {
-                    if !out.contains(sid) { out.push(*sid); }
-                }
-            }
-        }
-        out
+        self.supertrait_closure(&ids)
     }
 
     /// Validate the bounds written on every generic function, struct and
@@ -1750,14 +1848,16 @@ impl<'a> InferCtx<'a> {
 
     /// A trait's default method bodies. Inside one, `Self` is the trait's
     /// abstract `Self` parameter and `self` has that type, bounded by the
-    /// trait itself, so `self.other_method()` resolves through the trait.
+    /// trait itself and by the traits it builds on, so `self.other_method()`
+    /// resolves through the trait or one of its supertraits.
     fn infer_trait_default_bodies<'ast>(&mut self, t: &TraitDecl<'ast>) {
         let Some(trait_def) = self.ctx.top_level_def(t.name) else { return; };
         let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
         let prev_self_type = self.self_type.replace(self_param);
         let prev_struct = self.current_struct_type.replace(self_param);
         let prev_generics = self.push_generic_scope(t.generic_params);
-        self.current_bounds.insert(self_param, vec![trait_def]);
+        let self_bounds = self.expand_supertraits(vec![trait_def]);
+        self.current_bounds.insert(self_param, self_bounds);
         for it in t.items {
             if let TraitItem::DefaultMethod(m) = it {
                 self.infer_method_body(m);
@@ -2205,6 +2305,7 @@ impl<'a> InferCtx<'a> {
 
     fn collect_signatures<'ast>(&mut self, program: &Program<'ast>) {
         self.register_prelude_traits(program);
+        self.register_trait_supertraits(program);
         self.register_generic_arities(program);
         self.register_generic_bounds(program);
         self.collect_alias_sigs(program);
@@ -2252,7 +2353,7 @@ impl<'a> InferCtx<'a> {
         self.register_extend_impl_methods(program);
         self.register_trait_impls(program);
         self.impls_registered = true;
-        self.check_prelude_impl_supertraits();
+        self.check_impl_supertraits();
         // Requirements raised by signatures that had to wait for the impls.
         self.check_obligations();
     }

@@ -39,6 +39,14 @@ methods, parameters, structs, enums, traits, impls.
   `@tier(mid)` and `@tier(low)` are `PARSE-004` and `@tier(high)` is
   accepted. A tier block around either is not reported.
 - `TokenType::Static` joined the three declaration sync sets.
+- `parse_trait_decl` reads an optional supertrait list through
+  `parse_supertraits`: `: A + B` after the name and any generic parameters,
+  stored as `SupertraitRef { name, span }` per entry. The shape is the one a
+  bound on a type parameter has, and the names are plain identifiers, so a
+  supertrait with arguments (`trait B: A<int>`) is a parse error until generic
+  traits are built. A colon or a `+` with no name after it is one parse error
+  (`expected supertrait name`) and the parse goes on. The list is sized with
+  `cap::SUPERTRAITS`.
 
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
 `tests/fixtures/ok_callback_registry_combined.ubl`; for `static`, the
@@ -91,6 +99,37 @@ test needs runtime values.
   fails the three `TYPE-125` tests; the original inherent-versus-two-traits
   bug fails two tests.
 
+### `tests/supertraits.rs`
+
+**What it does:** Integration tests for supertraits, slice S3a (65 tests).
+Source goes through `check_source` for the stage, codes, messages, suggestions
+and positions, through the parser for the recorded shape and spans, and through
+the interpreter (sema, then both setters, then `run_program`) where a test needs
+runtime values.
+
+**Decisions:**
+- Pins the parsed shape (none, one, several in the written order, after generic
+  parameters, on a bodiless or public trait, the span of each name, and one
+  parse error for a colon or a `+` with no name), the prelude's own declared
+  supertraits, the exact text and count of `TYPE-132` (first missing link,
+  transitive links, source order, derive versus impl suggestion), what a bound
+  implies in a body and at a call (and that the implication runs one way), the
+  default body's view of its supertraits, names (`TYPE-122`), cycles (`TYPE-133`:
+  direct, two, three, two separate, a trait that only leads into one, a diamond,
+  a repeated name, the path text, the span, the suggestion), shadowing, and the
+  runtime contract that a call through a bound runs the supertrait's method and
+  not an inherent method of the same name.
+- Four fixtures sit beside it: `ok_trait_supertrait_isolated`,
+  `ok_trait_supertrait_combined`, `err_trait_supertrait_missing_impl_isolated`
+  and `err_trait_supertrait_names_combined`.
+- Mutation-checked: 34 mutations of the parser, the prelude, the supertrait
+  registry, the cycle walk, the closure, the impl check and the error enum; 32
+  are caught. The first pass left three alive. One exposed a weak test (a
+  repeated supertrait only matters in a self-cycle) and is now killed; the cycle
+  walk's visited check is a performance guard that changes no diagnostic; and the
+  `Self` bound that `collect_trait_info` inserts is never consulted there
+  (removing it entirely changes nothing), so that line was left as it was.
+
 ### `prelude.rs`, `tests/prelude_traits.rs`
 
 **What it does:** `prelude.rs` holds the declarations every program sees
@@ -113,9 +152,11 @@ comparison, `Hash` and `Clone` inside other values) and shadowing.
   it was deployed; a 64-bit build cannot see that, so a unit test checks that
   the range and every prelude token span fit in a `u32`.
 - A name the program declares itself is not injected, nor is anything that
-  depends on it (`DEPENDS_ON`), so a prelude signature never binds to a user's
-  type. Seven unit tests in `prelude.rs` pin the dependency table and the
-  shadowing sets.
+  depends on it, so a prelude signature never binds to a user's type. What an
+  item depends on is read from its declaration (its supertraits, now written in
+  the prelude source: `trait Ord: PartialOrd + Eq`) plus the types its
+  signatures mention (`SIGNATURE_DEPS`). Eleven unit tests in `prelude.rs` pin
+  the dependencies, their order and the shadowing sets.
 - The tests pin the satisfaction table kind by kind, the exact code and
   position of `TYPE-126`, `TYPE-131` and `TYPE-129`, and that a call through a
   bound or directly on a value runs the right native method.
