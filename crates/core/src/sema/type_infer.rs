@@ -102,7 +102,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, UnaryOp, Attribute, AttrArg};
+use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, TraitBound, UnaryOp, Attribute, AttrArg};
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock, StaticDecl,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
@@ -314,7 +314,23 @@ struct TraitMethodInfo {
 #[derive(Clone)]
 struct TraitInfo {
     name:    String,
+    /// How many type parameters the trait declares (`trait Convert<T>` is 1).
+    /// The abstract `Self` in `methods` is `Param(arity)` after them.
+    arity:   usize,
     methods: Vec<TraitMethodInfo>,
+}
+
+/// A trait applied to its type arguments: `Eq`, or `Convert<int>`. A bound
+/// written on a declaration's parameter keeps its arguments in terms of that
+/// declaration's own `Param(i)`, and a supertrait's are in terms of the
+/// trait's own parameters and its abstract `Self`; a use site substitutes
+/// (`InferCtx::substitute`). `args` is empty for a trait without parameters,
+/// and also before a bound's arguments have been converted (they wait for the
+/// type aliases to be expanded, see `fill_generic_bound_args`).
+#[derive(Clone, PartialEq, Eq)]
+struct BoundRef {
+    trait_def: DefId,
+    args:      Vec<TypeId>,
 }
 
 /// A requirement that `ty` implement `trait_def`, raised where a bounded
@@ -324,6 +340,9 @@ struct TraitInfo {
 struct Obligation {
     ty:        TypeId,
     trait_def: DefId,
+    /// The type arguments the trait is applied to (`Convert<int>`); empty
+    /// for a trait without parameters. Checked against the impl's own.
+    args:      Vec<TypeId>,
     span:      Span,
     /// A `Dictionary` key requirement: `let d: Dictionary<float, int> =
     /// Dictionary.new()` names the key type twice on one line, and one
@@ -339,7 +358,7 @@ struct Obligation {
 /// were in force before.
 struct GenericScope {
     names:  HashMap<String, TypeId>,
-    bounds: HashMap<TypeId, Vec<DefId>>,
+    bounds: HashMap<TypeId, Vec<BoundRef>>,
 }
 
 /// The bounds (and display names) of a declaration's type parameters,
@@ -347,7 +366,7 @@ struct GenericScope {
 /// types (a generic function body, an `extend` body on a generic struct)
 /// and handed back to `restore_def_scope`.
 struct BoundsScope {
-    bounds: HashMap<TypeId, Vec<DefId>>,
+    bounds: HashMap<TypeId, Vec<BoundRef>>,
     names:  HashMap<TypeId, String>,
 }
 
@@ -434,11 +453,11 @@ struct InferCtx<'a> {
     /// Trait bounds of the type parameters in scope, by the parameter's
     /// `TypeId`. Inside a trait's default method the abstract `Self` is
     /// bounded by the trait itself, so `self.other()` resolves through it.
-    current_bounds:   HashMap<TypeId, Vec<DefId>>,
-    /// The declared bounds of each generic function, struct and enum, by
-    /// the declaration's definition and then the parameter's position.
+    current_bounds:   HashMap<TypeId, Vec<BoundRef>>,
+    /// The declared bounds of each generic function, struct, enum and trait,
+    /// by the declaration's definition and then the parameter's position.
     /// Only declarations that have at least one bound are present.
-    generic_bounds:   HashMap<DefId, Vec<Vec<DefId>>>,
+    generic_bounds:   HashMap<DefId, Vec<Vec<BoundRef>>>,
     /// The written parameter names of each generic function, struct and
     /// enum, by position, so a diagnostic in a body that cannot see the
     /// declaration's own scope still says `T` rather than a type id.
@@ -468,6 +487,17 @@ struct InferCtx<'a> {
     /// `register_trait_supertraits` before any bound is registered. A name
     /// that is not a trait is reported there and left out.
     trait_supers:     HashMap<DefId, Vec<DefId>>,
+    /// The type arguments of each supertrait edge, `(trait, supertrait)`,
+    /// written in the trait's own scope: its parameters, then `Self`
+    /// (`trait B<T>: A<T>` stores `[Param(0)]` for `(B, A)`). Absent for a
+    /// supertrait without arguments.
+    trait_super_args: HashMap<(DefId, DefId), Vec<TypeId>>,
+    /// How many type parameters each trait declares.
+    trait_arity:      HashMap<DefId, usize>,
+    /// The type arguments of each impl, by `(trait, implementing type)`:
+    /// `[int]` for `impl Convert<int> for Celsius`. A type has one impl of a
+    /// trait, so the arguments are a property of the pair.
+    trait_impl_args:  HashMap<(DefId, DefId), Vec<TypeId>>,
     /// Set once `register_trait_impls` has run: before that a named type
     /// cannot be said to lack an impl.
     impls_registered: bool,
@@ -569,6 +599,9 @@ impl<'a> InferCtx<'a> {
             prelude_traits:    HashMap::new(),
             prelude_defs:      HashMap::new(),
             trait_supers:      HashMap::new(),
+            trait_super_args:  HashMap::new(),
+            trait_arity:       HashMap::new(),
+            trait_impl_args:   HashMap::new(),
             impls_registered:  false,
             current_struct_type:    None,
             callee_field_pending:   false,
@@ -600,15 +633,25 @@ impl<'a> InferCtx<'a> {
     /// abstract `Self`) adds it after the push.
     fn push_generic_scope(&mut self, params: &[GenericParam]) -> GenericScope {
         let mut new_map = HashMap::with_capacity(params.len());
-        let mut new_bounds: HashMap<TypeId, Vec<DefId>> = HashMap::new();
         for (i, gp) in params.iter().enumerate() {
             let ty = self.ctx.types.intern(SemaType::Param(i));
             new_map.insert(gp.name.to_string(), ty);
-            let ids = self.resolve_bound_ids(gp.bounds);
-            if !ids.is_empty() { new_bounds.insert(ty, ids); }
+        }
+        // The names go in first: a bound's arguments may mention any
+        // parameter of the declaration (`U: Convert<T>`).
+        let names = std::mem::replace(&mut self.current_generic_params, new_map);
+        let mut new_bounds: HashMap<TypeId, Vec<BoundRef>> = HashMap::new();
+        for (i, gp) in params.iter().enumerate() {
+            if gp.bounds.is_empty() { continue; }
+            let ty = self.ctx.types.intern(SemaType::Param(i));
+            let declared = self.declared_bounds(gp.bounds);
+            if !declared.is_empty() {
+                let widened = self.expand_supertraits(declared, ty);
+                new_bounds.insert(ty, widened);
+            }
         }
         GenericScope {
-            names:  std::mem::replace(&mut self.current_generic_params, new_map),
+            names,
             bounds: std::mem::replace(&mut self.current_bounds, new_bounds),
         }
     }
@@ -1284,22 +1327,28 @@ impl<'a> InferCtx<'a> {
             .collect();
         impls.sort_by_key(|(_, _, s)| s.start);
         for (trait_def, target, span) in impls {
-            let direct = self.trait_supers.get(&trait_def).cloned().unwrap_or_default();
-            // On a cycle the closure holds the trait itself; its impl exists
-            // (it is being checked), so that entry is always satisfied.
-            let supers = self.supertrait_closure(&direct);
+            let own_args = self.trait_impl_args.get(&(trait_def, target)).cloned().unwrap_or_default();
             let ty = self.ctx.types.insert(SemaType::Named { def: target, args: Vec::new() });
+            // The impl's own trait comes first in the closure, then what it
+            // builds on, with the impl's arguments carried through
+            // (`impl B<int> for T` with `trait B<X>: A<X>` needs `A<int>`).
+            // On a cycle the closure holds the trait only once, and its impl
+            // exists (it is being checked).
+            let closure = self.supertrait_closure(&[BoundRef { trait_def, args: own_args }], ty);
             // One missing supertrait per impl, the first in the chain: the rest
             // follow from it (`PartialOrd` itself needs `PartialEq`), and one
             // mistake is one diagnostic.
-            let mut missing: Option<DefId> = None;
-            for s in supers {
-                if self.bound_status(ty, s) != Some(true) { missing = Some(s); break; }
+            let mut missing: Option<BoundRef> = None;
+            for b in closure.into_iter().skip(1) {
+                if self.bound_args_status(ty, b.trait_def, &b.args, span) != Some(true) {
+                    missing = Some(b);
+                    break;
+                }
             }
-            let Some(s) = missing else { continue; };
+            let Some(b) = missing else { continue; };
             let trait_name = self.trait_display_name(trait_def);
-            let supertrait = self.trait_display_name(s);
-            let derivable = self.prelude_traits.contains_key(&s);
+            let supertrait = self.trait_ref_text(b.trait_def, &b.args);
+            let derivable = self.prelude_traits.contains_key(&b.trait_def);
             let type_name = self.ctx.symbols.lookup(target).name.clone();
             self.errors.add_type_error(TypeError::MissingSupertraitImpl {
                 trait_name, supertrait, derivable, type_name, span,
@@ -1325,6 +1374,7 @@ impl<'a> InferCtx<'a> {
         for item in program.items {
             let Item::Trait(t) = item else { continue; };
             let Some(def) = self.ctx.top_level_def(t.name) else { continue; };
+            self.trait_arity.insert(def, t.generic_params.len());
             let mut list: Vec<(DefId, Span)> = Vec::with_capacity(t.supertraits.len());
             for s in t.supertraits {
                 match self.resolve_trait_name(s.name) {
@@ -1389,18 +1439,34 @@ impl<'a> InferCtx<'a> {
 
     /// `start` and every trait they build on, each once: first `start` in
     /// the order given, then their supertraits level by level (so `Ord`
-    /// gives `Ord`, `PartialOrd`, `Eq`, `PartialEq`). Safe on a cycle.
-    fn supertrait_closure(&self, start: &[DefId]) -> Vec<DefId> {
-        let mut out: Vec<DefId> = Vec::with_capacity(start.len() + 2);
-        let mut frontier: Vec<DefId> = start.to_vec();
+    /// gives `Ord`, `PartialOrd`, `Eq`, `PartialEq`). A supertrait's
+    /// arguments are the ones the trait's declaration writes, with the
+    /// trait's own parameters replaced by the arguments it was given and
+    /// `Self` by `self_ty` (`T: B<int>` with `trait B<X>: A<X>` gives
+    /// `A<int>`). Safe on a cycle; when a trait is reached twice with
+    /// different arguments the first is kept.
+    fn supertrait_closure(&mut self, start: &[BoundRef], self_ty: TypeId) -> Vec<BoundRef> {
+        let mut out: Vec<BoundRef> = Vec::with_capacity(start.len() + 2);
+        let mut frontier: Vec<BoundRef> = start.to_vec();
         while !frontier.is_empty() {
-            let mut next: Vec<DefId> = Vec::new();
-            for id in frontier {
-                if out.contains(&id) { continue; }
-                out.push(id);
-                if let Some(supers) = self.trait_supers.get(&id) {
-                    next.extend(supers.iter().copied());
+            let mut next: Vec<BoundRef> = Vec::new();
+            for b in frontier {
+                if out.iter().any(|o| o.trait_def == b.trait_def) { continue; }
+                let supers = self.trait_supers.get(&b.trait_def).cloned().unwrap_or_default();
+                for sup in supers {
+                    let written = self.trait_super_args.get(&(b.trait_def, sup)).cloned().unwrap_or_default();
+                    let args: Vec<TypeId> = if written.is_empty() {
+                        Vec::new()
+                    } else {
+                        let arity = self.trait_arity.get(&b.trait_def).copied().unwrap_or(b.args.len());
+                        let mut env: Vec<TypeId> = b.args.iter().take(arity).copied().collect();
+                        while env.len() < arity { env.push(self.unknown()); }
+                        env.push(self_ty);
+                        written.iter().map(|t| self.substitute(*t, &env)).collect()
+                    };
+                    next.push(BoundRef { trait_def: sup, args });
                 }
+                out.push(b);
             }
             frontier = next;
         }
@@ -1464,25 +1530,52 @@ impl<'a> InferCtx<'a> {
     // instantiated records an `Obligation` that the argument type
     // implements the trait (`require_bound`, `check_obligations`).
 
-    /// The traits a list of bound names resolves to, silently: a name that
-    /// is not a trait is skipped here (it was reported at the declaration).
-    fn resolve_bound_ids(&self, names: &[&str]) -> Vec<DefId> {
-        let mut ids: Vec<DefId> = Vec::with_capacity(names.len());
-        for name in names {
-            if let Ok(id) = self.resolve_trait_name(name) {
-                if !ids.contains(&id) { ids.push(id); }
-            }
+    /// The traits a parameter's written bounds name, with their arguments
+    /// converted in the generic scope now in force. Silent: a name that is
+    /// not a trait, a wrong argument count and an argument that does not
+    /// resolve are reported once at the declaration (`fill_generic_bound_args`),
+    /// not again by every scope built from it. The first bound on a trait
+    /// wins, so `T: A + A` is one bound.
+    fn declared_bounds(&mut self, bounds: &[TraitBound]) -> Vec<BoundRef> {
+        let before = self.errors.type_error_count();
+        let mut out: Vec<BoundRef> = Vec::with_capacity(bounds.len());
+        for b in bounds {
+            let Ok(id) = self.resolve_trait_name(b.name) else { continue; };
+            let arity = self.trait_arity.get(&id).copied().unwrap_or(b.args.len());
+            let args = self.trait_arg_types(b.args, arity);
+            out.push(BoundRef { trait_def: id, args });
         }
-        self.expand_supertraits(ids)
+        self.discard_type_errors_since(before);
+        out
     }
 
-    /// `ids` plus the traits each one builds on, however deep: a body with
-    /// `T: Ord` may also use what `PartialOrd`, `Eq` and `PartialEq`
-    /// provide, and one with `T: B` where `trait B: A` may use what `A`
-    /// provides. Declared bounds stay as written (an obligation for `Ord`
-    /// is one obligation); only the bounds in force inside a body widen.
-    fn expand_supertraits(&self, ids: Vec<DefId>) -> Vec<DefId> {
-        self.supertrait_closure(&ids)
+    /// The written type arguments of a trait, converted in the scope now in
+    /// force and made to have exactly `arity` entries (extra ones are
+    /// dropped, missing ones become unknown) so a count mistake, reported
+    /// where the trait is named, does not cascade.
+    fn trait_arg_types<'ast>(&mut self, args: &[&'ast Type<'ast>], arity: usize) -> Vec<TypeId> {
+        let mut out: Vec<TypeId> = args.iter().take(arity).map(|t| self.ast_type_to_sema(t)).collect();
+        while out.len() < arity { out.push(self.unknown()); }
+        out
+    }
+
+    /// Drop the type errors added since the count was `before`.
+    fn discard_type_errors_since(&mut self, before: usize) {
+        if self.errors.type_error_count() <= before { return; }
+        let mut all = self.errors.take_type_errors();
+        all.truncate(before);
+        for e in all { self.errors.add_type_error(e); }
+    }
+
+    /// `bounds` plus the traits each one builds on, however deep, with their
+    /// arguments worked out: a body with `T: Ord` may also use what
+    /// `PartialOrd`, `Eq` and `PartialEq` provide, and one with `T: B<int>`
+    /// where `trait B<X>: A<X>` may use what `A<int>` provides. `self_ty` is
+    /// what a supertrait's `Self` means (the bounded parameter, or the
+    /// implementing type). Declared bounds stay as written (an obligation for
+    /// `Ord` is one obligation); only the bounds in force inside a body widen.
+    fn expand_supertraits(&mut self, bounds: Vec<BoundRef>, self_ty: TypeId) -> Vec<BoundRef> {
+        self.supertrait_closure(&bounds, self_ty)
     }
 
     /// Validate the bounds written on every generic function, struct and
@@ -1513,6 +1606,9 @@ impl<'a> InferCtx<'a> {
                     for m in x.methods { self.reject_method_generic_bounds(m.generic_params); }
                 }
                 Item::Trait(t) => {
+                    if let Some(def) = self.ctx.top_level_def(t.name) {
+                        self.register_decl_bounds(def, t.generic_params);
+                    }
                     for it in t.items {
                         match it {
                             TraitItem::MethodSig(sig) => self.reject_method_generic_bounds(sig.generic_params),
@@ -1558,8 +1654,8 @@ impl<'a> InferCtx<'a> {
     /// body that does not push the declaration's generic scope. Pairs with
     /// `restore_def_scope`.
     fn install_def_scope(&mut self, def: Option<DefId>) -> BoundsScope {
-        let mut bounds: HashMap<TypeId, Vec<DefId>> = HashMap::new();
-        let mut names:  HashMap<TypeId, String>     = HashMap::new();
+        let mut bounds: HashMap<TypeId, Vec<BoundRef>> = HashMap::new();
+        let mut names:  HashMap<TypeId, String>        = HashMap::new();
         if let Some(def) = def {
             let per_param = self.generic_bounds.get(&def).cloned().unwrap_or_default();
             let written   = self.generic_param_names.get(&def).cloned().unwrap_or_default();
@@ -1567,7 +1663,10 @@ impl<'a> InferCtx<'a> {
                 let ty = self.ctx.types.intern(SemaType::Param(i));
                 names.insert(ty, name.clone());
                 if let Some(bs) = per_param.get(i) {
-                    if !bs.is_empty() { bounds.insert(ty, self.expand_supertraits(bs.clone())); }
+                    if !bs.is_empty() {
+                        let widened = self.expand_supertraits(bs.clone(), ty);
+                        bounds.insert(ty, widened);
+                    }
                 }
             }
         }
@@ -1582,28 +1681,151 @@ impl<'a> InferCtx<'a> {
         self.param_names    = prev.names;
     }
 
+    /// Validate the bound names written on `def`'s parameters and record them
+    /// by declaration. The arguments of each bound wait for
+    /// `fill_generic_bound_args`: converting a type needs the aliases expanded.
     fn register_decl_bounds(&mut self, def: DefId, params: &[GenericParam]) {
         if !params.is_empty() {
             self.generic_param_names.insert(def, params.iter().map(|g| g.name.to_string()).collect());
         }
-        let mut per_param: Vec<Vec<DefId>> = Vec::with_capacity(params.len());
+        let mut per_param: Vec<Vec<BoundRef>> = Vec::with_capacity(params.len());
         for gp in params {
-            let mut ids: Vec<DefId> = Vec::with_capacity(gp.bounds.len());
-            for name in gp.bounds {
-                match self.resolve_trait_name(name) {
-                    Ok(id) => { if !ids.contains(&id) { ids.push(id); } }
+            let mut refs: Vec<BoundRef> = Vec::with_capacity(gp.bounds.len());
+            for b in gp.bounds {
+                match self.resolve_trait_name(b.name) {
+                    Ok(id) => {
+                        if !refs.iter().any(|r| r.trait_def == id) {
+                            refs.push(BoundRef { trait_def: id, args: Vec::new() });
+                        }
+                    }
                     Err(found) => {
                         self.errors.add_type_error(TypeError::NotATrait {
-                            name: name.to_string(), found, span: gp.span,
+                            name: b.name.to_string(), found, span: gp.span,
                         });
                     }
                 }
             }
-            per_param.push(ids);
+            per_param.push(refs);
         }
         if per_param.iter().any(|b| !b.is_empty()) {
             self.generic_bounds.insert(def, per_param);
         }
+    }
+
+    /// Convert the arguments of every written bound and supertrait, now that
+    /// the aliases are expanded, and report what is wrong with them once: a
+    /// wrong argument count (`GenericArgCountMismatch`), an argument that does
+    /// not resolve, and two bounds on one parameter that name the same trait
+    /// with different arguments (`ConflictingBounds`).
+    fn fill_generic_bound_args<'ast>(&mut self, program: &Program<'ast>) {
+        for item in program.items {
+            match item {
+                Item::Function(f) => {
+                    if let Some(def) = self.ctx.top_level_def(f.name) {
+                        self.fill_decl_bound_args(def, f.generic_params);
+                    }
+                }
+                Item::Struct(s) => {
+                    if let Some(def) = self.ctx.top_level_def(s.name) {
+                        self.fill_decl_bound_args(def, s.generic_params);
+                    }
+                }
+                Item::Enum(e) => {
+                    if let Some(def) = self.ctx.top_level_def(e.name) {
+                        self.fill_decl_bound_args(def, e.generic_params);
+                    }
+                }
+                Item::Trait(t) => self.fill_trait_bound_args(t),
+                _ => {}
+            }
+        }
+    }
+
+    /// The bounds on `def`'s own parameters, with arguments.
+    fn fill_decl_bound_args(&mut self, def: DefId, params: &[GenericParam]) {
+        if !self.generic_bounds.contains_key(&def) { return; }
+        let prev = self.push_generic_scope(params);
+        self.fill_param_bound_args(def, params);
+        self.pop_generic_scope(prev);
+    }
+
+    /// A trait's own parameter bounds (`trait Convert<T: Eq>`) and its
+    /// supertraits' arguments (`trait B<T>: A<T>`), written in the trait's
+    /// scope where `Self` is the abstract parameter after its own.
+    fn fill_trait_bound_args<'ast>(&mut self, t: &TraitDecl<'ast>) {
+        let Some(def) = self.ctx.top_level_def(t.name) else { return; };
+        let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
+        let prev_self = self.self_type.replace(self_param);
+        let prev = self.push_generic_scope(t.generic_params);
+        if self.generic_bounds.contains_key(&def) {
+            self.fill_param_bound_args(def, t.generic_params);
+        }
+        let mut seen: Vec<DefId> = Vec::with_capacity(t.supertraits.len());
+        for sup in t.supertraits {
+            let Ok(id) = self.resolve_trait_name(sup.name) else { continue; };
+            if seen.contains(&id) { continue; }
+            seen.push(id);
+            let arity = self.trait_arity.get(&id).copied().unwrap_or(sup.args.len());
+            self.check_trait_arg_count(sup, arity);
+            let args = self.trait_arg_types(sup.args, arity);
+            if !args.is_empty() { self.trait_super_args.insert((def, id), args); }
+        }
+        self.pop_generic_scope(prev);
+        self.self_type = prev_self;
+    }
+
+    /// Convert and check the written bounds of each parameter of `def`, in
+    /// the scope the caller has pushed, and store the arguments.
+    fn fill_param_bound_args(&mut self, def: DefId, params: &[GenericParam]) {
+        for (i, gp) in params.iter().enumerate() {
+            let mut kept: Vec<BoundRef> = Vec::with_capacity(gp.bounds.len());
+            for b in gp.bounds {
+                let Ok(id) = self.resolve_trait_name(b.name) else { continue; };
+                let arity = self.trait_arity.get(&id).copied().unwrap_or(b.args.len());
+                self.check_trait_arg_count(b, arity);
+                let args = self.trait_arg_types(b.args, arity);
+                if let Some(first) = kept.iter().find(|k| k.trait_def == id) {
+                    let first_args = first.args.clone();
+                    let same = first_args.len() == args.len()
+                        && first_args.iter().zip(&args).all(|(x, y)| self.same_type(*x, *y));
+                    if !same {
+                        let name = b.name.to_string();
+                        let first_text = self.trait_ref_text(id, &first_args);
+                        let this_text  = self.trait_ref_text(id, &args);
+                        self.errors.add_type_error(TypeError::ConflictingBounds {
+                            param: gp.name.to_string(), trait_name: name,
+                            first: first_text, second: this_text, span: b.span,
+                        });
+                    }
+                    continue;
+                }
+                kept.push(BoundRef { trait_def: id, args });
+            }
+            if let Some(per_param) = self.generic_bounds.get_mut(&def) {
+                if let Some(slot) = per_param.get_mut(i) { *slot = kept; }
+            }
+        }
+    }
+
+    /// Report a trait written with the wrong number of arguments.
+    fn check_trait_arg_count(&mut self, b: &TraitBound, arity: usize) {
+        if b.args.len() != arity {
+            self.errors.add_type_error(TypeError::GenericArgCountMismatch {
+                type_name: b.name.to_string(),
+                expected:  arity,
+                found:     b.args.len(),
+                span:      b.span,
+            });
+        }
+    }
+
+    /// A trait with its arguments as a diagnostic writes it: `Eq`,
+    /// `Convert<int>`.
+    fn trait_ref_text(&self, trait_def: DefId, args: &[TypeId]) -> String {
+        let name = self.trait_display_name(trait_def);
+        if args.is_empty() { return name; }
+        let shown: Vec<String> = args.iter().map(|a| self.display_type(*a)).collect();
+        format!("{}<{}>", name, shown.join(", "))
     }
 
     /// `ty` with every reference and ownership wrapper removed, down to the
@@ -1685,7 +1907,8 @@ impl<'a> InferCtx<'a> {
                 else { None }
             }
             SemaType::Param(_) => Some(self.prelude_defs.get(name)
-                .and_then(|d| self.current_bounds.get(&ty).map(|bs| bs.contains(d)))
+                .and_then(|d| self.current_bounds.get(&ty)
+                    .map(|bs| bs.iter().any(|b| b.trait_def == *d)))
                 .unwrap_or(false)),
             _ => Some(false),
         }
@@ -1706,7 +1929,7 @@ impl<'a> InferCtx<'a> {
             SemaType::Unknown => Some(true),
             SemaType::Var(_)  => None,
             SemaType::Param(_) => Some(self.current_bounds.get(&ty)
-                .is_some_and(|bs| bs.contains(&trait_def))),
+                .is_some_and(|bs| bs.iter().any(|b| b.trait_def == trait_def))),
             SemaType::Named { def, .. } => {
                 if self.trait_impls.contains_key(&(trait_def, def)) { Some(true) }
                 else if self.impls_registered { Some(false) }
@@ -1735,16 +1958,83 @@ impl<'a> InferCtx<'a> {
                 None        => {}
             }
         }
-        self.pending_obligations.push(Obligation { ty, trait_def, span, dict_key, failed });
+        self.pending_obligations.push(Obligation { ty, trait_def, args: Vec::new(), span, dict_key, failed });
     }
 
-    fn report_unsatisfied(&mut self, ty: TypeId, trait_def: DefId, span: Span, dict_key: bool) {
+    /// Record that `ty` must implement `trait_def` applied to `args`
+    /// (`T: Convert<int>` after substitution). Besides the impl existing, the
+    /// impl's own arguments must be these; a type has one impl of a trait, so
+    /// that is a comparison, and where an argument is still an inference
+    /// variable the impl decides it (`f(celsius)` for `fn f<T: Convert<U>, U>`
+    /// learns `U` from `impl Convert<int> for Celsius`).
+    fn require_bound_args(&mut self, ty: TypeId, trait_def: DefId, args: Vec<TypeId>, span: Span) {
+        if args.is_empty() {
+            self.require_bound(ty, trait_def, span);
+            return;
+        }
+        let mut failed = false;
+        let status = self.bound_args_status(ty, trait_def, &args, span);
+        if !self.impls_registered {
+            match status {
+                Some(true)  => return,
+                Some(false) => failed = true,
+                None        => {}
+            }
+        }
+        self.pending_obligations.push(Obligation { ty, trait_def, args, span, dict_key: false, failed });
+    }
+
+    /// `bound_status` for a trait applied to arguments: the trait must be
+    /// implemented (or bounded) and the arguments must agree with the ones the
+    /// impl (or the bound in scope) has. Agreeing binds inference variables
+    /// in `args`. A trait the type satisfies without recording arguments
+    /// (a prelude trait) has nothing to compare.
+    fn bound_args_status(&mut self, ty: TypeId, trait_def: DefId, args: &[TypeId], span: Span) -> Option<bool> {
+        match self.bound_status(ty, trait_def) {
+            Some(true) => {}
+            other      => return other,
+        }
+        if args.is_empty() { return Some(true); }
+        let ty = self.peel_wrappers(ty);
+        let have: Vec<TypeId> = match self.ctx.types.get(ty).clone() {
+            SemaType::Named { def, .. } => match self.trait_impl_args.get(&(trait_def, def)) {
+                Some(a) => a.clone(),
+                None    => return Some(true),
+            },
+            SemaType::Param(_) => match self.current_bounds.get(&ty)
+                .and_then(|bs| bs.iter().find(|b| b.trait_def == trait_def)) {
+                Some(b) => b.args.clone(),
+                None    => return Some(true),
+            },
+            _ => return Some(true),
+        };
+        if have.len() != args.len() { return Some(true); }
+        let mut agree = true;
+        for (want, got) in args.iter().zip(have.iter()) {
+            if !self.types_agree(*want, *got, span) { agree = false; }
+        }
+        Some(agree)
+    }
+
+    /// Unify two types without reporting: whether they can be the same, with
+    /// inference variables bound along the way. A mismatch leaves no
+    /// diagnostic behind (the caller says what is wrong in its own words).
+    fn types_agree(&mut self, a: TypeId, b: TypeId, span: Span) -> bool {
+        let before = self.errors.type_error_count();
+        self.unify(a, b, span);
+        if self.errors.type_error_count() > before {
+            self.discard_type_errors_since(before);
+            return false;
+        }
+        true
+    }
+
+    fn report_unsatisfied(&mut self, ty: TypeId, trait_def: DefId, args: &[TypeId], span: Span, dict_key: bool) {
         if !self.reported_obligations.insert((span, trait_def)) { return; }
         let ty = self.peel_wrappers(ty);
         if dict_key && !self.reported_dict_keys.insert((span.line, ty)) { return; }
-        let trait_name = self.traits.get(&trait_def)
-            .map(|t| t.name.clone())
-            .unwrap_or_else(|| self.ctx.symbols.lookup(trait_def).name.clone());
+        let applied: Vec<TypeId> = args.iter().map(|a| self.apply(*a)).collect();
+        let trait_name = self.trait_ref_text(trait_def, &applied);
         let is_param = matches!(self.ctx.types.get(ty), SemaType::Param(_));
         let type_name = if is_param { self.param_display_name(ty) } else { self.display_type(ty) };
         self.errors.add_type_error(TypeError::UnsatisfiedBound {
@@ -1760,8 +2050,13 @@ impl<'a> InferCtx<'a> {
         let mut pending = std::mem::take(&mut self.pending_obligations);
         pending.sort_by_key(|o| o.span.start);
         for o in pending {
-            if o.failed || self.bound_status(o.ty, o.trait_def) == Some(false) {
-                self.report_unsatisfied(o.ty, o.trait_def, o.span, o.dict_key);
+            let status = if o.args.is_empty() {
+                self.bound_status(o.ty, o.trait_def)
+            } else {
+                self.bound_args_status(o.ty, o.trait_def, &o.args, o.span)
+            };
+            if o.failed || status == Some(false) {
+                self.report_unsatisfied(o.ty, o.trait_def, &o.args, o.span, o.dict_key);
             }
         }
     }
@@ -1773,7 +2068,8 @@ impl<'a> InferCtx<'a> {
         for (i, bounds) in per_param.iter().enumerate() {
             let Some(&arg) = args.get(i) else { break; };
             for b in bounds {
-                self.require_bound(arg, *b, span);
+                let applied: Vec<TypeId> = b.args.iter().map(|t| self.substitute(*t, args)).collect();
+                self.require_bound_args(arg, b.trait_def, applied, span);
             }
         }
     }
@@ -1804,16 +2100,14 @@ impl<'a> InferCtx<'a> {
     /// all written in terms of the abstract `Self`.
     fn collect_trait_info<'ast>(&mut self, t: &TraitDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(t.name) else { return; };
-        if !t.generic_params.is_empty() {
-            self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                feature: "a generic trait",
-                span:    t.span,
-            });
-        }
-        let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
+        let arity = t.generic_params.len();
+        let self_param = self.ctx.types.intern(SemaType::Param(arity));
         let prev_self = self.self_type.replace(self_param);
         let prev_generics = self.push_generic_scope(t.generic_params);
-        self.current_bounds.insert(self_param, vec![def_id]);
+        // Inside the trait `Self` implements the trait applied to its own
+        // parameters (`Convert<T>` for `trait Convert<T>`).
+        let own_args: Vec<TypeId> = (0..arity).map(|i| self.ctx.types.intern(SemaType::Param(i))).collect();
+        self.current_bounds.insert(self_param, vec![BoundRef { trait_def: def_id, args: own_args }]);
 
         let mut methods: Vec<TraitMethodInfo> = Vec::with_capacity(t.items.len());
         for it in t.items {
@@ -1843,7 +2137,7 @@ impl<'a> InferCtx<'a> {
 
         self.pop_generic_scope(prev_generics);
         self.self_type = prev_self;
-        self.traits.insert(def_id, TraitInfo { name: t.name.to_string(), methods });
+        self.traits.insert(def_id, TraitInfo { name: t.name.to_string(), arity, methods });
     }
 
     /// A trait's default method bodies. Inside one, `Self` is the trait's
@@ -1852,11 +2146,14 @@ impl<'a> InferCtx<'a> {
     /// resolves through the trait or one of its supertraits.
     fn infer_trait_default_bodies<'ast>(&mut self, t: &TraitDecl<'ast>) {
         let Some(trait_def) = self.ctx.top_level_def(t.name) else { return; };
-        let self_param = self.ctx.types.intern(SemaType::Param(t.generic_params.len()));
+        let arity = t.generic_params.len();
+        let self_param = self.ctx.types.intern(SemaType::Param(arity));
         let prev_self_type = self.self_type.replace(self_param);
         let prev_struct = self.current_struct_type.replace(self_param);
         let prev_generics = self.push_generic_scope(t.generic_params);
-        let self_bounds = self.expand_supertraits(vec![trait_def]);
+        let own_args: Vec<TypeId> = (0..arity).map(|i| self.ctx.types.intern(SemaType::Param(i))).collect();
+        let self_bounds = self.expand_supertraits(
+            vec![BoundRef { trait_def, args: own_args }], self_param);
         self.current_bounds.insert(self_param, self_bounds);
         for it in t.items {
             if let TraitItem::DefaultMethod(m) = it {
@@ -1868,13 +2165,17 @@ impl<'a> InferCtx<'a> {
         self.self_type = prev_self_type;
     }
 
-    /// A trait method's shape for one implementing type: the abstract
-    /// `Self` replaced by `self_ty`.
-    fn instantiate_trait_shape(&mut self, shape: &MethodShape, self_ty: TypeId) -> MethodShape {
+    /// A trait method's shape for one implementing type: the trait's own
+    /// parameters replaced by `trait_args` (`[int]` for `Convert<int>`) and
+    /// the abstract `Self` by `self_ty`. A trait without parameters passes no
+    /// arguments.
+    fn instantiate_trait_shape(&mut self, shape: &MethodShape, self_ty: TypeId, trait_args: &[TypeId]) -> MethodShape {
+        let mut env: Vec<TypeId> = trait_args.to_vec();
+        env.push(self_ty);
         let params: Vec<TypeId> = shape.params.iter()
-            .map(|p| self.substitute(*p, &[self_ty]))
+            .map(|p| self.substitute(*p, &env))
             .collect();
-        let return_type = self.substitute(shape.return_type, &[self_ty]);
+        let return_type = self.substitute(shape.return_type, &env);
         MethodShape { has_self: shape.has_self, params, return_type, is_fallible: shape.is_fallible }
     }
 
@@ -1972,6 +2273,9 @@ impl<'a> InferCtx<'a> {
             }
             let Some(info) = self.traits.get(&trait_def).cloned() else { continue; };
             let type_name = self.ctx.symbols.lookup(target_def).name.clone();
+            let written = TraitBound { name: trait_name, args: i.trait_args, span: i.span };
+            self.check_trait_arg_count(&written, info.arity);
+            let impl_args = self.trait_arg_types(i.trait_args, info.arity);
 
             if self.trait_impls.contains_key(&(trait_def, target_def)) {
                 self.errors.add_type_error(TypeError::OverlappingImpl {
@@ -1980,11 +2284,13 @@ impl<'a> InferCtx<'a> {
                 continue;
             }
             self.trait_impls.insert((trait_def, target_def), i.span);
+            self.trait_impl_args.insert((trait_def, target_def), impl_args.clone());
+            self.require_def_bounds(trait_def, &impl_args, i.span);
             let self_ty = self.ctx.types.insert(SemaType::Named { def: target_def, args: Vec::new() });
 
             for tm in &info.methods {
                 let impl_m = i.methods.iter().find(|m| m.name == tm.name.as_str());
-                let expected = self.instantiate_trait_shape(&tm.shape, self_ty);
+                let expected = self.instantiate_trait_shape(&tm.shape, self_ty, &impl_args);
                 match impl_m {
                     Some(m) => {
                         let fn_ty = self.ctx.resolutions.get(m.span)
@@ -2067,17 +2373,17 @@ impl<'a> InferCtx<'a> {
     fn call_through_bounds<'ast>(
         &mut self,
         receiver_ty: TypeId,
-        bounds:      &[DefId],
+        bounds:      &[BoundRef],
         method:      &str,
         args:        &[Arg<'ast>],
         callee_span: Span,
         call_span:   Span,
     ) -> TypeId {
-        let mut found: Vec<(String, MethodShape)> = Vec::new();
+        let mut found: Vec<(String, MethodShape, Vec<TypeId>)> = Vec::new();
         for b in bounds {
-            if let Some(info) = self.traits.get(b) {
+            if let Some(info) = self.traits.get(&b.trait_def) {
                 if let Some(m) = info.methods.iter().find(|m| m.name == method && m.shape.has_self) {
-                    found.push((info.name.clone(), m.shape.clone()));
+                    found.push((info.name.clone(), m.shape.clone(), b.args.clone()));
                 }
             }
         }
@@ -2091,7 +2397,7 @@ impl<'a> InferCtx<'a> {
                 self.unknown()
             }
             1 => {
-                let shape = self.instantiate_trait_shape(&found[0].1, receiver_ty);
+                let shape = self.instantiate_trait_shape(&found[0].1, receiver_ty, &found[0].2);
                 self.check_method_args(&shape.params, args, call_span);
                 // The interpreter must run THIS trait's method for this call,
                 // not an inherent method the concrete type may also have.
@@ -2101,7 +2407,7 @@ impl<'a> InferCtx<'a> {
             _ => {
                 self.errors.add_type_error(TypeError::AmbiguousTraitMethod {
                     method:    method.to_string(),
-                    traits:    found.into_iter().map(|(n, _)| n).collect(),
+                    traits:    found.into_iter().map(|(n, _, _)| n).collect(),
                     type_name: self.param_display_name(receiver_ty),
                     span:      callee_span,
                 });
@@ -2153,9 +2459,30 @@ impl<'a> InferCtx<'a> {
             });
             return self.unknown();
         }
-        let shape = self.instantiate_trait_shape(&tm.shape.clone(), recv_ty);
+        let trait_args = self.trait_args_of(recv_ty, trait_def);
+        let shape = self.instantiate_trait_shape(&tm.shape.clone(), recv_ty, &trait_args);
         self.check_method_args(&shape.params, &args[1..], span);
         shape.return_type
+    }
+
+    /// The arguments `ty` has for `trait_def`: the impl's, for a user type,
+    /// or the bound's, for a type parameter. Unknown where nothing records
+    /// them (so a call is checked no further than the types allow).
+    fn trait_args_of(&mut self, ty: TypeId, trait_def: DefId) -> Vec<TypeId> {
+        let arity = self.trait_arity.get(&trait_def).copied().unwrap_or(0);
+        if arity == 0 { return Vec::new(); }
+        let ty = self.peel_wrappers(ty);
+        let known: Option<Vec<TypeId>> = match self.ctx.types.get(ty).clone() {
+            SemaType::Named { def, .. } => self.trait_impl_args.get(&(trait_def, def)).cloned(),
+            SemaType::Param(_) => self.current_bounds.get(&ty)
+                .and_then(|bs| bs.iter().find(|b| b.trait_def == trait_def))
+                .map(|b| b.args.clone()),
+            _ => None,
+        };
+        match known {
+            Some(a) if a.len() == arity => a,
+            _ => (0..arity).map(|_| self.unknown()).collect(),
+        }
     }
 
     /// Whether `ty` implements `trait_def`: a user struct or enum with an
@@ -2170,7 +2497,7 @@ impl<'a> InferCtx<'a> {
         match self.ctx.types.get(ty) {
             SemaType::Named { def, .. } => self.trait_impls.contains_key(&(trait_def, *def)),
             SemaType::Param(_) => self.current_bounds.get(&ty)
-                .is_some_and(|bs| bs.contains(&trait_def)),
+                .is_some_and(|bs| bs.iter().any(|b| b.trait_def == trait_def)),
             SemaType::Unknown | SemaType::Var(_) => true,
             _ => false,
         }
@@ -2309,6 +2636,7 @@ impl<'a> InferCtx<'a> {
         self.register_generic_arities(program);
         self.register_generic_bounds(program);
         self.collect_alias_sigs(program);
+        self.fill_generic_bound_args(program);
         for item in program.items {
             match item {
                 Item::Function(f) => { self.collect_fn_sig(f); }
@@ -5091,7 +5419,7 @@ impl<'a> InferCtx<'a> {
             _ => {}
         }
         if self.prelude_status(name, bare) != Some(true) { return None; }
-        let ret = self.call_through_bounds(bare, &[trait_def], method, args, callee_span, call_span);
+        let ret = self.call_through_bounds(bare, &[BoundRef { trait_def, args: Vec::new() }], method, args, callee_span, call_span);
         // `clone` hands back the receiver's own type, tier tag included.
         if method == "clone" { return Some(self.maybe_arena_ref(receiver_ty)); }
         Some(ret)
@@ -5228,7 +5556,12 @@ impl<'a> InferCtx<'a> {
                                 ArgKind::Named { value, .. } => value.span,
                             })
                             .unwrap_or(span);
-                        for b in bounds { self.require_bound(fresh, *b, at); }
+                        for b in bounds {
+                            let applied: Vec<TypeId> = b.args.iter()
+                                .map(|t| self.substitute(*t, &fresh_args))
+                                .collect();
+                            self.require_bound_args(fresh, b.trait_def, applied, at);
+                        }
                     }
                 }
                 return_type

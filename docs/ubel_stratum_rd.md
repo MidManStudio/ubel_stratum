@@ -40,13 +40,20 @@ methods, parameters, structs, enums, traits, impls.
   accepted. A tier block around either is not reported.
 - `TokenType::Static` joined the three declaration sync sets.
 - `parse_trait_decl` reads an optional supertrait list through
-  `parse_supertraits`: `: A + B` after the name and any generic parameters,
-  stored as `SupertraitRef { name, span }` per entry. The shape is the one a
-  bound on a type parameter has, and the names are plain identifiers, so a
-  supertrait with arguments (`trait B: A<int>`) is a parse error until generic
-  traits are built. A colon or a `+` with no name after it is one parse error
-  (`expected supertrait name`) and the parse goes on. The list is sized with
-  `cap::SUPERTRAITS`.
+  `parse_supertraits`, and a type parameter's bounds and the supertrait list both
+  go through `parse_trait_bound_list` (in `parse_type.rs`): `A + B<int>` after
+  the name and any generic parameters, or after a parameter's `:`, stored as
+  `TraitBound { name, args, span }` per entry. A `<` after a bound's name always
+  opens its arguments, which are read with `try_parse_generic_args`. A colon or a
+  `+` with no name after it is one parse error (`expected supertrait name`, or
+  `expected trait bound name`) and the parse goes on. The list is sized with
+  `cap::BOUNDS`.
+- `parse_generic_params` closes the list with `at_generic_close` and
+  `eat_generic_close`, not a plain `>`: a bound with arguments that ends the list
+  (`T: Convert<int>>`) closes with one `>>` token, which is two closes.
+- `parse_impl_block` keeps the type arguments written after the trait when `for`
+  follows (`impl Convert<int> for X`, stored as `trait_args`) and drops them for an
+  inherent impl (`impl Box<int> { .. }`), where they are part of the type.
 
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
 `tests/fixtures/ok_callback_registry_combined.ubl`; for `static`, the
@@ -129,6 +136,46 @@ runtime values.
   walk's visited check is a performance guard that changes no diagnostic; and the
   `Self` bound that `collect_trait_info` inserts is never consulted there
   (removing it entirely changes nothing), so that line was left as it was.
+
+### `tests/generic_traits.rs`
+
+**What it does:** Integration tests for generic traits, bounds with arguments and
+generic supertraits, slice S3b (79 tests). Source goes through `check_source` for
+the stage, codes, messages, suggestions and positions, through the parser for the
+recorded shape, and through the interpreter where a test needs runtime values.
+
+**Decisions:**
+- Pins the parsed shape (an impl's arguments, none for an inherent impl, nested
+  arguments and the `>>` that closes a bound and the parameter list at once,
+  several bounds and parameters in order, a bound naming another parameter, a
+  supertrait's arguments), declaring and implementing a generic trait (two
+  parameters, different arguments for different types, the argument count at an
+  impl, a method that must fit the arguments, a second impl as `TYPE-128`
+  whatever its arguments, a trait parameter's own bound), calling through a
+  concrete type (the impl's types, defaults, a method taking the parameter, the
+  qualified form), bounds with arguments (concrete, naming another parameter,
+  decided by the impl, a mismatch after the impl decided, wrong counts including
+  inside a trait's own scope, conflicts as `TYPE-134`, struct parameters, aliases,
+  a function declared before its trait), generic supertraits (the argument carried
+  through one and two levels, a fixed argument, `Self` in an argument, a bound on
+  the sub-trait meeting a requirement on the supertrait only with the same
+  argument, `TYPE-132` naming the argument, cycles), the prelude traits taking no
+  arguments, and the runtime contract that each type runs its own impl, through a
+  bound whose argument is a parameter too.
+- Four fixtures sit beside it: `ok_trait_generic_isolated`,
+  `ok_trait_generic_combined`, `err_trait_generic_impls_isolated` and
+  `err_trait_generic_bounds_combined`.
+- The old test asserting that a generic trait is reported (`TYPE-129`) became one
+  asserting it is accepted.
+- Mutation-checked: 41 mutations of the parser, bound registration, the argument
+  conversion pass, the supertrait closure, obligations, impl registration, the
+  qualified call and the error enum. 39 are caught. One pointed at a dedupe the
+  closure already does and was removed as dead code, and the last, the `Self` bound
+  that `collect_trait_info` inserts, is never read there (removing the line
+  entirely changes nothing), so it is left as it was. The first pass left five
+  alive; three needed tests (a bound with too few or too many arguments only
+  reaches the scopes built from a trait's own parameters; a conflicting bound
+  must not also fail every call).
 
 ### `prelude.rs`, `tests/prelude_traits.rs`
 

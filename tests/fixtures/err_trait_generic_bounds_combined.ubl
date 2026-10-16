@@ -1,0 +1,59 @@
+// tests/fixtures/err_trait_generic_bounds_combined.ubl
+// What a bound on a generic trait can get wrong: the wrong number of
+// arguments in a bound and in a supertrait, a bound whose arguments the
+// type's impl does not have, a bound whose argument the impl decides to
+// something the call then contradicts (the impl says `U` is `int`, so a
+// `string` is a plain type mismatch), two bounds on one parameter that apply
+// the trait to different arguments, a struct parameter bound not met, and a
+// bound that is not enough for a requirement.
+// Expected: sema FAIL (GenericArgCountMismatch TYPE-108 twice, ConflictingBounds
+// TYPE-134 once, UnsatisfiedBound TYPE-126 three times, TypeMismatch TYPE-101
+// once).
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+trait Bad: Convert {
+}
+
+struct Celsius {
+    deg: int,
+}
+
+impl Convert<int> for Celsius {
+    fn convert(self) int { return self.deg }
+}
+
+fn wrong_count<T: Convert<int, int>>(x: T) int {
+    return 1
+}
+
+fn as_string<T: Convert<string>>(x: T) string {
+    return x.convert()
+}
+
+fn widen<T: Convert<U>, U>(x: T) U {
+    return x.convert()
+}
+
+fn both<T: Convert<int> + Convert<string>>(x: T) int {
+    return 1
+}
+
+struct Crate<T: Convert<string>> {
+    item: T,
+}
+
+fn narrow_bound<T: Convert<int>, U: Convert<string>>(x: T) string {
+    return as_string(x)
+}
+
+fn main() void {
+    let c = Celsius { deg = 3 }
+    println(as_string(c))
+    let s: string = widen(c)
+    println(s)
+    let k = Crate { item = c }
+    println(1)
+}

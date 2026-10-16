@@ -1,0 +1,51 @@
+// tests/fixtures/ok_trait_generic_isolated.ubl
+// A trait can take type parameters: `trait Convert<T>`. An impl names the
+// arguments (`impl Convert<int> for Celsius`), different types can use
+// different arguments, a bound can name them (`T: Convert<int>`), and a
+// bound's argument can be another type parameter, which the impl then
+// decides (`fn widen<T: Convert<U>, U>(x: T) U` called with a `Celsius`
+// learns `U = int`). A type has one impl of a trait, so the arguments are a
+// property of the pair. A default method may use the trait's parameter.
+// Expected: sema OK, interpret OK.
+
+trait Convert<T> {
+    fn convert(self) T
+    fn again(self) T { return self.convert() }
+}
+
+struct Celsius {
+    deg: int,
+}
+
+struct Label {
+    text: string,
+}
+
+impl Convert<int> for Celsius {
+    fn convert(self) int { return self.deg * 2 }
+}
+
+impl Convert<string> for Label {
+    fn convert(self) string { return self.text + "!" }
+}
+
+fn as_int<T: Convert<int>>(x: T) int {
+    return x.convert() + 1
+}
+
+fn widen<T: Convert<U>, U>(x: T) U {
+    return x.convert()
+}
+
+fn main() void {
+    let c = Celsius { deg = 20 }
+    let l = Label { text = "hi" }
+    assert(c.convert() == 40, "a method of a generic trait on a concrete type")
+    assert(l.convert() == "hi!", "another type with other arguments")
+    assert(c.again() == 40, "a default method returning the trait's parameter")
+    assert(as_int(c) == 41, "a bound with a concrete argument")
+    assert(widen(c) == 40, "a bound whose argument the impl decides, int")
+    assert(widen(l) == "hi!", "and string, for a different type")
+    assert(Convert.convert(c) == 40, "the qualified form")
+    println(widen(c))
+}

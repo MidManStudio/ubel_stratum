@@ -12,7 +12,7 @@
 
 use ubel_stratum::{
     ast::{
-        common::{GenericParam, LifetimeConstraint, LifetimeParam},
+        common::{GenericParam, LifetimeConstraint, LifetimeParam, TraitBound},
         types::{FunctionType, Type, TypeKind},
     },
     error_management::errors::ParseContext,
@@ -395,6 +395,32 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         }
     }
 
+    // ── Trait bounds: `A + B<int>` ───────────────────────────────────────────
+
+    /// `A + B<int>`: one or more trait names, each with optional type
+    /// arguments, joined by `+`. The list after a type parameter's `:`
+    /// (`T: A + B<int>`) and after a trait's own `:` (`trait C: A + B<int>`)
+    /// have this one shape. A name that is missing is reported with `what`
+    /// and ends the list. The arguments are in a declaration position, so a
+    /// `<` after a name always opens them.
+    pub(crate) fn parse_trait_bound_list(&mut self, what: &'static str) -> &'ast [TraitBound<'ast>] {
+        let mut bs: Vec<TraitBound<'ast>> = Vec::with_capacity(cap::BOUNDS);
+        loop {
+            match self.eat_ident() {
+                Some((name, span)) => {
+                    let args = self.try_parse_generic_args();
+                    bs.push(TraitBound { name, args, span });
+                }
+                None => {
+                    self.expected(&[what]);
+                    break;
+                }
+            }
+            if !self.cursor.eat(&TokenType::Plus) { break; }
+        }
+        self.arena.alloc_slice_clone(&bs)
+    }
+
     // ── Generic DECLARATION params: `<T: Bound, U>` ──────────────────────────
 
     /// Parse `<T: Bound, U>` in a declaration context (fn, struct, enum, trait).
@@ -404,25 +430,19 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         let mut params: Vec<GenericParam<'ast>> = Vec::with_capacity(cap::GENERIC_PARAMS);
 
-        while !self.cursor.is_at(&TokenType::Greater) && !self.cursor.is_eof() {
+        // `at_generic_close` and `eat_generic_close`, not a plain `>`: a bound
+        // with arguments ends in `>>` when it is the last thing in the list
+        // (`T: Convert<int>>`), and the closing `>` of the bound's own
+        // arguments is then half of one token.
+        while !self.cursor.at_generic_close() && !self.cursor.is_eof() {
             let (name, span) = match self.eat_ident() {
                 Some(p) => p,
                 None => { self.expected(&["type parameter name"]); break; }
             };
 
-            // Optional trait bound: `T: Trait + Other`
-            let bounds: &'ast [&'ast str] = if self.cursor.eat(&TokenType::Colon) {
-                let mut bs: Vec<&'ast str> = Vec::with_capacity(2);
-                loop {
-                    if let Some((b, _)) = self.eat_ident() {
-                        bs.push(b);
-                    } else {
-                        self.expected(&["trait bound name"]);
-                        break;
-                    }
-                    if !self.cursor.eat(&TokenType::Plus) { break; }
-                }
-                self.arena.alloc_slice_clone(&bs)
+            // Optional trait bounds: `T: Trait + Other<int>`
+            let bounds: &'ast [TraitBound<'ast>] = if self.cursor.eat(&TokenType::Colon) {
+                self.parse_trait_bound_list("trait bound name")
             } else {
                 &[]
             };
@@ -431,8 +451,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             self.eat_sep();
         }
 
-        if let Err(e) = self.cursor.expect(&TokenType::Greater) {
-            self.emit(crate::error::from_cursor(e, ParseContext::TypeExpr));
+        if !self.cursor.eat_generic_close() {
+            if let Err(e) = self.cursor.expect(&TokenType::Greater) {
+                self.emit(crate::error::from_cursor(e, ParseContext::TypeExpr));
+            }
         }
 
         self.arena.alloc_slice_clone(&params)

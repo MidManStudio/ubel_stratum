@@ -265,6 +265,18 @@ pub enum TypeError {
         span:       Span,
     },
 
+    /// Two bounds on one type parameter that apply the same trait to
+    /// different arguments (`T: Convert<int> + Convert<string>`). A type has
+    /// one impl of a trait, so no type can satisfy both. `first` and `second`
+    /// are the two applications as written.
+    ConflictingBounds {
+        param:      String,
+        trait_name: String,
+        first:      String,
+        second:     String,
+        span:       Span,
+    },
+
     /// A trait that is its own supertrait, directly (`trait A: A`) or
     /// through others (`trait A: B  trait B: A`). `path` is the cycle as
     /// written, `A -> B -> A`, starting and ending at `trait_name`.
@@ -376,6 +388,7 @@ impl TypeError {
             TypeError::OperatorNeedsBound          { span, .. } => *span,
             TypeError::MissingSupertraitImpl       { span, .. } => *span,
             TypeError::SupertraitCycle             { span, .. } => *span,
+            TypeError::ConflictingBounds           { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -466,6 +479,9 @@ impl TypeError {
 
             TypeError::MissingSupertraitImpl { trait_name, supertrait, type_name, .. } =>
                 format!("`impl {} for {}` needs `{}`, which `{}` does not implement", trait_name, type_name, supertrait, type_name),
+
+            TypeError::ConflictingBounds { param, first, second, .. } =>
+                format!("`{}` is bounded by both `{}` and `{}`, and no type implements both", param, first, second),
 
             TypeError::SupertraitCycle { trait_name, path, .. } =>
                 format!("trait `{}` is its own supertrait: {}", trait_name, path),
@@ -586,6 +602,9 @@ impl TypeError {
             TypeError::MissingSupertraitImpl { supertrait, type_name, .. } =>
                 Some(format!("add `impl {} for {} {{ .. }}`", supertrait, type_name)),
 
+            TypeError::ConflictingBounds { trait_name, .. } =>
+                Some(format!("a type has one impl of `{}`, so a parameter can be bounded by it once; keep one of the two", trait_name)),
+
             TypeError::SupertraitCycle { .. } =>
                 Some("a supertrait is required by the trait that builds on it, so the chain of `: ...` links must end; remove one of them".to_string()),
 
@@ -651,6 +670,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::OperatorNeedsBound { .. }            => "TYPE-131",
             TypeError::MissingSupertraitImpl { .. }         => "TYPE-132",
             TypeError::SupertraitCycle { .. }               => "TYPE-133",
+            TypeError::ConflictingBounds { .. }             => "TYPE-134",
         }
     }
     fn span(&self) -> Span { self.span() }

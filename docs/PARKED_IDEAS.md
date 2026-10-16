@@ -922,8 +922,6 @@ body sees them, and a cycle is `TYPE-133`. The prelude declares its own. See
 
 Known gaps of S3a, recorded rather than hidden:
 
-- A supertrait with arguments (`trait B: A<int>`) is a parse error, not a
-  diagnostic of its own; it waits for generic traits.
 - The `@derive` prerequisite check still reads the derive list
   (`DeriveRequiresOther`) instead of the declared supertraits. The two agree for
   the six prelude traits.
@@ -932,7 +930,28 @@ Known gaps of S3a, recorded rather than hidden:
   `impl X for S` give two diagnostics. The prelude chain does the same: an
   `impl Eq` with no `PartialEq` followed by an `impl Hash` gives two.
 
-**Traits, slices S3b to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S3b (built).** Generic traits (`trait Convert<T>`), bounds with
+arguments (`T: Convert<int>`, `T: Convert<U>`) and generic supertraits
+(`trait Wide<T>: Convert<T>`), with one impl of a trait per type. See
+`docs/TRAITS_DESIGN.md`, "What S3b settled".
+
+Known gaps of S3b, recorded rather than hidden:
+
+- Several impls of one generic trait for one type (`impl Convert<int>` and
+  `impl Convert<string>` for the same type) are not allowed: the second is
+  `TYPE-128`. Allowing them needs the arguments at run time, because generics are
+  erased and a bound such as `T: Convert<U>` could not choose between the impls, or
+  a restriction to concrete bound arguments, plus inference that picks the impl
+  from the expected type.
+- An unknown type name is not reported anywhere in sema: `fn g(b: Nope)` and
+  `fn h(b: List<Nope>)` check clean, and so does a bound's argument
+  (`T: Convert<Nope>`). Found by probe while testing bound arguments; it is older
+  than S3b.
+- The `Self` bound that `collect_trait_info` inserts for a trait is never read
+  while the trait's signatures are collected (removing the line changes nothing).
+  The default bodies get their own.
+
+**Traits, slices S3c to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

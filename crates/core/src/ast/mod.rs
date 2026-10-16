@@ -41,7 +41,7 @@ pub use common::{
     AssignOp, AttrArg, AttrValue, Attribute,
     BinOp, GenericParam,
     Ident, LifetimeConstraint, LifetimeParam,
-    QualifiedIdent, Span, TierAnnotation, UnaryOp, Visibility,
+    QualifiedIdent, Span, TierAnnotation, TraitBound, UnaryOp, Visibility,
 };
 
 pub use literals::{InterpolationPart, Literal};
@@ -70,7 +70,7 @@ pub use declarations::{
     ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload,
     ExtendDecl, FieldDecl, FunctionDecl, ImplBlock,
     MethodDecl, MethodSig, Param, ParamKind, PropertyDecl,
-    ReturnType, StaticDecl, StructDecl, StructMember, SupertraitRef, TraitDecl,
+    ReturnType, StaticDecl, StructDecl, StructMember, TraitDecl,
     TraitItem, TypeAlias,
 };
 

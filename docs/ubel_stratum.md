@@ -32,9 +32,13 @@ traits, impls, parameters).
   `ConstDecl` still does not. It carries no tier: a static is always HIGH,
   and the only tier that can exist is an own `@tier(...)` attribute, which
   the parser checks.
-- `TraitDecl` has `supertraits: &[SupertraitRef]`, one entry per name in
-  `trait B: A + C`, each with the span of its own name so a diagnostic about a
-  supertrait points at it. The field is empty when no `:` follows the name.
+- `TraitDecl` has `supertraits: &[TraitBound]`, one entry per name in
+  `trait B: A + C<int>`, each with the span of its own name so a diagnostic about
+  a supertrait points at it. The field is empty when no `:` follows the name.
+  `TraitBound { name, args, span }` is the one shape for a trait written with its
+  type arguments: it is also what `GenericParam.bounds` holds (`T: Convert<int>`)
+  and `ImplBlock` carries the arguments of its trait as `trait_args`
+  (`impl Convert<int> for X`).
 
 **Tests:** see `sema/tests.rs`, referenced under `sema/name_resolution.rs`
 and `sema/type_infer.rs` below.
@@ -1419,3 +1423,53 @@ the new files. The mutation pass is described under `tests/supertraits.rs` in
 `docs/ubel_stratum_rd.md`: 34 mutations, 32 caught, the other two changing
 nothing a program can observe. Every line it wrote was checked for em dashes and
 first or second person.
+
+**Decisions (traits, slice S3b):**
+- A trait applied to arguments is a `BoundRef { trait_def, args }` in sema. A
+  bound written on a declaration's parameter keeps its arguments in terms of that
+  declaration's `Param(i)`, and a supertrait's are in terms of the trait's own
+  parameters followed by its abstract `Self` (`Param(arity)`). `current_bounds` and
+  `generic_bounds` hold `BoundRef`s; `trait_super_args`, `trait_arity` and
+  `trait_impl_args` record a supertrait edge's arguments, a trait's parameter count
+  and an impl's arguments. `TraitInfo` gained `arity`.
+- `register_decl_bounds` still validates the names early (`TYPE-122`) and records
+  them with empty arguments. `fill_generic_bound_args` runs after the aliases are
+  expanded: it converts each bound's and supertrait's arguments, checks the count
+  (`TYPE-108`, the existing `GenericArgCountMismatch`) and reports conflicting
+  bounds (`TYPE-134`). `push_generic_scope` converts the arguments again for the
+  scope it builds, silently (`declared_bounds`, `discard_type_errors_since`), so an
+  error is reported once.
+- `supertrait_closure` substitutes as it widens: a supertrait's written arguments
+  get the sub-trait's arguments and `Self` (the bounded parameter or the
+  implementing type), so `T: Wide<int>` gives `Convert<int>`.
+- A type has one impl of a trait, so `bound_args_status` compares an obligation's
+  arguments with the impl's (or the bound in scope's) by unifying them without
+  reporting (`types_agree`). That binds inference variables: a call's `U` in
+  `T: Convert<U>` becomes the impl's argument as soon as the type is known
+  (`require_bound_args`), and `check_obligations` makes the final comparison and
+  reports `TYPE-126` with the arguments in the trait's name.
+- `instantiate_trait_shape` takes the trait's arguments as well as `Self`;
+  `register_trait_impls` records `trait_impl_args`, checks the count and the trait's
+  own parameter bounds, and stores each method's shape instantiated with the
+  arguments, so a call on a concrete type needed no new lookup. `trait_args_of`
+  gives the arguments for a qualified call.
+- The interpreter is unchanged: dispatch stays keyed by type and trait name, which
+  is enough because a type has one impl of a trait. Several impls of one generic
+  trait for one type are recorded as out of scope in `docs/PARKED_IDEAS.md`.
+- `parse_generic_params` closes with `eat_generic_close` so a bound with arguments
+  can end the list (`T: Convert<int>>`).
+
+A nineteenth delivery (traits slice S3b) touched `core/src/ast/common.rs`,
+`declarations.rs`, `mod.rs` and `visitor.rs`, `rd_parser/src/parser.rs`,
+`parsers/parse_type.rs` and `parse_decl.rs`, `sema/type_infer.rs` and the TypeError
+enum (`TYPE-134` added, `TYPE-108`, `TYPE-126` and `TYPE-128` extended). It added
+`tests/generic_traits.rs` (79 tests) and four fixtures (`ok_trait_generic_isolated`,
+`ok_trait_generic_combined`, `err_trait_generic_impls_isolated`,
+`err_trait_generic_bounds_combined`). The workspace has 684 passing tests. The
+fixture sweep went from 247 lexed, 239 parsed and 130 through sema to 251, 243 and
+132, with 131 interpreted (`tests/fixtures/random.ubl` still has no `fn main`), and
+the only changes were the new files. The mutation pass is described under
+`tests/generic_traits.rs` in `docs/ubel_stratum_rd.md`: 41 mutations, 39 caught, the
+other two changing nothing a program can observe. Every line it wrote was checked
+for em dashes and first or second person.
+

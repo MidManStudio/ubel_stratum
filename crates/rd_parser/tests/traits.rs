@@ -372,9 +372,10 @@ fn an_impl_for_a_builtin_type_is_reported_not_ignored() {
 }
 
 #[test]
-fn a_generic_trait_is_reported_not_ignored() {
+fn a_generic_trait_declaration_is_accepted() {
+    // Generic traits arrived in S3b; tests/generic_traits.rs covers them.
     let src = "trait Conv<T> { fn conv(self) T }\nfn main() void { }\n";
-    assert_eq!(messages(src), vec!["a generic trait is not supported yet".to_string()]);
+    assert_eq!(codes(src), (Stage::Clean, vec![]));
 }
 
 #[test]

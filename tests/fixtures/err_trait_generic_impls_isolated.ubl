@@ -1,0 +1,87 @@
+// tests/fixtures/err_trait_generic_impls_isolated.ubl
+// What an impl of a generic trait can get wrong: the wrong number of
+// arguments, a second impl of the same trait for one type (a type has one),
+// a method whose signature does not fit the arguments given, an impl of a
+// generic sub-trait without the supertrait impl the arguments call for, and
+// one whose supertrait impl has other arguments, and a trait parameter's own
+// bound not met.
+// Expected: sema FAIL (GenericArgCountMismatch TYPE-108 twice, OverlappingImpl
+// once, TraitMethodSignatureMismatch once, MissingSupertraitImpl TYPE-132
+// twice, UnsatisfiedBound TYPE-126 once).
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+trait Wide<T>: Convert<T> {
+}
+
+trait Holder<T: Eq> {
+    fn held(self) T
+}
+
+struct A {
+    n: int,
+}
+
+struct B {
+    n: int,
+}
+
+struct C {
+    n: int,
+}
+
+struct D {
+    n: int,
+}
+
+struct E {
+    n: int,
+}
+
+struct F {
+    n: int,
+}
+
+struct Plain {
+    n: int,
+}
+
+impl Convert for A {
+    fn convert(self) int { return 1 }
+}
+
+impl Convert<int, string> for B {
+    fn convert(self) int { return 1 }
+}
+
+impl Convert<int> for C {
+    fn convert(self) int { return 1 }
+}
+
+impl Convert<string> for C {
+    fn convert(self) string { return "c" }
+}
+
+impl Convert<int> for D {
+    fn convert(self) string { return "d" }
+}
+
+impl Wide<int> for E {
+}
+
+impl Convert<string> for F {
+    fn convert(self) string { return "f" }
+}
+
+impl Wide<int> for F {
+}
+
+impl Holder<Plain> for Plain {
+    fn held(self) Plain { return self }
+}
+
+fn main() void {
+    println(1)
+}

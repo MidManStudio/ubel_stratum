@@ -17,14 +17,15 @@
 
 use ubel_stratum::{
     ast::{
-        common::{Attribute, TierAnnotation, Visibility},
+        common::{Attribute, TierAnnotation, TraitBound, Visibility},
         declarations::{
             ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload, ExtendDecl,
             FieldDecl, FunctionDecl, ImplBlock, MethodDecl, MethodSig,
             Param, ParamKind, PropertyDecl, ReturnType, StaticDecl, StructDecl,
-            StructMember, SupertraitRef, TraitDecl, TraitItem, TypeAlias,
+            StructMember, TraitDecl, TraitItem, TypeAlias,
         },
         root::{Item, Import, ImportItems, ImportKind, PackageDecl},
+        types::Type,
     },
     error_management::errors::ParseContext,
     lexer::{Span, TokenType},
@@ -730,25 +731,13 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         Some(TraitDecl { attributes: attrs, visibility: vis, name, generic_params, supertraits, items, span })
     }
 
-    /// `: A + B` after a trait's name and generic parameters: the traits it
-    /// builds on. Returns an empty slice when no `:` follows. The names are
-    /// plain identifiers, written the way a bound on a type parameter is
-    /// (`T: A + B`); whether each one is a trait is sema's question.
-    fn parse_supertraits(&mut self) -> &'ast [SupertraitRef<'ast>] {
+    /// `: A + B<int>` after a trait's name and generic parameters: the
+    /// traits it builds on. Returns an empty slice when no `:` follows. Each
+    /// entry is written the way a bound on a type parameter is (`T: A +
+    /// B<int>`); whether each name is a trait is sema's question.
+    fn parse_supertraits(&mut self) -> &'ast [TraitBound<'ast>] {
         if !self.cursor.eat(&TokenType::Colon) { return &[]; }
-
-        let mut list: Vec<SupertraitRef<'ast>> = Vec::with_capacity(cap::SUPERTRAITS);
-        loop {
-            match self.eat_ident() {
-                Some((name, span)) => list.push(SupertraitRef { name, span }),
-                None => {
-                    self.expected(&["supertrait name"]);
-                    break;
-                }
-            }
-            if !self.cursor.eat(&TokenType::Plus) { break; }
-        }
-        self.arena.alloc_slice_clone(&list)
+        self.parse_trait_bound_list("supertrait name")
     }
 
     fn parse_trait_item(&mut self) -> Option<TraitItem<'ast>> {
@@ -820,6 +809,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         // Check for trait impl: `impl TraitName for Type` vs `impl Type`
         // Heuristic: if we see `Ident` followed by `for`, it's a trait impl.
+        let mut trait_args: &'ast [&'ast Type<'ast>] = &[];
         let trait_path: Option<&'ast [&'ast str]> = {
             let pos = self.cursor.position();
             // Speculatively collect a path
@@ -829,11 +819,14 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 segs.push(seg);
                 if !self.cursor.eat(&TokenType::Dot) { break; }
             }
-            // Also consume generic args if any (trait can be generic: impl Foo<T> for Bar)
-            let _ = self.try_parse_generic_args();
+            // Generic args, if any: `impl Convert<int> for X`. Kept only when
+            // `for` follows; `impl Box<T> { .. }` is an inherent impl of a
+            // generic type and the args are re-read as part of its type.
+            let args = self.try_parse_generic_args();
 
             if self.cursor.eat(&TokenType::For) {
                 // Confirmed trait impl
+                trait_args = args;
                 let path = self.arena.alloc_slice_clone(&segs);
                 Some(path)
             } else {
@@ -885,6 +878,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             attributes: attrs,
             tier: if tier == TierAnnotation::High { None } else { Some(tier) },
             trait_path,
+            trait_args,
             target_type,
             methods: self.arena.alloc_slice_clone(&methods),
             span,

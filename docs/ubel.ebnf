@@ -124,7 +124,7 @@ FieldDeclList ::= FieldDecl ("," FieldDecl)*
 
 (* ── Traits ── *)
 TraitDecl     ::= "pub"? "trait" Ident GenericParams? SuperTraits? ("{" TraitItem* "}")?
-SuperTraits   ::= ":" Ident ("+" Ident)*
+SuperTraits   ::= ":" BoundList
 TraitItem     ::= MethodSignature
                 | AssociatedType
                 | DefaultMethod
@@ -134,7 +134,7 @@ AssociatedType  ::= "type" Ident
 DefaultMethod   ::= "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec? Block
 
 (* ── Impl ── *)
-ImplBlock     ::= "impl" (QualifiedIdent "for")? TypeExpr "{" ImplItem* "}"
+ImplBlock     ::= "impl" (QualifiedIdent GenericArgs? "for")? TypeExpr "{" ImplItem* "}"
 ImplItem      ::= MethodDecl
 
 (* ── Extend ── *)
@@ -211,8 +211,10 @@ FunctionType  ::= "fn" "(" TypeList? ")" ReturnSpec?
 
 (* ── Generics ── *)
 GenericParams ::= "<" GenericParam ("," GenericParam)* ">"
-GenericParam  ::= Ident (":" TraitBound)?
-TraitBound    ::= Ident ("+" Ident)*
+GenericParam  ::= Ident (":" BoundList)?
+BoundList     ::= TraitBound ("+" TraitBound)*
+TraitBound    ::= Ident GenericArgs?
+GenericArgs   ::= "<" TypeExpr ("," TypeExpr)* ">"
 
 (* ── Lifetimes ──                                              *)
 (* Named using [lifetime L] syntax, NOT Rust's 'a style.       *)

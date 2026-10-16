@@ -122,7 +122,9 @@ verified safe.
   comparison, hashing and cloning inside other values. A trait can build on
   others (`trait B: A + C`): an impl needs the impls beneath it, a bound on `B`
   also gives what `A` and `C` provide, and a trait that builds on itself is an
-  error. Next: generic traits, impls for built-in types, tiers on trait
+  error. A trait can take type parameters (`trait Convert<T>`), a bound can
+  name them (`T: Convert<int>`), and a trait can build on a generic one. Next:
+  associated types, impls for generic and built-in types, tiers on trait
   methods, language-item traits, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next

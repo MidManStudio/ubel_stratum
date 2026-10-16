@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 use crate::ast::common::{
+    TraitBound,
     Attribute, GenericParam, LifetimeParam, Span, TierAnnotation, Visibility,
 };
 use crate::ast::expressions::Expr;
@@ -173,20 +174,11 @@ pub struct TraitDecl<'ast> {
     pub visibility:     Visibility,
     pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
-    /// The traits this one builds on: `A` and `C` in `trait B: A + C`.
-    /// Empty when no `:` follows the name.
-    pub supertraits:    &'ast [SupertraitRef<'ast>],
+    /// The traits this one builds on: `A` and `C<int>` in `trait B: A +
+    /// C<int>`. Empty when no `:` follows the name.
+    pub supertraits:    &'ast [TraitBound<'ast>],
     pub items:          &'ast [TraitItem<'ast>],
     pub span:           Span,
-}
-
-/// One name in a trait's supertrait list, with the span of that name so a
-/// diagnostic about it (unknown trait, cycle) points at it and not at the
-/// whole declaration.
-#[derive(Debug, Clone, Copy)]
-pub struct SupertraitRef<'ast> {
-    pub name: &'ast str,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -216,6 +208,9 @@ pub struct ImplBlock<'ast> {
     pub tier:        Option<TierAnnotation>,
     /// `None` = inherent impl; `Some` = trait impl (`impl Trait for Type`).
     pub trait_path:  Option<&'ast [&'ast str]>,
+    /// The type arguments written after the trait in `impl Convert<int> for
+    /// X`; empty for a trait without arguments and for an inherent impl.
+    pub trait_args:  &'ast [&'ast Type<'ast>],
     pub target_type: &'ast Type<'ast>,
     pub methods:     &'ast [MethodDecl<'ast>],
     pub span:        Span,

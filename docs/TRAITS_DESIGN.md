@@ -39,7 +39,8 @@
 | **S2a, part 2** | **Built** | `Hash` and the `Hasher` struct, `Hash` satisfaction, and `Hash` (which implies `Eq`) required of `Dictionary` keys. See "What S2a part 2 settled" below. |
 | **S2b** | **Built** | Hand-written impls of the six prelude traits: checked like any trait impl, needing their supertraits (`TYPE-132`), and called by `==`, `!=`, the ordering operators, `contains` on every collection, dictionary lookup, assignment and indexing, `order_by`, `group_by`, and by derived comparison, `Hash` and `Clone` inside other values. See "What S2b settled" below. |
 | **S3a** | **Built** | Supertraits: `trait B: A + C`. An impl needs the impls beneath it (`TYPE-132`, now for every trait), a bound implies them, a default body sees them, a cycle is an error (`TYPE-133`), and the prelude declares its own. See "What S3a settled" below. |
-| S3b to S6 | Planned | As in section 4. |
+| **S3b** | **Built** | Generic traits (`trait Convert<T>`, `impl Convert<int> for X`), bounds with arguments (`T: Convert<int>`, `T: Convert<U>`) and generic supertraits (`trait Wide<T>: Convert<T>`), with one impl of a trait per type. See "What S3b settled" below. |
+| S3c to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -311,10 +312,9 @@ What reading the code established before this was decided:
 
 - **Syntax.** `trait B: A + C { .. }`. The supertraits follow the name and any
   generic parameters and are written like a bound on a type parameter
-  (`T: A + C`). Each is a plain name, so a supertrait with arguments
-  (`trait B: A<int>`) is a parse error until generic traits arrive. The parser
-  records each name with its own span (`SupertraitRef`), so a diagnostic about a
-  supertrait points at the name.
+  (`T: A + C`). Each was a plain name in S3a, so a supertrait with arguments
+  (`trait B: A<int>`) was a parse error until S3b. The parser records each name
+  with its own span, so a diagnostic about a supertrait points at the name.
 - **An impl needs the impls beneath it (`TYPE-132`).** The rule built for the
   prelude in S2b now covers every trait: `impl B for T` needs an impl of each
   trait `B` builds on, directly or through others. One diagnostic per impl, at
@@ -355,6 +355,59 @@ What reading the code established before this was decided:
 - **Runtime.** No change. A call through a bound resolves to the supertrait's
   method and runs the implementing type's impl, and a default of `B` that calls
   `self.a()` runs whatever the type provides for `A`.
+
+### What S3b settled
+
+- **Syntax.** `trait Convert<T> { .. }`, `impl Convert<int> for Celsius { .. }`,
+  bounds with arguments (`T: Convert<int>`, `T: Convert<U>`) and supertraits with
+  arguments (`trait Wide<T>: Convert<T>`, `trait Narrow: Convert<int>`). One shape,
+  `TraitBound { name, args, span }`, serves a parameter's bound, a supertrait and
+  the impl header (`ImplBlock.trait_args`). A bound's arguments that end a
+  parameter list close with one `>>` token (`T: Convert<int>>`), which the
+  parameter-list parser now reads as two closes.
+- **A type has one impl of a trait.** The arguments are a property of the pair
+  (trait, type). A second impl of the same trait for a type is `TYPE-128` whatever
+  its arguments. This was chosen over several impls because generics are erased
+  at run time: the interpreter dispatches on the value's type name and a trait
+  name, so inside generic code a bound such as `T: Convert<U>` could not pick
+  between two impls of one type. Allowing several is a relaxation for later (it
+  needs the arguments at run time, or a restriction of bounds to concrete
+  arguments, and inference that picks the impl from the expected type). Nothing
+  built here prevents it. The interpreter needed no change.
+- **What the arguments mean for an impl.** The impl's method signatures are
+  compared with the trait's with the trait's parameters replaced by the impl's
+  arguments (`fn convert(self) int` for `Convert<int>`). The argument count is
+  checked (`TYPE-108`), a bound on the trait's own parameter (`trait Holder<T:
+  Eq>`) is checked at the impl (`TYPE-126`), and a default method of a generic
+  trait is checked once in the trait's scope, where `Self` implements the trait
+  applied to its own parameters.
+- **What a bound's arguments mean.** Inside a body, `T: Convert<int>` makes
+  `x.convert()` return `int`, and a method that takes the trait's parameter takes
+  `int`. At a call, the bound is met when the argument's type has an impl of the
+  trait and the impl's arguments are the bound's. An argument that is still an
+  inference variable (`fn widen<T: Convert<U>, U>`) is decided by the impl as soon
+  as the type is known, so `U` is `int` for a `Celsius`, and using the result as a
+  `string` is an ordinary type mismatch. A type parameter meets a bound only when
+  declared with the same arguments. The message names the arguments (the trait
+  `Convert<string>` is not implemented for `Celsius`).
+- **Generic supertraits carry their arguments.** A supertrait's arguments are
+  written in the sub-trait's scope (its parameters, and `Self`), and a bound on the
+  sub-trait gives the supertrait with the arguments worked out: `T: Wide<int>` also
+  gives `Convert<int>`. `impl Wide<int> for X` needs `impl Convert<int> for X`; an
+  impl with other arguments does not count, and `TYPE-132` names the supertrait
+  with its arguments. A cycle is `TYPE-133` whatever the arguments.
+- **Conflicting bounds (`TYPE-134`).** Two bounds on one parameter that apply the
+  same trait to different arguments cannot both hold, since a type has one impl,
+  so the second is reported and the first stays in force. The same trait with the
+  same arguments twice is one bound.
+- **Arguments wait for the aliases.** A bound's or supertrait's arguments are
+  types, so they are converted after the type aliases are expanded
+  (`fill_generic_bound_args`); the names are validated earlier. Scopes built before
+  that pass convert them again silently, so an error is reported once, at the
+  declaration.
+- **Not changed.** The prelude traits take no arguments (`Eq<int>` is `TYPE-108`).
+  Associated types, impls for generic types and for built-in types, and the two
+  bound limits are still `TYPE-129`.
 
 ### D7: what has to be specified before S4
 
@@ -561,7 +614,8 @@ exact-count tests, and the docs updated in the same bundle.
 | **S1** | Nominal traits with static checking: register trait impl methods in sema and interpreter dispatch; conformance checks (missing method, method not in the trait, signature mismatch with `Self`); default methods inherited; bounds enforced at call sites and through bodies; inherent-first resolution and the qualified call. | D1 A, D2 A, D3, D4 i, D6 b, D7 a, D8 |
 | **S2** | Prelude traits for the six derives; built-in impls for primitives; bounds on built-in collections; `@derive` becomes an impl generator. | D5 B |
 | **S3a** | Supertraits (built). | D4 ii |
-| S3b onward | Generic traits, associated types, impls for generic types and for built-in types; the impl's trait path keeps its arguments. The order is chosen with the project owner. | D4 ii |
+| **S3b** | Generic traits, bounds with arguments and generic supertraits (built). | D4 ii |
+| S3c onward | Associated types, impls for generic types and for built-in types, and the two bound limits (a bound on an alias parameter, on a method's own parameter). The order is chosen with the project owner. | D4 ii |
 | **S4** | Tier on trait method signatures. | D7 a |
 | **S5** | Language-item traits, one decision and one delivery each: `Display`/`Debug`, `Iterable<T>`, operators. | D5 C |
 | **S6** | `dyn Trait` in `HIGH`. | D2 B |

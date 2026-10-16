@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub use crate::lexer::Span;
+use crate::ast::types::Type;
 
 // ── Identifiers ───────────────────────────────────────────────────
 
@@ -136,11 +137,24 @@ pub struct LifetimeConstraint<'ast> {
 
 // ── Generic parameters ────────────────────────────────────────────
 
-/// A single generic type parameter: `T` or `T: Trait + OtherTrait`.
+/// A trait named with the type arguments it is given: `Eq` or
+/// `Convert<int>`. It is the shape of a bound on a type parameter
+/// (`T: Convert<int>`), of a supertrait (`trait B: Convert<int>`) and of the
+/// trait in an impl header (`impl Convert<int> for X`). `args` is empty for a
+/// trait written without arguments. `span` covers the name, so a diagnostic
+/// about one bound points at it and not at the whole declaration.
+#[derive(Debug, Clone, Copy)]
+pub struct TraitBound<'ast> {
+    pub name: &'ast str,
+    pub args: &'ast [&'ast Type<'ast>],
+    pub span: Span,
+}
+
+/// A single generic type parameter: `T` or `T: Trait + OtherTrait<int>`.
 #[derive(Debug, Clone, Copy)]
 pub struct GenericParam<'ast> {
     pub name:   &'ast str,
-    pub bounds: &'ast [&'ast str],
+    pub bounds: &'ast [TraitBound<'ast>],
     pub span:   Span,
 }
 

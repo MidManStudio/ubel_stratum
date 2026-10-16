@@ -364,7 +364,7 @@ pub(crate) mod cap {
     pub const ATTR_ARGS:      usize = 2;
     pub const IMPL_ITEMS:     usize = 8;
     pub const TRAIT_ITEMS:    usize = 8;
-    pub const SUPERTRAITS:    usize = 2;
+    pub const BOUNDS:         usize = 2;
     pub const ENUM_VARIANTS:  usize = 8;
     pub const PATH_SEGS:      usize = 3;
 }

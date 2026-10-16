@@ -1,0 +1,86 @@
+// tests/fixtures/ok_trait_generic_combined.ubl
+// Generic traits together with the rest: a generic supertrait
+// (`Wide<T>: Convert<T>` with the argument carried through), a supertrait
+// with a fixed argument (`Narrow: Convert<int>`), a trait whose own
+// parameter is bounded (`Holder<T: Eq>`), a struct whose parameter is bounded
+// by a generic trait, a method that takes the trait's parameter, and a bound
+// that implies the supertrait's methods with the right arguments.
+// Expected: sema OK, interpret OK.
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+trait Wide<T>: Convert<T> {
+    fn wide(self) T { return self.convert() }
+}
+
+trait Narrow: Convert<int> {
+    fn narrow(self) int { return self.convert() + 1 }
+}
+
+trait Add<T> {
+    fn plus(self, other: T) T
+}
+
+trait Holder<T: Eq> {
+    fn held(self) T
+}
+
+struct Meters {
+    n: int,
+}
+
+impl Convert<int> for Meters {
+    fn convert(self) int { return self.n }
+}
+
+impl Wide<int> for Meters {
+}
+
+impl Narrow for Meters {
+}
+
+impl Add<int> for Meters {
+    fn plus(self, other: int) int { return self.n + other }
+}
+
+impl Holder<int> for Meters {
+    fn held(self) int { return self.n }
+}
+
+struct Crate<T: Convert<int>> {
+    item: T,
+}
+
+fn via_wide<T: Wide<int>>(x: T) int {
+    return x.convert() + x.wide()
+}
+
+fn via_narrow<T: Narrow>(x: T) int {
+    return x.convert() + x.narrow()
+}
+
+fn needs_convert<T: Convert<int>>(x: T) int {
+    return x.convert()
+}
+
+fn pass_down<T: Wide<int>>(x: T) int {
+    return needs_convert(x)
+}
+
+fn add_any<A: Add<B>, B>(a: A, b: B) B {
+    return a.plus(b)
+}
+
+fn main() void {
+    let m = Meters { n = 5 }
+    assert(via_wide(m) == 10, "Wide<int> gives Convert<int> and its own default")
+    assert(via_narrow(m) == 11, "a fixed-argument supertrait")
+    assert(pass_down(m) == 5, "a bound on Wide<int> satisfies a requirement on Convert<int>")
+    assert(add_any(m, 3) == 8, "a bound whose argument is a parameter, with a method taking it")
+    assert(m.held() == 5, "a trait whose own parameter is bounded")
+    let k = Crate { item = m }
+    assert(k.item.convert() == 5, "a struct parameter bounded by a generic trait")
+    println(via_wide(m))
+}
