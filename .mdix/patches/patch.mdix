@@ -1,18 +1,14 @@
 // Brought to u by MidManStudio
-// Deploy Site: stop every push run from hitting the 30 minute job limit.
+
+// traits S3c: remove the fixture that has nothing left to show.
 //
-// Cause: bench_fixtures registers one criterion benchmark per file in
-// tests/fixtures. Criterion's default timing (3 s warm-up, 5 s measurement,
-// 100 samples, 100,000 resamples) costs about 14 s per fixture measured
-// locally, so 245 fixtures need far more than the job's 30 minutes. Every
-// push-triggered run (#231, #233, #235) was cancelled or timed out in the
-// "Run benchmark suite" step; the runs that looked green (#232, #234) were
-// manual dispatches with run_benchmarks set to false.
-//
-// Fix: shorter timing for the fixtures group only. Measured locally with
-// the exact CI command: whole suite 329 s, 245 fixture estimates plus 9
-// synthetic ones written, so build_dashboard_report.py reads the same
-// file set as before. The scaling groups are left untouched.
+// tests/fixtures/err_bound_unsupported_combined.ubl existed to show the two
+// bounds that parsed but could not be enforced yet (a bound on a type alias
+// parameter and on a method's own generic parameter, each TYPE-129). Both are
+// built in S3c, so the file now checks clean and its header ("sema FAIL")
+// is wrong. The new fixtures err_alias_bound_isolated and
+// err_method_generic_isolated replace it. A replacements archive cannot
+// delete a file, so the removal is this patch.
 
 @CONFIG(
   version    -> "1.0.0",
@@ -22,18 +18,12 @@
 )
 
 @QUICKFUNCS(
-  ~patch_insert_after<object>(_path, _anchor, _content) {
-    return { path = _path, op = "insert_after", anchor = _anchor, content = _content }
-  }
-
-  ~patch_insert_before<object>(_path, _anchor, _content) {
-    return { path = _path, op = "insert_before", anchor = _anchor, content = _content }
+  ~delete_file<object>(_path) {
+    return { path = _path }
   }
 )
 
 @DATA(
-  patch_files::
-    patch_insert_after("crates/rd_parser/benches/pipeline_bench.rs", "benchmark_group(\"fixtures_lex_parse\")", "    // One benchmark per fixture, so the cost of this group is the fixture\n    // count times the cost of one benchmark. Criterion's defaults (3 s\n    // warm-up, 5 s measurement, 100 samples, 100,000 resamples) cost 8 s or\n    // more per fixture; at 245 fixtures that is over half an hour, and the\n    // Deploy Site job (30 minute limit) was cancelled on every push. One\n    // fixture is a fraction of a millisecond of work (4 to 241 us measured),\n    // so a short window gives a usable estimate and the group takes about\n    // four minutes.\n    group.sample_size(10);\n    group.warm_up_time(Duration::from_millis(100));\n    group.measurement_time(Duration::from_millis(300));\n    group.nresamples(10_000);\n")
-
-    patch_insert_before("docs/ubel_stratum.md", "`.github/workflows/run-replacements.yml`: applies a `.mdix/replacements`", "  The benchmark step cost grows with the fixture count, because\n  `bench_fixtures` in `crates/rd_parser/benches/pipeline_bench.rs`\n  registers one criterion benchmark per fixture. With criterion's default\n  timing (3 s warm-up, 5 s measurement) a fixture took about 14 s when\n  measured locally, so at 245 fixtures every push run reached the 30\n  minute job limit and was cancelled, while the runs that looked green\n  were manual dispatches with `run_benchmarks` set to `false`. The\n  fixtures group now uses 10 samples, a 100 ms warm-up, a 300 ms\n  measurement and 10,000 resamples (about 1 s per fixture), and the whole\n  suite finishes in about five and a half minutes. Estimates from the\n  short window are less precise than from a full-length run, so a small\n  difference between two runs is noise.\n")
+  delete_files::
+    delete_file("tests/fixtures/err_bound_unsupported_combined.ubl")
 )
