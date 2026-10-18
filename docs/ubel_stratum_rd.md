@@ -177,6 +177,58 @@ recorded shape, and through the interpreter where a test needs runtime values.
   reaches the scopes built from a trait's own parameters; a conflicting bound
   must not also fail every call).
 
+### `tests/method_generics.rs`
+
+**What it does:** Integration tests for a method's own generic parameters and for
+bounds on a type alias parameter, slice S3c (66 tests). Source goes through
+`check_source` for the stage, codes, messages and positions, and through the
+interpreter where a test needs runtime values.
+
+**Decisions:**
+- Alias bounds: declared without error, met and unmet at a use (one `TYPE-126`, at
+  the use, once for an annotation), a bound with a trait argument, a name that is
+  not a trait, a wrong argument count, conflicting bounds, the same bound twice,
+  a use through another alias, a use inside a generic function with and without
+  the bound, a two-parameter alias where only one is bounded, an unbounded alias of
+  a bounded struct, and the value behaving as the aliased type at run time.
+- Own parameters: each call chooses its own types, a wrong result type, a wrong
+  argument count, a bound met and unmet (reported at the argument for that
+  parameter, once for two arguments of the same parameter), a bound with a trait
+  argument, a bound argument the impl decides, a bound naming an earlier own
+  parameter, an associated function, `extend` and inherent `impl` methods, a
+  generic struct (the own parameter after the struct's, a bounded one asked at its
+  own index, a receiver with too few or too many type arguments not shifting it),
+  a method taking a function, bounds that build on a supertrait, the body
+  (`TYPE-101` naming the parameter, `TYPE-130`, `TYPE-131`, an operator bound), and
+  the checks at the declaration (`TYPE-122`, `TYPE-108`, `TYPE-134`, a repeated
+  bound, a bad name beside a real bound reported once per declaration).
+- Generic methods in traits: an impl that repeats the method (with renamed
+  parameters) and runs, one that drops the parameters, drops a bound, adds a bound,
+  adds a parameter or has other trait arguments in a bound (`TYPE-125` with the
+  exact text), the order of bounds not mattering, a generic trait with a generic
+  method, a bound that names the trait's parameter, `Self` beside an own parameter,
+  a default body with its own bounds, calls through a bounded parameter and in the
+  qualified form (types chosen per call, bound checked), an enum implementor, and
+  an impl body checked against its own parameters.
+- Six fixtures sit beside it: `ok_alias_bound_isolated`, `err_alias_bound_isolated`,
+  `ok_method_generic_isolated`, `err_method_generic_isolated`,
+  `ok_method_generic_combined` and `err_method_generic_combined`. The two tests in
+  `tests/bounds.rs` that pinned the two limits as `TYPE-129` now assert that a
+  bound there is declared without error. `err_bound_unsupported_combined` no longer
+  has anything to show and is removed by the patch that comes with the delivery.
+- Mutation-checked: 45 mutations of the alias bound registration and use, the own
+  parameter scope, the bound checks, the instantiation per call, the renumbering of
+  a trait method's parameters, the impl comparison, the signature text, the call
+  sites and the display of parameter names. The first pass left nine alive and one
+  did not build. Six needed tests (a bad name beside a real bound must not be
+  reported twice; a receiver with too few or too many type arguments must not shift
+  the method's own parameters; a bounded own parameter on a generic struct is asked
+  at its own index; a bound that names the trait's parameter; a signature that names
+  `Self` beside an own parameter). Three changed nothing a program can observe and
+  were removed: an early `continue` for a parameter without bounds, and two guards
+  in `instantiate_trait_shape`, whose argument list always has the trait's arity
+  (now a debug assertion). All 42 that remain are caught.
+
 ### `prelude.rs`, `tests/prelude_traits.rs`
 
 **What it does:** `prelude.rs` holds the declarations every program sees

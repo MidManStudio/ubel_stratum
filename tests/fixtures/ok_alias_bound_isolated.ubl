@@ -1,0 +1,66 @@
+// tests/fixtures/ok_alias_bound_isolated.ubl
+// A bound written on a type alias's parameter holds at every use of the
+// alias, as the bound of a struct does. A type that meets it is accepted, so
+// is a parameter of an enclosing function that has the same bound, and so is
+// a use through another alias. A bound can carry trait arguments
+// (`T: Convert<int>`). The alias stays transparent: a value behaves as the
+// aliased type.
+// Expected: sema OK, interpret OK.
+
+trait Show {
+    fn show(self) string
+}
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+struct A {
+    n: int,
+}
+
+struct Celsius {
+    deg: int,
+}
+
+impl Show for A {
+    fn show(self) string { return "A" }
+}
+
+impl Convert<int> for Celsius {
+    fn convert(self) int { return self.deg * 2 }
+}
+
+struct W<T> {
+    x: T,
+}
+
+type Shown<T: Show> = W<T>
+type Converting<T: Convert<int>> = W<T>
+type Outer<U: Show> = Shown<U>
+
+fn describe(w: Shown<A>) string {
+    return w.x.show()
+}
+
+fn total(w: Converting<Celsius>) int {
+    return w.x.convert()
+}
+
+fn generic_describe<T: Show>(w: Shown<T>) string {
+    return w.x.show()
+}
+
+fn nested(w: Outer<A>) string {
+    return w.x.show()
+}
+
+fn main() void {
+    let a: Shown<A> = W { x = A { n = 1 } }
+    let c: Converting<Celsius> = W { x = Celsius { deg = 21 } }
+    assert(describe(a) == "A", "a bound met by a struct")
+    assert(total(c) == 42, "a bound with a trait argument")
+    assert(generic_describe(a) == "A", "a parameter with the same bound")
+    assert(nested(a) == "A", "a use through another alias")
+    println(total(c))
+}

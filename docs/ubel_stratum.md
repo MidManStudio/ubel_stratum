@@ -1473,3 +1473,24 @@ the only changes were the new files. The mutation pass is described under
 other two changing nothing a program can observe. Every line it wrote was checked
 for em dashes and first or second person.
 
+A twentieth delivery (traits slice S3c) touched `sema/type_infer.rs` only in code:
+no AST, parser or interpreter change. `MethodShape` gained `MethodGenerics { base,
+own }`, a method's own parameters are scoped (`push_own_generic_scope`) after the
+enclosing declaration's, `collect_method_sig` and `shape_of_sig` take that base,
+every call instantiates fresh variables for them (`instantiate_method`) and raises
+their bounds (`require_method_bounds`) on all four call paths, `instantiate_trait_shape`
+renumbers a trait method's own parameters from zero, `shapes_match` compares their
+count and bounds, `expand_alias` raises an alias's bounds, `check_bound_list` is
+shared by declarations and methods, and `display_type` writes a type parameter by
+name while its scope is in force. It added `tests/method_generics.rs` (66 tests),
+six fixtures (`ok_alias_bound_isolated`, `err_alias_bound_isolated`,
+`ok_method_generic_isolated`, `err_method_generic_isolated`,
+`ok_method_generic_combined`, `err_method_generic_combined`) and changed two tests
+in `tests/bounds.rs`. `err_bound_unsupported_combined` has nothing left to show and
+is removed by the patch. The workspace has 750 passing tests. The fixture sweep went
+from 251 lexed, 243 parsed and 132 through sema to 256, 248 and 135, with 134
+interpreted (`tests/fixtures/random.ubl` still has no `fn main`). The mutation pass
+is described under `tests/method_generics.rs` in `docs/ubel_stratum_rd.md`: 45
+mutations, 42 caught and 3 on code that proved dead and was removed. Every line it
+wrote was checked for em dashes and first or second person.
+

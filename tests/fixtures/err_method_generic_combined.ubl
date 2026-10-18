@@ -1,0 +1,69 @@
+// tests/fixtures/err_method_generic_combined.ubl
+// Generic methods in traits. An impl has to repeat the trait's method
+// exactly: leaving out the parameters, leaving out a bound, adding a bound,
+// and declaring an extra parameter each give TYPE-125. A bound on a trait
+// method that is not a trait is reported once. A call is checked through a
+// bounded parameter and in the qualified form: an argument that misses the
+// method's bound, and a result used as the wrong type.
+// Expected: sema FAIL (NotATrait TYPE-122 once, TraitMethodSignatureMismatch
+// TYPE-125 four times, UnsatisfiedBound TYPE-126 twice, TypeMismatch TYPE-101
+// once).
+
+trait Show {
+    fn show(self) string
+}
+
+trait Render {
+    fn lift<U>(self, u: U) U
+    fn wrap<U: Show>(self, u: U) string
+}
+
+trait Bad {
+    fn go<U: Nope>(self, u: U) int
+}
+
+struct P1 {
+    k: int,
+}
+
+struct P2 {
+    k: int,
+}
+
+struct P3 {
+    k: int,
+}
+
+struct P4 {
+    k: int,
+}
+
+impl Render for P1 {
+    fn lift(self, u: int) int { return u }
+    fn wrap<V: Show>(self, v: V) string { return v.show() }
+}
+
+impl Render for P2 {
+    fn lift<V>(self, v: V) V { return v }
+    fn wrap<V>(self, v: V) string { return "" }
+}
+
+impl Render for P3 {
+    fn lift<V: Show>(self, v: V) V { return v }
+    fn wrap<V: Show>(self, v: V) string { return v.show() }
+}
+
+impl Render for P4 {
+    fn lift<V, X>(self, v: V) V { return v }
+    fn wrap<V: Show>(self, v: V) string { return v.show() }
+}
+
+fn use_it<T: Render>(r: T) void {
+    println(r.wrap(5))
+    let s: string = r.lift(5)
+}
+
+fn main() void {
+    let p = P1 { k = 1 }
+    println(Render.wrap(p, 5))
+}

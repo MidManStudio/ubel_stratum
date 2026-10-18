@@ -559,22 +559,24 @@ fn main() void { println(top(A { v = 7 })) }
 }
 
 #[test]
-fn a_bound_on_a_type_alias_parameter_is_type_129() {
+fn a_bound_on_a_type_alias_parameter_is_declared_without_error() {
+    // Enforced at each use: see tests/method_generics.rs.
     let src = prog(r#"type Pair<T: Shape> = List<T>
 fn main() void { println(1) }
 "#);
-    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-129"]));
+    assert_eq!(codes(&src), (Stage::Clean, vec![]));
 }
 
 #[test]
-fn a_bound_on_a_methods_own_generic_parameter_is_type_129() {
+fn a_bound_on_a_methods_own_generic_parameter_is_declared_without_error() {
+    // Enforced at each call: see tests/method_generics.rs.
     let src = prog(r#"struct H {
     v: int,
     fn m<U: Shape>(self, u: U) int { return 1 }
 }
 fn main() void { println(1) }
 "#);
-    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-129"]));
+    assert_eq!(codes(&src), (Stage::Clean, vec![]));
 }
 
 #[test]

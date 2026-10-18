@@ -1,0 +1,76 @@
+// tests/fixtures/ok_method_generic_isolated.ubl
+// A method can declare generic parameters of its own, with bounds, wherever
+// a method can be written: inside a struct, in an `extend` block, in an
+// inherent `impl`, as an associated function, and on a generic struct beside
+// the struct's own parameter. Every call chooses its own types, a bound is
+// met by the argument, a bound with a trait argument can have the argument
+// decided by the impl (`conv` called with a Celsius gives an int), and inside
+// the body the bound's methods are available.
+// Expected: sema OK, interpret OK.
+
+trait Show {
+    fn show(self) string
+}
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+struct A {
+    n: int,
+}
+
+struct Celsius {
+    deg: int,
+}
+
+impl Show for A {
+    fn show(self) string { return "A" }
+}
+
+impl Convert<int> for Celsius {
+    fn convert(self) int { return self.deg * 2 }
+}
+
+struct Box {
+    v: int,
+    fn pick<U>(self, x: U) U { return x }
+    fn put<U: Show>(self, x: U) string { return x.show() }
+    fn make<U: Show>(x: U) string { return x.show() }
+    fn via<U: Convert<int>>(self, x: U) int { return x.convert() + self.v }
+    fn conv<U: Convert<V>, V>(self, x: U) V { return x.convert() }
+}
+
+extend Box {
+    fn render<U: Show>(self, x: U) string { return "[" + x.show() + "]" }
+}
+
+impl Box {
+    fn twice<U>(self, x: U) U { return self.pick(x) }
+}
+
+struct Pair<T> {
+    first: T,
+    fn both<U>(self, u: U, t: T) U { return u }
+    fn keep<U: Show>(self, u: U) T { return self.first }
+}
+
+fn main() void {
+    let b = Box { v = 1 }
+    let n: int = b.pick(5)
+    let s: string = b.pick("five")
+    assert(n == 5, "an own parameter takes int")
+    assert(s == "five", "and string in the next call")
+    assert(b.put(A { n = 1 }) == "A", "a bound met")
+    assert(Box.make(A { n = 2 }) == "A", "an associated function")
+    assert(b.via(Celsius { deg = 4 }) == 9, "a bound with a trait argument")
+    let c: int = b.conv(Celsius { deg = 3 })
+    assert(c == 6, "the impl decides the argument")
+    assert(b.render(A { n = 3 }) == "[A]", "an extend block")
+    assert(b.twice("x") == "x", "an inherent impl calling a generic method")
+    let p = Pair { first = 7 }
+    let back: string = p.both("u", 3)
+    assert(back == "u", "own parameter after the struct's")
+    assert(p.keep(A { n = 4 }) == 7, "a bound beside the struct's parameter")
+    println(c)
+}

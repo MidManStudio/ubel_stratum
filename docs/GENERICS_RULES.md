@@ -1,8 +1,10 @@
 # Generics — Design & Implementation Notes
 
-**Status:** Implemented for structs, enums, and free functions. Not yet
-implemented: a struct/enum method's *own* extra generic params, trait
-bounds enforcement, `impl`/`extend` blocks on generic structs.
+**Status:** Implemented for structs, enums, and free functions. Since the
+traits slices (S1b to S3c) a method's *own* extra generic params and trait
+bounds are implemented too (see `docs/TRAITS_DESIGN.md`, "What S3c settled").
+Not yet implemented: `impl`/`extend` blocks that bind the target's parameter
+names.
 
 ---
 
@@ -132,10 +134,11 @@ access (`p.first`) substitutes using the *receiver's own* `Named { args,
 ## 3. Known gaps (real, not hidden)
 
 - **A method's own extra generic params** (beyond whatever the enclosing
-  struct/enum already declares) aren't substituted at call sites. No
-  current fixture needs this; `collect_method_sig` records the method's
-  own `generic_arity` but nothing currently allocates fresh `Var`s for it
-  at a call site the way free functions and struct associated-calls do.
+  struct/enum already declares) were not scoped or substituted at call sites
+  when this note was written; S3c builds both. The parameters are numbered
+  after the enclosing declaration's, `MethodShape` carries them as
+  `MethodGenerics`, and every call allocates fresh `Var`s for them
+  (`instantiate_method`).
 - **`impl`/`extend` blocks on a generic struct** aren't wired to that
   struct's own generic scope — `current_generic_params` is only pushed
   around a struct's *inline* members. No current fixture uses `impl`/

@@ -287,6 +287,38 @@ struct MethodShape {
     params:      Vec<TypeId>,
     return_type: TypeId,
     is_fallible: bool,
+    /// The method's own generic parameters (`fn pick<U: Show>(self, x: U)`).
+    generics:    MethodGenerics,
+}
+
+/// One generic parameter a method declares itself, with the bounds written
+/// on it. The bounds are as written (not widened by supertraits) and are in
+/// terms of the same `Param` numbering as the method's signature.
+#[derive(Clone)]
+struct OwnParam {
+    name:   String,
+    bounds: Vec<BoundRef>,
+}
+
+/// The generic parameters a method declares itself. `base` is the index of
+/// the first one: the parameters of the declaration around the method come
+/// first (a struct's, a trait's followed by its abstract `Self`), so the
+/// method's own `U` is `Param(base)`, then `Param(base + 1)`, and so on. A
+/// method without parameters of its own has an empty `own`.
+#[derive(Clone, Default)]
+struct MethodGenerics {
+    base: usize,
+    own:  Vec<OwnParam>,
+}
+
+/// A method signature instantiated for one call: the parameter and return
+/// types with the receiver's arguments substituted and a fresh inference
+/// variable for each of the method's own parameters. `env` is what was
+/// substituted, in `Param` order, so the method's bounds can be applied.
+struct MethodInst {
+    params:      Vec<TypeId>,
+    return_type: TypeId,
+    env:         Vec<TypeId>,
 }
 
 /// What a `type Name<T...> = Target` expands to. `target` is written in
@@ -525,6 +557,10 @@ struct InferCtx<'a> {
     /// Populated once per struct by `collect_struct_sig`. Same `Param`-
     /// placeholder treatment as `struct_fields`.
     struct_methods:   HashMap<DefId, Vec<(String, MethodShape)>>,
+    /// The generic parameters of every method that declares some, by the
+    /// method's own definition. Filled by `collect_method_sig`; read where a
+    /// shape is rebuilt from the method's function type.
+    method_generics:  HashMap<DefId, MethodGenerics>,
     /// Populated once per struct by `collect_struct_sig`, alongside
     /// `check_derive_attrs`'s own validation of the same `@derive(...)`
     /// list. Sema's own copy, not shared with `Interpreter::
@@ -607,6 +643,7 @@ impl<'a> InferCtx<'a> {
             callee_field_pending:   false,
             struct_fields:    HashMap::new(),
             struct_methods:   HashMap::new(),
+            method_generics:  HashMap::new(),
             struct_derives:   HashMap::new(),
             generic_arity:    HashMap::new(),
             current_tier:     TierAnnotation::High,
@@ -659,6 +696,53 @@ impl<'a> InferCtx<'a> {
     fn pop_generic_scope(&mut self, prev: GenericScope) {
         self.current_generic_params = prev.names;
         self.current_bounds = prev.bounds;
+    }
+
+    /// Bring a method's own generic parameters into scope on top of the ones
+    /// already there (the struct's, the trait's): `U` is `Param(base)`, the
+    /// next is `Param(base + 1)`. Each parameter's declared bounds, with the
+    /// traits they build on, are in force for its type. A method without
+    /// parameters of its own changes nothing and returns `None`. Pairs with
+    /// `pop_own_generic_scope`.
+    fn push_own_generic_scope(&mut self, params: &[GenericParam], base: usize) -> Option<GenericScope> {
+        if params.is_empty() { return None; }
+        let prev = GenericScope {
+            names:  self.current_generic_params.clone(),
+            bounds: self.current_bounds.clone(),
+        };
+        // The names go in first: a bound's arguments may mention any
+        // parameter in scope (`fn m<U: Convert<V>, V>`).
+        for (j, gp) in params.iter().enumerate() {
+            let ty = self.ctx.types.intern(SemaType::Param(base + j));
+            self.current_generic_params.insert(gp.name.to_string(), ty);
+        }
+        for (j, gp) in params.iter().enumerate() {
+            if gp.bounds.is_empty() { continue; }
+            let ty = self.ctx.types.intern(SemaType::Param(base + j));
+            let declared = self.declared_bounds(gp.bounds);
+            if !declared.is_empty() {
+                let widened = self.expand_supertraits(declared, ty);
+                self.current_bounds.insert(ty, widened);
+            }
+        }
+        Some(prev)
+    }
+
+    fn pop_own_generic_scope(&mut self, prev: Option<GenericScope>) {
+        if let Some(prev) = prev { self.pop_generic_scope(prev); }
+    }
+
+    /// The generic parameters a method declares, with their bounds checked
+    /// and recorded. Runs in the method's own scope, once per declaration:
+    /// the bound names, the argument counts and conflicting bounds are
+    /// reported here, the same checks a generic function's bounds get.
+    fn method_generics_of<'ast>(&mut self, params: &[GenericParam<'ast>], base: usize) -> MethodGenerics {
+        let mut own: Vec<OwnParam> = Vec::with_capacity(params.len());
+        for gp in params {
+            let bounds = self.check_bound_list(gp, true);
+            own.push(OwnParam { name: gp.name.to_string(), bounds });
+        }
+        MethodGenerics { base, own }
     }
 
     /// Build a fresh instantiation of a struct/enum def: `Named { def,
@@ -1593,28 +1677,10 @@ impl<'a> InferCtx<'a> {
                     if let Some(def) = self.ctx.top_level_def(s.name) {
                         self.register_decl_bounds(def, s.generic_params);
                     }
-                    for member in s.members {
-                        if let StructMember::Method(m) = member {
-                            self.reject_method_generic_bounds(m.generic_params);
-                        }
-                    }
-                }
-                Item::Impl(i) => {
-                    for m in i.methods { self.reject_method_generic_bounds(m.generic_params); }
-                }
-                Item::Extend(x) => {
-                    for m in x.methods { self.reject_method_generic_bounds(m.generic_params); }
                 }
                 Item::Trait(t) => {
                     if let Some(def) = self.ctx.top_level_def(t.name) {
                         self.register_decl_bounds(def, t.generic_params);
-                    }
-                    for it in t.items {
-                        match it {
-                            TraitItem::MethodSig(sig) => self.reject_method_generic_bounds(sig.generic_params),
-                            TraitItem::DefaultMethod(m) => self.reject_method_generic_bounds(m.generic_params),
-                            _ => {}
-                        }
                     }
                 }
                 Item::Enum(e) => {
@@ -1623,29 +1689,11 @@ impl<'a> InferCtx<'a> {
                     }
                 }
                 Item::TypeAlias(a) => {
-                    for gp in a.generic_params {
-                        if !gp.bounds.is_empty() {
-                            self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                                feature: "a bound on a type alias parameter",
-                                span:    gp.span,
-                            });
-                        }
+                    if let Some(def) = self.ctx.top_level_def(a.name) {
+                        self.register_decl_bounds(def, a.generic_params);
                     }
                 }
                 _ => {}
-            }
-        }
-    }
-
-    /// A method's own generic parameters are not scoped in sema yet (their
-    /// types are unknown), so a bound written on one could not be enforced.
-    fn reject_method_generic_bounds(&mut self, params: &[GenericParam]) {
-        for gp in params {
-            if !gp.bounds.is_empty() {
-                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                    feature: "a bound on a method's own generic parameter",
-                    span:    gp.span,
-                });
             }
         }
     }
@@ -1736,6 +1784,11 @@ impl<'a> InferCtx<'a> {
                     }
                 }
                 Item::Trait(t) => self.fill_trait_bound_args(t),
+                Item::TypeAlias(a) => {
+                    if let Some(def) = self.ctx.top_level_def(a.name) {
+                        self.fill_decl_bound_args(def, a.generic_params);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1778,33 +1831,56 @@ impl<'a> InferCtx<'a> {
     /// the scope the caller has pushed, and store the arguments.
     fn fill_param_bound_args(&mut self, def: DefId, params: &[GenericParam]) {
         for (i, gp) in params.iter().enumerate() {
-            let mut kept: Vec<BoundRef> = Vec::with_capacity(gp.bounds.len());
-            for b in gp.bounds {
-                let Ok(id) = self.resolve_trait_name(b.name) else { continue; };
-                let arity = self.trait_arity.get(&id).copied().unwrap_or(b.args.len());
-                self.check_trait_arg_count(b, arity);
-                let args = self.trait_arg_types(b.args, arity);
-                if let Some(first) = kept.iter().find(|k| k.trait_def == id) {
-                    let first_args = first.args.clone();
-                    let same = first_args.len() == args.len()
-                        && first_args.iter().zip(&args).all(|(x, y)| self.same_type(*x, *y));
-                    if !same {
-                        let name = b.name.to_string();
-                        let first_text = self.trait_ref_text(id, &first_args);
-                        let this_text  = self.trait_ref_text(id, &args);
-                        self.errors.add_type_error(TypeError::ConflictingBounds {
-                            param: gp.name.to_string(), trait_name: name,
-                            first: first_text, second: this_text, span: b.span,
-                        });
-                    }
-                    continue;
-                }
-                kept.push(BoundRef { trait_def: id, args });
-            }
+            let kept = self.check_bound_list(gp, false);
             if let Some(per_param) = self.generic_bounds.get_mut(&def) {
                 if let Some(slot) = per_param.get_mut(i) { *slot = kept; }
             }
         }
+    }
+
+    /// Convert and check the bounds written on one generic parameter, in
+    /// the scope the caller has pushed: a wrong argument count
+    /// (`GenericArgCountMismatch`) and two bounds that name the same trait
+    /// with different arguments (`ConflictingBounds`) are reported, and the
+    /// bounds that stand are returned. The same trait with the same
+    /// arguments twice is one bound. A name that is not a trait is reported
+    /// only when `report_names` is set: a declaration's bound names are
+    /// reported earlier, by `register_decl_bounds`.
+    fn check_bound_list(&mut self, gp: &GenericParam, report_names: bool) -> Vec<BoundRef> {
+        let mut kept: Vec<BoundRef> = Vec::with_capacity(gp.bounds.len());
+        for b in gp.bounds {
+            let id = match self.resolve_trait_name(b.name) {
+                Ok(id) => id,
+                Err(found) => {
+                    if report_names {
+                        self.errors.add_type_error(TypeError::NotATrait {
+                            name: b.name.to_string(), found, span: gp.span,
+                        });
+                    }
+                    continue;
+                }
+            };
+            let arity = self.trait_arity.get(&id).copied().unwrap_or(b.args.len());
+            self.check_trait_arg_count(b, arity);
+            let args = self.trait_arg_types(b.args, arity);
+            if let Some(first) = kept.iter().find(|k| k.trait_def == id) {
+                let first_args = first.args.clone();
+                let same = first_args.len() == args.len()
+                    && first_args.iter().zip(&args).all(|(x, y)| self.same_type(*x, *y));
+                if !same {
+                    let name = b.name.to_string();
+                    let first_text = self.trait_ref_text(id, &first_args);
+                    let this_text  = self.trait_ref_text(id, &args);
+                    self.errors.add_type_error(TypeError::ConflictingBounds {
+                        param: gp.name.to_string(), trait_name: name,
+                        first: first_text, second: this_text, span: b.span,
+                    });
+                }
+                continue;
+            }
+            kept.push(BoundRef { trait_def: id, args });
+        }
+        kept
     }
 
     /// Report a trait written with the wrong number of arguments.
@@ -2074,17 +2150,27 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    fn method_shape_of_fn_type(&self, has_self: bool, fn_ty: TypeId) -> Option<MethodShape> {
+    fn method_shape_of_fn_type(&self, has_self: bool, fn_ty: TypeId, generics: MethodGenerics) -> Option<MethodShape> {
         match self.ctx.types.get(fn_ty).clone() {
             SemaType::Function { params, return_type, is_fallible, .. } =>
-                Some(MethodShape { has_self, params, return_type, is_fallible }),
+                Some(MethodShape { has_self, params, return_type, is_fallible, generics }),
             _ => None,
         }
     }
 
+    /// The generic parameters recorded for the method declared at `span`
+    /// (none when it declares none).
+    fn generics_at(&self, span: Span) -> MethodGenerics {
+        self.ctx.resolutions.get(span)
+            .and_then(|d| self.method_generics.get(&d))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The shape of a required method signature (no body), with `Self`
     /// already resolved to the trait's abstract `Self` parameter.
-    fn shape_of_sig<'ast>(&mut self, sig: &MethodSig<'ast>) -> MethodShape {
+    fn shape_of_sig<'ast>(&mut self, sig: &MethodSig<'ast>, base: usize) -> MethodShape {
+        let scope = self.push_own_generic_scope(sig.generic_params, base);
         let params: Vec<TypeId> = sig.params.iter()
             .filter_map(|p| match p.kind {
                 ParamKind::Named { ty, .. } | ParamKind::Discard { ty } =>
@@ -2093,7 +2179,9 @@ impl<'a> InferCtx<'a> {
             })
             .collect();
         let (return_type, is_fallible) = self.return_type_to_sema(sig.return_type.as_ref());
-        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible }
+        let generics = self.method_generics_of(sig.generic_params, base);
+        self.pop_own_generic_scope(scope);
+        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible, generics }
     }
 
     /// Collect a trait: its required signatures and its default methods,
@@ -2113,14 +2201,14 @@ impl<'a> InferCtx<'a> {
         for it in t.items {
             match it {
                 TraitItem::MethodSig(sig) => {
-                    let shape = self.shape_of_sig(sig);
+                    let shape = self.shape_of_sig(sig, arity + 1);
                     methods.push(TraitMethodInfo {
                         name: sig.name.to_string(), shape, has_default: false,
                     });
                 }
                 TraitItem::DefaultMethod(m) => {
-                    let fn_ty = self.collect_method_sig(m);
-                    if let Some(shape) = self.method_shape_of_fn_type(has_self_param(m.params), fn_ty) {
+                    let (fn_ty, generics) = self.collect_method_sig(m, arity + 1);
+                    if let Some(shape) = self.method_shape_of_fn_type(has_self_param(m.params), fn_ty, generics) {
                         methods.push(TraitMethodInfo {
                             name: m.name.to_string(), shape, has_default: true,
                         });
@@ -2157,7 +2245,7 @@ impl<'a> InferCtx<'a> {
         self.current_bounds.insert(self_param, self_bounds);
         for it in t.items {
             if let TraitItem::DefaultMethod(m) = it {
-                self.infer_method_body(m);
+                self.infer_method_body(m, arity + 1);
             }
         }
         self.pop_generic_scope(prev_generics);
@@ -2172,11 +2260,38 @@ impl<'a> InferCtx<'a> {
     fn instantiate_trait_shape(&mut self, shape: &MethodShape, self_ty: TypeId, trait_args: &[TypeId]) -> MethodShape {
         let mut env: Vec<TypeId> = trait_args.to_vec();
         env.push(self_ty);
+        // The method's own parameters follow the trait's parameters and
+        // `Self`. Once those are replaced the own ones are renumbered from
+        // zero, which is where an implementing type's method (or a call)
+        // expects them.
+        if !shape.generics.own.is_empty() {
+            // Every trait argument list has the trait's arity (a count
+            // mistake is reported where the trait is named and the list is
+            // made to fit), so `Self` is exactly at the method's base.
+            debug_assert_eq!(env.len(), shape.generics.base);
+            for j in 0..shape.generics.own.len() {
+                env.push(self.ctx.types.intern(SemaType::Param(j)));
+            }
+        }
         let params: Vec<TypeId> = shape.params.iter()
             .map(|p| self.substitute(*p, &env))
             .collect();
         let return_type = self.substitute(shape.return_type, &env);
-        MethodShape { has_self: shape.has_self, params, return_type, is_fallible: shape.is_fallible }
+        let own: Vec<OwnParam> = shape.generics.own.iter()
+            .map(|o| OwnParam {
+                name:   o.name.clone(),
+                bounds: o.bounds.iter()
+                    .map(|b| BoundRef {
+                        trait_def: b.trait_def,
+                        args:      b.args.iter().map(|a| self.substitute(*a, &env)).collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        MethodShape {
+            has_self: shape.has_self, params, return_type, is_fallible: shape.is_fallible,
+            generics: MethodGenerics { base: 0, own },
+        }
     }
 
     /// Two types are the same when they print the same; an unknown on
@@ -2186,21 +2301,61 @@ impl<'a> InferCtx<'a> {
         sa == sb || [&sa, &sb].iter().any(|s| s.contains("<unknown>") || s.contains("<e>"))
     }
 
+    /// Two signatures are the same when everything in them is: the shape of
+    /// the parameters and the result and, for a generic method, how many
+    /// parameters it declares of its own and the bounds on each. An impl
+    /// repeats its trait's method exactly (the own parameters are compared by
+    /// position, so their names may differ).
     fn shapes_match(&self, a: &MethodShape, b: &MethodShape) -> bool {
         a.has_self == b.has_self
             && a.is_fallible == b.is_fallible
             && a.params.len() == b.params.len()
             && a.params.iter().zip(&b.params).all(|(x, y)| self.same_type(*x, *y))
             && self.same_type(a.return_type, b.return_type)
+            && a.generics.own.len() == b.generics.own.len()
+            && a.generics.own.iter().zip(&b.generics.own)
+                .all(|(x, y)| self.same_bounds(&x.bounds, &y.bounds))
     }
 
-    /// A signature as written in a diagnostic: `fn(self, int) string`.
+    /// The same set of bounds, in any order: each trait once, with the same
+    /// arguments.
+    fn same_bounds(&self, a: &[BoundRef], b: &[BoundRef]) -> bool {
+        a.len() == b.len()
+            && a.iter().all(|x| b.iter().any(|y| {
+                x.trait_def == y.trait_def
+                    && x.args.len() == y.args.len()
+                    && x.args.iter().zip(&y.args).all(|(p, q)| self.same_type(*p, *q))
+            }))
+    }
+
+    /// A signature as written in a diagnostic: `fn(self, int) string`, with
+    /// the method's own parameters ahead of the list when it has any:
+    /// `fn<U: Show>(self, U) U`.
     fn shape_text(&self, s: &MethodShape) -> String {
+        let show = |ty: TypeId| -> String {
+            let mut text = self.display_type(ty);
+            for (j, o) in s.generics.own.iter().enumerate() {
+                text = text.replace(&format!("<generic param #{}>", s.generics.base + j), &o.name);
+            }
+            text
+        };
         let mut parts: Vec<String> = Vec::with_capacity(s.params.len() + 1);
         if s.has_self { parts.push("self".to_string()); }
-        parts.extend(s.params.iter().map(|p| self.display_type(*p)));
+        parts.extend(s.params.iter().map(|p| show(*p)));
         let fallible = if s.is_fallible { " (fallible)" } else { "" };
-        format!("fn({}) {}{}", parts.join(", "), self.display_type(s.return_type), fallible)
+        let header = if s.generics.own.is_empty() {
+            String::new()
+        } else {
+            let own: Vec<String> = s.generics.own.iter().map(|o| {
+                if o.bounds.is_empty() { return o.name.clone(); }
+                let bs: Vec<String> = o.bounds.iter()
+                    .map(|b| self.trait_ref_text(b.trait_def, &b.args))
+                    .collect();
+                format!("{}: {}", o.name, bs.join(" + "))
+            }).collect();
+            format!("<{}>", own.join(", "))
+        };
+        format!("fn{}({}) {}{}", header, parts.join(", "), show(s.return_type), fallible)
     }
 
     /// Put one trait-supplied method into `target`'s dispatch table. An
@@ -2296,7 +2451,7 @@ impl<'a> InferCtx<'a> {
                         let fn_ty = self.ctx.resolutions.get(m.span)
                             .and_then(|d| self.ctx.def_type(d));
                         let found = fn_ty.and_then(|t|
-                            self.method_shape_of_fn_type(has_self_param(m.params), t));
+                            self.method_shape_of_fn_type(has_self_param(m.params), t, self.generics_at(m.span)));
                         if let Some(found) = found {
                             if !self.shapes_match(&expected, &found) {
                                 self.errors.add_type_error(TypeError::TraitMethodSignatureMismatch {
@@ -2331,6 +2486,49 @@ impl<'a> InferCtx<'a> {
                         span:       m.span,
                     });
                 }
+            }
+        }
+    }
+
+    /// A method's signature for one call. The receiver's type arguments
+    /// (`recv_args`, as many as the declaration around the method has) come
+    /// first in `Param` order, then a fresh inference variable for each
+    /// parameter the method declares itself, so every call chooses its own.
+    fn instantiate_method(&mut self, m: &MethodShape, recv_args: &[TypeId]) -> MethodInst {
+        let mut env: Vec<TypeId> = recv_args.to_vec();
+        if !m.generics.own.is_empty() {
+            while env.len() < m.generics.base { env.push(self.unknown()); }
+            env.truncate(m.generics.base);
+            for _ in 0..m.generics.own.len() { env.push(self.fresh_var()); }
+        }
+        let params: Vec<TypeId> = m.params.iter().map(|p| self.substitute(*p, &env)).collect();
+        let return_type = self.substitute(m.return_type, &env);
+        MethodInst { params, return_type, env }
+    }
+
+    /// The bounds a method puts on its own generic parameters, as one
+    /// obligation each for this call. Reported at the first argument whose
+    /// declared type is exactly that parameter, at the call itself when
+    /// there is none, as for a generic function. `args` are the call's
+    /// arguments without the receiver. Called after the arguments are
+    /// unified, so a parameter they decide is known.
+    fn require_method_bounds<'ast>(&mut self, m: &MethodShape, inst: &MethodInst, args: &[Arg<'ast>], call_span: Span) {
+        for (j, own) in m.generics.own.iter().enumerate() {
+            let idx = m.generics.base + j;
+            let Some(&fresh) = inst.env.get(idx) else { continue; };
+            let at = m.params.iter()
+                .position(|p| matches!(self.ctx.types.get(*p), SemaType::Param(k) if *k == idx))
+                .and_then(|pos| args.get(pos))
+                .map(|a| match &a.kind {
+                    ArgKind::Positional(e)       => e.span,
+                    ArgKind::Named { value, .. } => value.span,
+                })
+                .unwrap_or(call_span);
+            for b in &own.bounds {
+                let applied: Vec<TypeId> = b.args.iter()
+                    .map(|t| self.substitute(*t, &inst.env))
+                    .collect();
+                self.require_bound_args(fresh, b.trait_def, applied, at);
             }
         }
     }
@@ -2398,11 +2596,13 @@ impl<'a> InferCtx<'a> {
             }
             1 => {
                 let shape = self.instantiate_trait_shape(&found[0].1, receiver_ty, &found[0].2);
-                self.check_method_args(&shape.params, args, call_span);
+                let inst = self.instantiate_method(&shape, &[]);
+                self.check_method_args(&inst.params, args, call_span);
+                self.require_method_bounds(&shape, &inst, args, call_span);
                 // The interpreter must run THIS trait's method for this call,
                 // not an inherent method the concrete type may also have.
                 self.ctx.trait_call_sites.insert(callee_span, found[0].0.clone());
-                shape.return_type
+                inst.return_type
             }
             _ => {
                 self.errors.add_type_error(TypeError::AmbiguousTraitMethod {
@@ -2461,8 +2661,10 @@ impl<'a> InferCtx<'a> {
         }
         let trait_args = self.trait_args_of(recv_ty, trait_def);
         let shape = self.instantiate_trait_shape(&tm.shape.clone(), recv_ty, &trait_args);
-        self.check_method_args(&shape.params, &args[1..], span);
-        shape.return_type
+        let inst = self.instantiate_method(&shape, &[]);
+        self.check_method_args(&inst.params, &args[1..], span);
+        self.require_method_bounds(&shape, &inst, &args[1..], span);
+        inst.return_type
     }
 
     /// The arguments `ty` has for `trait_def`: the impl's, for a user type,
@@ -2625,6 +2827,10 @@ impl<'a> InferCtx<'a> {
             });
             return self.unknown();
         }
+        // A bound written on the alias's parameter holds at every use, like
+        // the bound of a struct: `type Wrapped<T: Show> = W<T>` makes
+        // `Wrapped<int>` an error even though `W` itself asks nothing of `T`.
+        self.require_def_bounds(def_id, &args, span);
         let expanded = self.substitute(exp.target, &args);
         self.require_dict_keys_in(expanded, span);
         expanded
@@ -2665,13 +2871,15 @@ impl<'a> InferCtx<'a> {
                 Item::Impl(i)     => {
                     let prev = self.self_type;
                     self.self_type = self.self_type_for_target(i.target_type);
-                    for m in i.methods { self.collect_method_sig(m); }
+                    let base = self.target_arity(i.target_type);
+                    for m in i.methods { self.collect_method_sig(m, base); }
                     self.self_type = prev;
                 }
                 Item::Extend(x) => {
                     let prev = self.self_type;
                     self.self_type = self.self_type_for_target(x.target_type);
-                    for m in x.methods { self.collect_method_sig(m); }
+                    let base = self.target_arity(x.target_type);
+                    for m in x.methods { self.collect_method_sig(m, base); }
                     self.self_type = prev;
                 }
                 Item::Trait(t) => self.collect_trait_info(t),
@@ -2706,6 +2914,15 @@ impl<'a> InferCtx<'a> {
             }
             _ => None,
         }
+    }
+
+    /// How many generic parameters the type an `extend` or `impl` block is
+    /// written for declares: the number of parameters in scope before a
+    /// method's own (zero for a target that does not resolve).
+    fn target_arity<'ast>(&self, ty: &Type<'ast>) -> usize {
+        self.target_type_def_id(ty)
+            .and_then(|d| self.generic_arity.get(&d).copied())
+            .unwrap_or(0)
     }
 
     /// Phase 2a continued: append every `extend`/`impl`-block method's
@@ -2757,9 +2974,10 @@ impl<'a> InferCtx<'a> {
                 if let SemaType::Function { params, return_type, is_fallible, .. } =
                     self.ctx.types.get(fn_ty).clone()
                 {
+                    let generics = self.generics_at(m.span);
                     self.struct_methods.entry(def_id).or_default().push((
                         m.name.to_string(),
-                        MethodShape { has_self, params, return_type, is_fallible },
+                        MethodShape { has_self, params, return_type, is_fallible, generics },
                     ));
                 }
             }
@@ -2796,13 +3014,14 @@ impl<'a> InferCtx<'a> {
         fn_ty
     }
 
-    fn collect_method_sig<'ast>(&mut self, m: &MethodDecl<'ast>) -> TypeId {
-        // NOTE: a method's *own* extra generic params (beyond whatever
-        // struct-level scope the caller may already have pushed, see
-        // `collect_struct_sig`) aren't substituted at call sites yet;
-        // scoped out for now (GENERICS_RULES.md "Known gaps"). Pushing
-        // here would only matter for that unimplemented case, so it's
-        // deliberately skipped rather than half-wired.
+    /// A method's signature, with its own generic parameters (if any) in
+    /// scope on top of the declaration's: `base` is how many parameters that
+    /// declaration has, so the method's first own parameter is `Param(base)`.
+    /// Returns the function type and the generic parameters the method
+    /// declares; the latter are also recorded by the method's definition for
+    /// the pass that rebuilds shapes from function types.
+    fn collect_method_sig<'ast>(&mut self, m: &MethodDecl<'ast>, base: usize) -> (TypeId, MethodGenerics) {
+        let scope = self.push_own_generic_scope(m.generic_params, base);
         let mut param_tys: Vec<TypeId> = Vec::with_capacity(m.params.len());
         for p in m.params {
             if let ParamKind::Named { ty, .. } | ParamKind::Discard { ty } = p.kind {
@@ -2814,6 +3033,8 @@ impl<'a> InferCtx<'a> {
             }
         }
         let (ret_ty, is_fallible) = self.return_type_to_sema(m.return_type.as_ref());
+        let generics = self.method_generics_of(m.generic_params, base);
+        self.pop_own_generic_scope(scope);
         let fn_ty = self.ctx.types.insert(SemaType::Function {
             params: param_tys,
             return_type: ret_ty,
@@ -2822,8 +3043,11 @@ impl<'a> InferCtx<'a> {
         });
         if let Some(def_id) = self.ctx.resolutions.get(m.span) {
             self.ctx.set_def_type(def_id, fn_ty);
+            if !generics.own.is_empty() {
+                self.method_generics.insert(def_id, generics.clone());
+            }
         }
-        fn_ty
+        (fn_ty, generics)
     }
 
     fn collect_struct_sig<'ast>(&mut self, s: &StructDecl<'ast>) {
@@ -2860,7 +3084,7 @@ impl<'a> InferCtx<'a> {
                     fields.push((f.name.to_string(), field_ty));
                 }
                 StructMember::Method(m) => {
-                    let fn_ty = self.collect_method_sig(m);
+                    let (fn_ty, generics) = self.collect_method_sig(m, s.generic_params.len());
                     let has_self = m.params.first()
                         .map(|p| matches!(p.kind,
                             ParamKind::SelfVal | ParamKind::SelfMut
@@ -2870,7 +3094,7 @@ impl<'a> InferCtx<'a> {
                         self.ctx.types.get(fn_ty).clone()
                     {
                         methods.push((m.name.to_string(), MethodShape {
-                            has_self, params, return_type, is_fallible,
+                            has_self, params, return_type, is_fallible, generics,
                         }));
                     }
                 }
@@ -3412,7 +3636,8 @@ impl<'a> InferCtx<'a> {
         self.current_tier     = prev_tier;
     }
 
-    fn infer_method_body<'ast>(&mut self, m: &MethodDecl<'ast>) {
+    fn infer_method_body<'ast>(&mut self, m: &MethodDecl<'ast>, base: usize) {
+        let scope = self.push_own_generic_scope(m.generic_params, base);
         for param in m.params { self.seed_param(param); }
         let (ret_ty, is_fallible) = self.return_type_to_sema(m.return_type.as_ref());
         let prev_ret      = self.current_return.replace(ret_ty);
@@ -3422,6 +3647,7 @@ impl<'a> InferCtx<'a> {
         self.current_tier = m.tier;
         self.infer_block(&m.body);
         self.finish_body_checks();
+        self.pop_own_generic_scope(scope);
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
         self.current_tier     = prev_tier;
@@ -3479,7 +3705,7 @@ impl<'a> InferCtx<'a> {
         let prev_self_type = self.self_type.replace(self_ty);
         for member in s.members {
             if let StructMember::Method(m) = member {
-                self.infer_method_body(m);
+                self.infer_method_body(m, s.generic_params.len());
             }
         }
         self.self_type = prev_self_type;
@@ -3509,7 +3735,7 @@ impl<'a> InferCtx<'a> {
         methods:     &'ast [MethodDecl<'ast>],
     ) {
         let Some(def_id) = self.target_type_def_id(target_type) else {
-            for m in methods { self.infer_method_body(m); }
+            for m in methods { self.infer_method_body(m, 0); }
             return;
         };
         let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
@@ -3521,7 +3747,7 @@ impl<'a> InferCtx<'a> {
         let prev_self_type = self.self_type.replace(self_ty);
         let prev_scope = self.install_def_scope(Some(def_id));
         for m in methods {
-            self.infer_method_body(m);
+            self.infer_method_body(m, arity);
         }
         self.restore_def_scope(prev_scope);
         self.self_type = prev_self_type;
@@ -4203,27 +4429,10 @@ impl<'a> InferCtx<'a> {
                                     let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
                                     let fresh_args: Vec<TypeId> = (0..arity).map(|_| self.fresh_var()).collect();
                                     self.require_def_bounds(def_id, &fresh_args, expr.span);
-                                    let params: Vec<TypeId> = m.params.iter()
-                                        .map(|p| self.substitute(*p, &fresh_args))
-                                        .collect();
-                                    let return_type = self.substitute(m.return_type, &fresh_args);
-                                    if params.len() != args.len() {
-                                        self.errors.add_type_error(TypeError::ArgumentCountMismatch {
-                                            expected: params.len(),
-                                            found:    args.len(),
-                                            span:     expr.span,
-                                        });
-                                    }
-                                    for (arg, param_ty) in args.iter().zip(params.iter()) {
-                                        let arg_span = match &arg.kind {
-                                            ArgKind::Positional(e)       => e.span,
-                                            ArgKind::Named { value, .. } => value.span,
-                                        };
-                                        if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
-                                            self.unify(*param_ty, arg_ty, arg_span);
-                                        }
-                                    }
-                                    return self.maybe_arena_ref(return_type);
+                                    let inst = self.instantiate_method(&m, &fresh_args);
+                                    self.check_method_args(&inst.params, args, expr.span);
+                                    self.require_method_bounds(&m, &inst, args, expr.span);
+                                    return self.maybe_arena_ref(inst.return_type);
                                 }
                             }
                         }
@@ -4484,27 +4693,10 @@ impl<'a> InferCtx<'a> {
                                 if !calls_a_field { return match found_method {
                                     Some((_, m)) => {
                                         let m = m.clone();
-                                        let params: Vec<TypeId> = m.params.iter()
-                                            .map(|p| self.substitute(*p, &recv_args))
-                                            .collect();
-                                        let return_type = self.substitute(m.return_type, &recv_args);
-                                        if params.len() != args.len() {
-                                            self.errors.add_type_error(TypeError::ArgumentCountMismatch {
-                                                expected: params.len(),
-                                                found:    args.len(),
-                                                span:     expr.span,
-                                            });
-                                        }
-                                        for (arg, param_ty) in args.iter().zip(params.iter()) {
-                                            let arg_span = match &arg.kind {
-                                                ArgKind::Positional(e)       => e.span,
-                                                ArgKind::Named { value, .. } => value.span,
-                                            };
-                                            if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
-                                                self.unify(*param_ty, arg_ty, arg_span);
-                                            }
-                                        }
-                                        self.maybe_arena_ref(return_type)
+                                        let inst = self.instantiate_method(&m, &recv_args);
+                                        self.check_method_args(&inst.params, args, expr.span);
+                                        self.require_method_bounds(&m, &inst, args, expr.span);
+                                        self.maybe_arena_ref(inst.return_type)
                                     }
                                     None => {
                                         // `.clone()` isn't a real entry in
@@ -5928,6 +6120,19 @@ impl<'a> InferCtx<'a> {
     fn display_type(&self, id: TypeId) -> String {
         if id == TypeId::ERROR { return "<error>".into(); }
         if self.int_lit_var_of(self.apply(id)).is_some() { return "{integer}".into(); }
-        self.ctx.types.get(id).display(&self.ctx.types, &self.ctx.symbols)
+        let mut text = self.ctx.types.get(id).display(&self.ctx.types, &self.ctx.symbols);
+        // A type parameter is written by its name while its scope is in
+        // force, and a trait's abstract `Self` as `Self`.
+        if text.contains("<generic param #") {
+            for (name, ty) in &self.current_generic_params {
+                if let SemaType::Param(i) = self.ctx.types.get(*ty) {
+                    text = text.replace(&format!("<generic param #{}>", i), name);
+                }
+            }
+            if let Some(SemaType::Param(i)) = self.self_type.map(|t| self.ctx.types.get(t)) {
+                text = text.replace(&format!("<generic param #{}>", i), "Self");
+            }
+        }
+        text
     }
     }

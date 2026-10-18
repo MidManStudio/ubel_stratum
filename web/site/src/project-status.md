@@ -123,9 +123,12 @@ verified safe.
   others (`trait B: A + C`): an impl needs the impls beneath it, a bound on `B`
   also gives what `A` and `C` provide, and a trait that builds on itself is an
   error. A trait can take type parameters (`trait Convert<T>`), a bound can
-  name them (`T: Convert<int>`), and a trait can build on a generic one. Next:
-  associated types, impls for generic and built-in types, tiers on trait
-  methods, language-item traits, and `dyn Trait`
+  name them (`T: Convert<int>`), and a trait can build on a generic one. A
+  method can declare generic parameters of its own, with bounds, and a trait
+  can declare generic methods that an impl repeats; a bound on a type alias's
+  parameter holds at every use of the alias. Next: impls for built-in and
+  generic types, associated types, tiers on trait methods, language-item
+  traits, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

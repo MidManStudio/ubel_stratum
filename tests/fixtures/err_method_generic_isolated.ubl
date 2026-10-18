@@ -1,0 +1,58 @@
+// tests/fixtures/err_method_generic_isolated.ubl
+// What a method's own generic parameters can get wrong. In a body: a result
+// of the wrong type, a method called on a parameter with no bound, and `==`
+// on one without `PartialEq`. In a declaration: a bound that is not a trait,
+// one written without its argument, and two bounds that apply one trait to
+// different arguments. At a call: an argument whose type misses the bound
+// (twice), one that implements the trait with other arguments, and a result
+// used as the wrong type. The calls that meet the bounds are not reported.
+// Expected: sema FAIL (TypeMismatch TYPE-101 twice, MethodOnUnboundedParam
+// TYPE-130 once, OperatorNeedsBound TYPE-131 once, NotATrait TYPE-122 once,
+// GenericArgCountMismatch TYPE-108 once, ConflictingBounds TYPE-134 once,
+// UnsatisfiedBound TYPE-126 three times).
+
+trait Show {
+    fn show(self) string
+}
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+struct A {
+    n: int,
+}
+
+struct Label {
+    text: string,
+}
+
+impl Show for A {
+    fn show(self) string { return "A" }
+}
+
+impl Convert<string> for Label {
+    fn convert(self) string { return self.text }
+}
+
+struct Box {
+    v: int,
+    fn pick<U>(self, x: U) U { return x }
+    fn put<U: Show>(self, x: U) string { return x.show() }
+    fn conv<U: Convert<int>>(self, x: U) int { return x.convert() }
+    fn wrong_result<U>(self, x: U) int { return x }
+    fn call_unbounded<U>(self, x: U) string { return x.show() }
+    fn compare<U>(self, a: U, b: U) bool { return a == b }
+    fn bad_trait<U: Nope>(self, x: U) int { return 1 }
+    fn bare<U: Convert>(self, x: U) int { return 1 }
+    fn both_ways<U: Convert<int> + Convert<string>>(self, x: U) int { return 1 }
+}
+
+fn main() void {
+    let b = Box { v = 1 }
+    let ok = b.put(A { n = 1 })
+    let r: string = b.pick(5)
+    println(b.put(5))
+    println(b.put("s"))
+    println(b.conv(Label { text = "x" }))
+}

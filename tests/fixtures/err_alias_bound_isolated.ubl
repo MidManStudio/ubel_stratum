@@ -1,0 +1,60 @@
+// tests/fixtures/err_alias_bound_isolated.ubl
+// What a bound on a type alias's parameter can get wrong. At the alias: a
+// name that is not a trait, a trait written without its argument, and two
+// bounds that apply one trait to different arguments. At a use: a type that
+// does not implement the trait, one that implements it with other arguments,
+// and a parameter of an enclosing function that lacks the bound. The use with
+// a type that meets the bound is not reported.
+// Expected: sema FAIL (NotATrait TYPE-122 once, GenericArgCountMismatch
+// TYPE-108 once, ConflictingBounds TYPE-134 once, UnsatisfiedBound TYPE-126
+// three times).
+
+trait Show {
+    fn show(self) string
+}
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+struct A {
+    n: int,
+}
+
+struct Label {
+    text: string,
+}
+
+impl Show for A {
+    fn show(self) string { return "A" }
+}
+
+impl Convert<string> for Label {
+    fn convert(self) string { return self.text }
+}
+
+struct W<T> {
+    x: T,
+}
+
+type Shown<T: Show> = W<T>
+type Converting<T: Convert<int>> = W<T>
+type Missing<T: Nope> = W<T>
+type Bare<T: Convert> = W<T>
+type Doubled<T: Convert<int> + Convert<string>> = W<T>
+
+fn plain(w: Shown<int>) void {
+}
+
+fn other_arguments(w: Converting<Label>) void {
+}
+
+fn no_bound<T>(w: Shown<T>) void {
+}
+
+fn fine(w: Shown<A>) void {
+}
+
+fn main() void {
+    println(1)
+}

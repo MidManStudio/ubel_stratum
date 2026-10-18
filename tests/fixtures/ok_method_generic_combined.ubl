@@ -1,0 +1,87 @@
+// tests/fixtures/ok_method_generic_combined.ubl
+// Generic methods together with the trait features already shipped. A trait
+// can declare generic methods, with bounds, and give one a default body; an
+// impl repeats the signature (the parameters may be renamed); a generic
+// trait can have a generic method and the impl fixes the trait's argument; a
+// call is checked the same through a bounded parameter, through the type, and
+// in the qualified form; and a bounded alias carries a bound into a function
+// that also has generic methods called on its values.
+// Expected: sema OK, interpret OK.
+
+trait Show {
+    fn show(self) string
+}
+
+trait Render {
+    fn name(self) string
+    fn wrap<U: Show>(self, u: U) string {
+        return self.name() + "(" + u.show() + ")"
+    }
+    fn lift<U>(self, u: U) U
+}
+
+trait Lifting<T> {
+    fn lift_with<U: Show>(self, u: U) T
+}
+
+struct A {
+    n: int,
+}
+
+struct Panel {
+    k: int,
+}
+
+struct Rack {
+    k: int,
+}
+
+impl Show for A {
+    fn show(self) string { return "A" }
+}
+
+impl Render for Panel {
+    fn name(self) string { return "panel" }
+    fn lift<V>(self, v: V) V { return v }
+}
+
+impl Render for Rack {
+    fn name(self) string { return "rack" }
+    fn wrap<X: Show>(self, x: X) string { return "rack:" + x.show() }
+    fn lift<V>(self, v: V) V { return v }
+}
+
+impl Lifting<int> for Panel {
+    fn lift_with<V: Show>(self, v: V) int { return self.k }
+}
+
+struct W<T> {
+    x: T,
+}
+
+type Shown<T: Show> = W<T>
+
+fn show_all<T: Show>(w: Shown<T>) string {
+    return w.x.show()
+}
+
+fn use_render<T: Render>(r: T) string {
+    let n: int = r.lift(7)
+    assert(n == 7, "a generic method through a bound")
+    return r.wrap(A { n = 1 })
+}
+
+fn main() void {
+    let p = Panel { k = 5 }
+    let r = Rack { k = 6 }
+    assert(use_render(p) == "panel(A)", "the default body of a generic method")
+    assert(use_render(r) == "rack:A", "an impl overriding the default")
+    let s: string = p.lift("s")
+    assert(s == "s", "called on the type")
+    assert(Render.lift(p, 9) == 9, "the qualified form")
+    assert(p.lift_with(A { n = 2 }) == 5, "a generic trait with a generic method")
+    assert(Lifting.lift_with(p, A { n = 3 }) == 5, "and in the qualified form")
+    let w: Shown<A> = W { x = A { n = 4 } }
+    assert(show_all(w) == "A", "a bounded alias beside generic methods")
+    println(use_render(p))
+}

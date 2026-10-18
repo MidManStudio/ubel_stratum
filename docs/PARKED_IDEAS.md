@@ -817,7 +817,7 @@ Known gaps of S1b, recorded rather than hidden:
 
 - A method's own generic parameter is not scoped in sema (its type is
   unknown), so a bound on one is `TYPE-129` and a method call on such a value
-  is unchecked.
+  is unchecked. (Built in S3c.)
 - `where` clauses, bounds with arguments and bounds naming a built-in trait
   wait for S2 and S3.
 - A struct literal written with an annotation that names a bad argument
@@ -951,7 +951,30 @@ Known gaps of S3b, recorded rather than hidden:
   while the trait's signatures are collected (removing the line changes nothing).
   The default bodies get their own.
 
-**Traits, slices S3c to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S3c (built).** A method's own generic parameters with bounds
+(in a struct, an `extend` or `impl` block and a trait, where an impl repeats the
+generics exactly) and bounds on a type alias parameter. See
+`docs/TRAITS_DESIGN.md`, "What S3c settled".
+
+Known gaps of S3c, recorded rather than hidden:
+
+- A method's own parameter with the name of an enclosing parameter shadows it
+  without a diagnostic (`struct Box<T> { fn m<T>(self, x: T) T }` is accepted).
+  Rust rejects this; the choice for Ubel is open.
+- A type parameter prints as `<generic param #N>` in a diagnostic raised after
+  its scope has ended, such as an alias bound unmet by a parameter of a generic
+  function signature, and the `TYPE-126` suggestion for a parameter says to add
+  an impl where a bound on the parameter is what is missing. Inside a body the
+  name is written. The same holds for a bounded struct before S3c.
+- A bound's diagnostic is settled after the call's arguments, so it can come
+  out after a type mismatch on a later line of the same body.
+- A generic method makes a trait unusable as `dyn Trait` under Rust's rule. Not
+  decided; S6 settles it.
+- An alias's bound arguments are converted after the aliases are expanded, so a
+  use inside another alias's own definition checks the trait but not its
+  arguments.
+
+**Traits, slices S3d to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

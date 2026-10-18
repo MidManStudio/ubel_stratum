@@ -40,7 +40,8 @@
 | **S2b** | **Built** | Hand-written impls of the six prelude traits: checked like any trait impl, needing their supertraits (`TYPE-132`), and called by `==`, `!=`, the ordering operators, `contains` on every collection, dictionary lookup, assignment and indexing, `order_by`, `group_by`, and by derived comparison, `Hash` and `Clone` inside other values. See "What S2b settled" below. |
 | **S3a** | **Built** | Supertraits: `trait B: A + C`. An impl needs the impls beneath it (`TYPE-132`, now for every trait), a bound implies them, a default body sees them, a cycle is an error (`TYPE-133`), and the prelude declares its own. See "What S3a settled" below. |
 | **S3b** | **Built** | Generic traits (`trait Convert<T>`, `impl Convert<int> for X`), bounds with arguments (`T: Convert<int>`, `T: Convert<U>`) and generic supertraits (`trait Wide<T>: Convert<T>`), with one impl of a trait per type. See "What S3b settled" below. |
-| S3c to S6 | Planned | As in section 4. |
+| **S3c** | **Built** | A method's own generic parameters with bounds (including generic methods in traits) and bounds on a type alias parameter. See "What S3c settled" below. |
+| S3d to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -70,8 +71,8 @@
   rather than being accepted and ignored. A user trait that happens to use
   one of those names is a real bound. (Since S2a all six are prelude traits
   and ordinary bounds.) A bound on a type alias parameter or on
-  a method's own generic parameter is `TYPE-129` too, because neither scope
-  exists in sema yet.
+  a method's own generic parameter was `TYPE-129` too until S3c, because
+  neither scope existed in sema.
 - **Where a bound is enforced.** Each place a bounded parameter is
   instantiated records an obligation that the argument type implements the
   trait: a call to a generic function (including a call through a variable
@@ -406,8 +407,63 @@ What reading the code established before this was decided:
   that pass convert them again silently, so an error is reported once, at the
   declaration.
 - **Not changed.** The prelude traits take no arguments (`Eq<int>` is `TYPE-108`).
-  Associated types, impls for generic types and for built-in types, and the two
-  bound limits are still `TYPE-129`.
+  Associated types, and impls for generic types and for built-in types, are still
+  `TYPE-129`. The two bound limits that stayed `TYPE-129` after S3b were built in
+  S3c.
+
+### What S3c settled
+
+- **Method generics are a feature, not a bound limit.** Before S3c a method's own
+  generic parameters were not scoped in sema: their types were unknown, so
+  `fn pick<U>(self, x: U) U` accepted `let r: string = b.pick(5)` with no bound
+  involved, and a bound on one was `TYPE-129`. S3c scopes them, instantiates them
+  per call, enforces their bounds and checks generic methods in traits. The
+  interpreter needed no change, since generics are erased at run time.
+- **Numbering.** A method's own parameters follow the parameters of the
+  declaration around the method. In `struct Pair<T>` the struct's `T` is `Param(0)`
+  and the method's first own parameter is `Param(1)`. In a trait the trait's
+  parameters come first, then the abstract `Self`, then the method's own. An
+  `extend` or `impl` block starts after the target's arity (its own names are not
+  bound), and an impl of a trait starts at zero. `MethodShape` carries
+  `MethodGenerics { base, own }`, one entry per own parameter with its name and its
+  bounds as written.
+- **Every call chooses its own types.** A call gets a fresh inference variable for
+  each own parameter after the receiver's arguments are substituted. This covers an
+  instance call, an associated call (`Box.make(x)`), a call through a bounded type
+  parameter and the qualified form `Trait.m(value, ..)`. Each bound is an
+  obligation settled after the arguments are unified, so a bound argument the impl
+  decides (`fn conv<U: Convert<V>, V>`) is learned from the call. It is reported at
+  the first argument whose declared type is that parameter, and at the call when
+  there is none, as for a generic function.
+- **Inside the body.** The own parameters are in scope with their bounds and the
+  traits those build on, so `x.show()` works under `U: Show` and under `U: Loud`
+  when `trait Loud: Show`. A method called on an unbounded own parameter is
+  `TYPE-130`, an operator on one is `TYPE-131`, and a result of the wrong type
+  names the parameter (found `U`). The bound names, the argument counts and
+  conflicting bounds are checked once at the declaration (`TYPE-122`, `TYPE-108`,
+  `TYPE-134`), the same checks a generic function's bounds get.
+- **Generic methods in traits.** A required method or a default method may declare
+  generic parameters. An impl repeats the method exactly: the same number of own
+  parameters and the same bounds on each, as a set in any order and with the same
+  trait arguments. The names may differ. Anything else is `TYPE-125`, and its
+  signature text now writes the generics (`fn<U: Show>(self, U) U`). When the
+  trait's parameters and `Self` are replaced for an implementing type, the method's
+  own parameters are renumbered from zero, which is where the impl's method has
+  them, so one comparison and one call path serve both.
+- **Bounds on a type alias parameter.** Every use of the alias raises its bounds on
+  the arguments: with `type Shown<T: Show> = W<T>`, `Shown<int>` is `TYPE-126` at
+  the use, though `W` itself asks nothing of `T`. This holds through another alias
+  and for a parameter of an enclosing generic function, which needs the same bound.
+  The bound's trait arguments are converted after the aliases are expanded, as in
+  S3b, so a use inside another alias's own definition checks the trait and not yet
+  its arguments.
+- **Wording.** A type parameter is written by its name while its scope is in force,
+  and the abstract `Self` as `Self`. After the scope ends (an obligation settled
+  once the signatures are collected) it still prints as `<generic param #N>`; this
+  is parked.
+- **For S6.** A trait with generic methods has no single vtable entry per method, so
+  it is not usable as `dyn Trait` under the rule Rust applies. Whether Ubel takes
+  that rule is decided when S6 starts.
 
 ### D7: what has to be specified before S4
 
@@ -615,7 +671,8 @@ exact-count tests, and the docs updated in the same bundle.
 | **S2** | Prelude traits for the six derives; built-in impls for primitives; bounds on built-in collections; `@derive` becomes an impl generator. | D5 B |
 | **S3a** | Supertraits (built). | D4 ii |
 | **S3b** | Generic traits, bounds with arguments and generic supertraits (built). | D4 ii |
-| S3c onward | Associated types, impls for generic types and for built-in types, and the two bound limits (a bound on an alias parameter, on a method's own parameter). The order is chosen with the project owner. | D4 ii |
+| **S3c** | A method's own generic parameters with bounds, generic methods in traits, and bounds on a type alias parameter (built). | D4 ii |
+| S3d onward | Impls for built-in types, impls for generic types and associated types. The order is chosen with the project owner. | D4 ii |
 | **S4** | Tier on trait method signatures. | D7 a |
 | **S5** | Language-item traits, one decision and one delivery each: `Display`/`Debug`, `Iterable<T>`, operators. | D5 C |
 | **S6** | `dyn Trait` in `HIGH`. | D2 B |
