@@ -1,0 +1,74 @@
+name: Ubel LLVM PoC (Stage 0 tier benchmark)
+
+# Manual only. The replacements workflow commits with [skip ci], so a push
+# trigger would never fire after an apply anyway.
+on:
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: 'Timed runs per benchmark and tier (min and median are reported)'
+        type: choice
+        default: '7'
+        options: ['3', '7', '15']
+      clang:
+        description: 'Compiler on the runner'
+        type: choice
+        default: 'clang'
+        options: ['clang', 'clang-16', 'clang-17', 'clang-18']
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    env:
+      CLANG: ${{ inputs.clang }}
+      ITERS: ${{ inputs.iters }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          uname -m
+          "$CLANG" --version
+
+      - name: Self-test (GC stress, every tier must agree)
+        run: bash crates/llvm_poc/scripts/run_bench.sh --selftest
+
+      - name: Benchmark
+        shell: bash
+        run: bash crates/llvm_poc/scripts/run_bench.sh --iters "$ITERS" | tee bench-report.md
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Ubel LLVM PoC, Stage 0 (${{ matrix.arch }})"
+            echo
+            echo "Runner \`$(uname -m)\`, $("$CLANG" --version | head -n 1)"
+            echo
+            cat bench-report.md 2>/dev/null || echo "No report was produced."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report and optimized IR
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm-poc-${{ matrix.arch }}
+          path: |
+            bench-report.md
+            /tmp/ubel_llvm_poc/tiers.opt.ll
+          if-no-files-found: warn
+          retention-days: 30
