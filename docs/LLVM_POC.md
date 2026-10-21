@@ -1,6 +1,6 @@
 # LLVM proof of concept
 
-Status: **Stage 0 done, measured on CI. Stage 1 (emit IR from Ubel source) not started.**
+Status: **Stage 0 done and measured on CI. Stage 1A (how the tiers talk to each other, hand-written IR) implemented and self-tested, not yet measured on CI. Stage 1B (emit IR from Ubel source) not started.**
 
 Everything lives in `crates/llvm_poc/` and is isolated: it does not depend on
 the compiler crates, so it cannot interfere with work in `core`, `sema` or
@@ -33,7 +33,8 @@ sanity baseline).
 ```
 crates/llvm_poc/runtime/ubel_rt.h     API of the three allocation strategies
 crates/llvm_poc/runtime/ubel_rt.c     GC (size-class spans, tri-colour mark-sweep) and arenas
-crates/llvm_poc/bench/tiers.ll        the workloads, hand-written LLVM IR
+crates/llvm_poc/bench/tiers.ll        Stage 0 workloads, hand-written LLVM IR
+crates/llvm_poc/bench/boundaries.ll   Stage 1A: tier-to-tier calls and data, hand-written LLVM IR
 crates/llvm_poc/harness/bench_main.c  timing, checksum checks, markdown report, --require-gc
 crates/llvm_poc/scripts/run_bench.sh  build and run (also --selftest)
 ```
@@ -44,6 +45,7 @@ crates/llvm_poc/scripts/run_bench.sh  build and run (also --selftest)
 bash crates/llvm_poc/scripts/run_bench.sh --selftest   # correctness first
 bash crates/llvm_poc/scripts/run_bench.sh              # full run
 bash crates/llvm_poc/scripts/run_bench.sh --iters 9 --only tree
+bash crates/llvm_poc/scripts/run_bench.sh --only xing   # Stage 1A only (xing-lifecycle, xing-callback, xing-iter, xing-low)
 ```
 
 Needs clang 15 or newer (opaque pointers). `EXTRA_FLAGS=-m32` and
@@ -136,13 +138,102 @@ runners.
 - Object sizes follow the target's layout (a `Node` is 32 bytes on 64-bit and
   28 on 32-bit), so absolute times are not comparable across targets either.
 
-## Limits of the Stage 0 runtime
+## Stage 1A: how the tiers talk to each other
+
+Stage 0 measured each tier alone. Stage 1A is about the boundaries: what the
+generated code has to do when one tier calls another or hands it data. It is
+hand-written IR (`bench/boundaries.ll`), modelled on
+`examples/arena_demo/ast_builder.ubl`, because that real example already needs
+strings, closures, enums with payloads and `match`, which an emitter will not
+cover for a while. The IR is what an emitter would have to produce.
+
+### How each direction of the call matrix lowers
+
+| call | rule (tier-model.md) | what the IR does | what keeps it safe |
+|---|---|---|---|
+| HIGH to MID | allowed | a plain call; the MID function creates its own arena (`with arena` is create ... destroy, and destroy must run on every exit path, including `return`) | GC values passed in stay reachable from the caller's frame |
+| HIGH to LOW | allowed | a plain call, pointers into GC objects passed as borrows | the collector never moves objects, and the caller's frame keeps them alive |
+| MID to LOW | allowed | a plain call, arena memory passed as a pointer | same; LOW code allocates nothing and calls no other tier, so no collection can start while it runs |
+| MID to HIGH | only through a function-typed parameter | one indirect call through the closure's code pointer | the closure object is a GC object held by the MID frame; arena pointers handed to HIGH are outside the GC heap and ignored by the collector |
+| LOW to HIGH or MID | never | no code emitted | enforced by sema |
+
+The calls themselves cost nothing extra: every tier uses the same calling
+convention and the same data layouts, and a reference's tier exists only in the
+type checker. What a boundary costs is the setup around it: arena lifecycle,
+indirect call, GC allocation of results, and copying.
+
+### Closure ABI (proposal)
+
+A closure is a GC object whose first word is the code pointer and whose
+remaining words are the captured variables. The code takes the closure object
+itself as a hidden first argument: `ptr code(ptr closure, ptr argument)`.
+A callback is then one indirect call, and captured state is reachable with no
+extra allocation. This is a decision the backend will have to confirm; the PoC
+just shows it works across the boundary, including captured GC data, while
+collections run inside the callback.
+
+### Safety across the boundary
+
+- **GC pointers on MID and LOW frames are safe.** Stack and register scanning
+  is conservative, so a GC pointer held by a MID or LOW frame keeps its object
+  alive without any registration step.
+- **The hidden-root hazard is real and reproduced.** A plain arena is invisible
+  to the collector. If its contents are the only reference to a GC object (the
+  iterator pattern in tier-model.md keeps `List<R>` results, GC-owned, in
+  MID-side storage), the collector frees live results. With a collection every
+  16 KiB, the plain-arena variant returns a wrong answer on both 64-bit and
+  32-bit builds. Two fixes work and are implemented: keep results in a GC-owned
+  list, or make the arena **scannable** (`ubel_arena_create_scan`), which makes
+  every collection treat its contents as a conservative root range.
+- **Design proposal, not implemented in sema:** the compiler should choose the
+  arena kind statically, scannable when any type stored in the arena can hold a
+  GC reference (the mirror of `contains_arena_ref`), plain otherwise, so the
+  cost is only paid where it is needed. The language also needs an explicit
+  answer to whether arena-resident containers may hold GC references at all.
+- **Owned results are deep copies.** Data built in an arena that must outlive it
+  (`to_owned()`) is copied into the GC heap. `xcb_copyout` does this and then
+  reads the copy after the arena is destroyed and its chunk reused.
+- **For the concurrent collector later:** every pointer store into a GC object
+  (child links, closure creation, list links) is a write-barrier site, and a
+  GC pointer stored into a scannable arena needs the same treatment.
+
+### What the experiments measure
+
+1. **Arena lifecycle** (`xing-lifecycle`): ns per object for HIGH, MID and LOW as
+   the number of objects per arena grows from 1 to 1024. Shows what creating and
+   destroying an arena costs and where it starts to pay off.
+2. **Callback and copy-out** (`xing-callback`): an arena AST evaluated by a HIGH
+   closure, against the same job done entirely in one tier. Callback minus
+   MID-only is the crossing cost; copy-out minus MID-only is the cost of an owned
+   result, also reported per node. The callback variant allocates only a 16-byte
+   result per tree, so at the default trigger it may never collect; GC behaviour
+   inside callbacks is exercised by copy-out, the iterator pattern and the
+   self-test.
+3. **Iterator pattern and hazard** (`xing-iter`): results kept in a scannable
+   arena against a GC-owned list, with collections happening during callbacks,
+   plus the hazard demo with a plain arena.
+4. **Calls into LOW** (`xing-low`): HIGH to LOW and MID to LOW against an inlined
+   baseline.
+
+### Results
+
+Not measured on CI yet. The GC stress self-test passes for all of it on
+x86_64 in 64-bit and 32-bit builds (collections every 16 KiB and every 4 KiB,
+all variants agree, the hazard demo reproduces). The numbers come from the next
+workflow run, and this section gets filled in then.
+
+## Limits of the runtime
 
 - Objects up to 64 pointer-words: 512 bytes on 64-bit, 256 on 32-bit. Larger
   requests abort.
 - HIGH zeroes memory; MID and LOW do not, as an allocator for each tier would.
 - 32- and 64-bit targets are supported: sizes and pointer masks are derived
   from the target's data layout, and `run_bench.sh` sets the width of `size_t`.
+- A scannable arena is scanned conservatively and in full at every collection
+  (the whole of each retired chunk, the bumped part of the current one), so its
+  cost grows with arena size.
+- A plain arena that holds the only reference to a GC object is a bug, not a
+  supported mode. `xit_arena_plain` exists only to demonstrate it.
 
 ## Bugs found while building this
 
@@ -157,16 +248,22 @@ runners.
 
 ## Next stages
 
-1. **Stage 1:** emit textual IR from `Program` + `SemaContext` for a tiny subset
-   (arithmetic, locals, `if`/`while`, calls). Textual IR keeps libLLVM out of
-   the Cargo build. The core crate currently exposes `lexer`, `error_management`,
+1. **Stage 1B:** emit textual IR from `Program` + `SemaContext`. Start with a
+   scalar subset (arithmetic, locals, `if`/`while`, calls, `@tier` annotations,
+   `with arena` blocks) and grow toward `ast_builder.ubl`, which needs strings,
+   closures, enums with payloads and `match`. Textual IR keeps libLLVM out of the
+   Cargo build. The core crate currently exposes `lexer`, `error_management`,
    `ast`, `builtins`, `sema` and `interpreter` as public modules.
-2. **Stage 2:** tier-aware lowering: `with arena` to arena create/bump/destroy,
-   LOW allocation to malloc/free, HIGH to the GC runtime.
+2. **Stage 2:** tier-aware lowering: `with arena` to arena create/bump/destroy
+   (with destroy on every exit path), LOW allocation to malloc/free, HIGH to the
+   GC runtime, and the boundary protocol from Stage 1A.
 3. **Later:** concurrent marking, write barriers and precise roots, after the
    Go, Java, Swift and C# collectors have been compared.
 
 ## Log
 
+- 2026-10-21: Stage 1A added (`bench/boundaries.ll`): arena lifecycle sweep,
+  callback and copy-out across MID/HIGH, iterator pattern with the hidden-root
+  hazard and scannable arenas, calls into LOW. Self-tested, not yet run on CI.
 - 2026-10-20: Stage 0 delivered; self-test and benchmark run on x86_64 and
   aarch64 runners (run #1, above).

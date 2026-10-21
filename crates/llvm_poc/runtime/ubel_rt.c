@@ -75,6 +75,7 @@ static span     *cur_span[NUM_CLASSES];
 static span     *partial[NUM_CLASSES];
 static void     *stack_base;
 
+static uint64_t last_live;
 static uint64_t bytes_since_gc;
 static uint64_t trigger_delta = MIN_TRIGGER;
 static uint64_t min_trigger   = MIN_TRIGGER;
@@ -288,6 +289,9 @@ static void __attribute__((noinline)) scan_roots(void) {
     __asm__ volatile("" : : "r"(&jb) : "memory"); /* keep jb alive and in this frame */
 }
 
+/* Scannable arenas (defined with the arena code below) act as extra roots. */
+static void scan_arena_roots(void);
+
 /* ---- sweeping --------------------------------------------------------- */
 
 static uint64_t sweep(void) {
@@ -323,6 +327,7 @@ void ubel_gc_collect(void) {
     if (!heap_base) return;
     uint64_t t0 = ubel_now_ns();
     scan_roots();
+    scan_arena_roots();
     while (mtop) scan_object(mstack[--mtop]);
     uint64_t t1 = ubel_now_ns();
     uint64_t live = sweep();
@@ -333,8 +338,14 @@ void ubel_gc_collect(void) {
     st.sweep_ns += t2 - t1;
     if (t2 - t0 > st.max_pause_ns) st.max_pause_ns = t2 - t0;
     st.live_bytes_last = live;
+    last_live = live;
     bytes_since_gc = 0;
     trigger_delta = live > min_trigger ? live : min_trigger; /* GOGC=100 */
+}
+
+void ubel_gc_set_min_trigger_kb(uint64_t kb) {
+    min_trigger = (kb ? kb : 4096) * 1024u;
+    trigger_delta = last_live > min_trigger ? last_live : min_trigger;
 }
 
 void ubel_gc_get_stats(ubel_gc_stats *out) { *out = st; }
@@ -374,14 +385,40 @@ static void arena_install_chunk(ubel_arena *a, uint64_t payload) {
     a->end = a->cur + payload;
 }
 
+static ubel_arena *scan_head;
+
 ubel_arena *ubel_arena_create(uint64_t chunk_size) {
     ubel_arena *a = (ubel_arena *)malloc(sizeof *a);
     if (!a) { fprintf(stderr, "ubel_rt: out of memory for an arena\n"); abort(); }
     a->chunk_size = chunk_size ? chunk_size : ARENA_DEFAULT_CHUNK;
     a->chunks = NULL;
     a->cur = a->end = NULL;
+    a->scan_next = a->scan_prev = NULL;
+    a->scannable = 0;
     arena_install_chunk(a, a->chunk_size);
     return a;
+}
+
+ubel_arena *ubel_arena_create_scan(uint64_t chunk_size) {
+    ubel_arena *a = ubel_arena_create(chunk_size);
+    a->scannable = 1;
+    a->scan_next = scan_head;
+    if (scan_head) scan_head->scan_prev = a;
+    scan_head = a;
+    return a;
+}
+
+/* Conservatively scan every live scannable arena: the whole payload of each
+ * retired chunk, and only the bumped part of the current (first) chunk. */
+static void scan_arena_roots(void) {
+    for (ubel_arena *a = scan_head; a; a = a->scan_next) {
+        for (arena_chunk *c = (arena_chunk *)a->chunks; c; c = c->next) {
+            const char *lo = (const char *)(c + 1);
+            const char *hi = (c == (arena_chunk *)a->chunks) ? a->cur : lo + c->size;
+            for (const uintptr_t *p = (const uintptr_t *)lo; (const char *)(p + 1) <= hi; ++p)
+                mark_ptr(*p);
+        }
+    }
 }
 
 void *ubel_arena_grow(ubel_arena *a, uint64_t size) {
@@ -394,6 +431,10 @@ void *ubel_arena_grow(ubel_arena *a, uint64_t size) {
 }
 
 void ubel_arena_destroy(ubel_arena *a) {
+    if (a->scannable) {
+        if (a->scan_prev) a->scan_prev->scan_next = a->scan_next; else scan_head = a->scan_next;
+        if (a->scan_next) a->scan_next->scan_prev = a->scan_prev;
+    }
     arena_chunk *c = (arena_chunk *)a->chunks;
     while (c) {
         arena_chunk *n = c->next;

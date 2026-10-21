@@ -56,20 +56,34 @@ void  ubel_gc_collect(void);
 void  ubel_gc_get_stats(ubel_gc_stats *out);
 void  ubel_gc_reset_stats(void);
 
+/* Test knob: lower (or restore) the minimum allocation volume between
+ * collections. The UBEL_GC_TRIGGER_KB environment variable sets it at startup. */
+void  ubel_gc_set_min_trigger_kb(uint64_t kb);
+
 /* ----------------------------------------------------------------- MID --- */
 
-/* Layout is shared with %Arena in bench/tiers.ll. Keep both in sync.
- * The IR inlines the bump fast path (cur/end) and only calls
- * ubel_arena_grow when the current chunk is full. Request sizes must be
- * multiples of 16. Arena memory is NOT zeroed and is never scanned by the GC. */
+/* The first four fields are shared with %Arena in the bench .ll files. Keep them in
+ * sync; the IR never touches the fields after chunk_size. The IR inlines the
+ * bump fast path (cur/end) and only calls ubel_arena_grow when the current
+ * chunk is full. Request sizes must be multiples of 16. Arena memory is not
+ * zeroed.
+ *
+ * A plain arena is never scanned by the GC, so it must not hold the only
+ * reference to a GC object (the "hidden root" hazard). A scannable arena
+ * (ubel_arena_create_scan) is treated as a conservative root set by every
+ * collection, for arenas whose contents may point into the GC heap. */
 typedef struct ubel_arena {
     char    *cur;
     char    *end;
     void    *chunks;
     uint64_t chunk_size;
+    struct ubel_arena *scan_next; /* registry of scannable arenas (runtime only) */
+    struct ubel_arena *scan_prev;
+    uint32_t scannable;
 } ubel_arena;
 
 ubel_arena *ubel_arena_create(uint64_t chunk_size); /* 0 = default (64 KiB) */
+ubel_arena *ubel_arena_create_scan(uint64_t chunk_size);
 void       *ubel_arena_grow(ubel_arena *a, uint64_t size);
 void        ubel_arena_destroy(ubel_arena *a);
 

@@ -6,6 +6,9 @@
 #   bash crates/llvm_poc/scripts/run_bench.sh [--iters N] [--scale X] [--only SUBSTR]
 #   bash crates/llvm_poc/scripts/run_bench.sh --selftest
 #
+# The report covers Stage 0 (the three tiers in isolation) and Stage 1A (how the tiers talk
+# to each other: see docs/LLVM_POC.md).
+#
 # --selftest runs a small GC stress test (collect every 16 KiB) and fails unless
 # every tier agrees and the collector really ran and kept live data alive. Run it
 # once on every new target before trusting any timing from that target.
@@ -41,17 +44,30 @@ case "$sizeof_size_t" in
   *) echo "error: cannot determine size_t width for this target (got '$sizeof_size_t')" >&2; exit 1 ;;
 esac
 echo "size_t:   ${size_t_ir} (${sizeof_size_t} bytes)" >&2
-sed "s/^%size_t = type i64\$/%size_t = type ${size_t_ir}/" "$here/bench/tiers.ll" > "$out/tiers.gen.ll"
+for m in tiers boundaries; do
+  sed "s/^%size_t = type i64\$/%size_t = type ${size_t_ir}/" "$here/bench/$m.ll" > "$out/$m.gen.ll"
+done
 
 cflags=(-O2 -std=gnu11 -Wall -Wextra -I "$here/runtime" "${extra[@]}")
 
 "$CLANG" "${cflags[@]}" -c "$here/runtime/ubel_rt.c"        -o "$out/ubel_rt.o"
-"$CLANG" -O2 "${extra[@]}" -Wno-override-module -c "$out/tiers.gen.ll" -o "$out/tiers.o"
+"$CLANG" -O2 "${extra[@]}" -Wno-override-module -c "$out/tiers.gen.ll"      -o "$out/tiers.o"
+"$CLANG" -O2 "${extra[@]}" -Wno-override-module -c "$out/boundaries.gen.ll" -o "$out/boundaries.o"
 "$CLANG" "${cflags[@]}" -c "$here/harness/bench_main.c"     -o "$out/bench_main.o"
-"$CLANG" "${extra[@]}" "$out/ubel_rt.o" "$out/tiers.o" "$out/bench_main.o" -o "$out/bench"
+"$CLANG" "${extra[@]}" "$out/ubel_rt.o" "$out/tiers.o" "$out/boundaries.o" "$out/bench_main.o" -o "$out/bench"
 
-# Keep the optimized IR so you can see what LLVM did with each tier.
-"$CLANG" -O2 "${extra[@]}" -Wno-override-module -S -emit-llvm "$out/tiers.gen.ll" -o "$out/tiers.opt.ll"
+# Keep the optimized IR so you can see what LLVM did with each tier. tiers.opt.ll holds
+# both modules one after the other, for reading; it is not meant to be reassembled.
+for m in tiers boundaries; do
+  "$CLANG" -O2 "${extra[@]}" -Wno-override-module -S -emit-llvm "$out/$m.gen.ll" -o "$out/$m.mod.opt.ll"
+done
+{
+  echo "; ===== bench/tiers.ll, optimized ====="
+  cat "$out/tiers.mod.opt.ll"
+  echo
+  echo "; ===== bench/boundaries.ll, optimized ====="
+  cat "$out/boundaries.mod.opt.ll"
+} > "$out/tiers.opt.ll"
 
 echo "built: $out/bench (optimized IR: $out/tiers.opt.ll)" >&2
 
