@@ -1,14 +1,11 @@
 // Brought to u by MidManStudio
-
-// traits S3c: remove the fixture that has nothing left to show.
 //
-// tests/fixtures/err_bound_unsupported_combined.ubl existed to show the two
-// bounds that parsed but could not be enforced yet (a bound on a type alias
-// parameter and on a method's own generic parameter, each TYPE-129). Both are
-// built in S3c, so the file now checks clean and its header ("sema FAIL")
-// is wrong. The new fixtures err_alias_bound_isolated and
-// err_method_generic_isolated replace it. A replacements archive cannot
-// delete a file, so the removal is this patch.
+// LLVM proof of concept, Stage 0: bring the status docs up to date.
+//
+// Three one-line edits, each anchored on the exact text it replaces, so they
+// cannot overwrite anything else in these files. Apply with the "Apply Patches"
+// workflow. This file replaces the previous patch.mdix, whose only job (the
+// traits S3c fixture removal) has already been applied.
 
 @CONFIG(
   version    -> "1.0.0",
@@ -18,12 +15,14 @@
 )
 
 @QUICKFUNCS(
-  ~delete_file<object>(_path) {
-    return { path = _path }
+  ~patch_replace_text<object>(_path, _anchor, _content) {
+    return { path = _path, op = "replace_text", anchor = _anchor, content = _content }
   }
 )
 
 @DATA(
-  delete_files::
-    delete_file("tests/fixtures/err_bound_unsupported_combined.ubl")
+  patch_files::
+    patch_replace_text("web/site/src/project-status.md", "| 4 | Not started | LLVM backend, native binaries |", "| 4 | Started | LLVM backend, native binaries. So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet (`docs/LLVM_POC.md`) |")
+    patch_replace_text("web/site/src/introduction.md", "| 4 | Not started | LLVM backend, native binaries |", "| 4 | Started | LLVM backend, native binaries. So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet (`docs/LLVM_POC.md`) |")
+    patch_replace_text("CONTRIBUTING.md", "with the LLVM backend not yet started, see", "with only a measurement proof of concept of the LLVM backend so far, see docs/LLVM_POC.md and")
 )
