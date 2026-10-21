@@ -45,7 +45,7 @@ integration begins.
 | 1 | Done | Core design, memory model, lexer, arena AST, parser |
 | 2 | Done | Semantic analysis: name resolution, type inference, tier enforcement |
 | 3 | Done | Tree-walking interpreter, the current execution model |
-| 4 | Not started | LLVM backend, native binaries |
+| 4 | Started | LLVM backend, native binaries. So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet (`docs/LLVM_POC.md`) |
 | 5 | Not started | Standard library, tooling, package manager |
 
 Source files use the `.ubl` extension. There is no installable compiler

@@ -11,7 +11,7 @@ tracks the fixture suite and benchmark history behind these claims.
 | 1 | Done | Core design, memory model, lexer, arena AST, the recursive-descent/Pratt parser |
 | 2 | Done | Semantic analysis: name resolution, type inference, tier enforcement, generics, the three-tier escape-boundary checker |
 | 3 | Done | Tree-walking interpreter, the current execution model |
-| 4 | Not started | LLVM backend, native binaries |
+| 4 | Started | LLVM backend, native binaries. So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet (`docs/LLVM_POC.md`) |
 | 5 | Not started | Standard library, tooling, package manager |
 
 Phase 2 being marked done covers full generics for structs and enums,
