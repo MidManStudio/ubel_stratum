@@ -1,4 +1,4 @@
-name: Ubel LLVM PoC (Stage 0 tier benchmark)
+name: Ubel LLVM PoC (tier benchmarks, Stages 0 and 1A)
 
 # Manual only. The replacements workflow commits with [skip ci], so a push
 # trigger would never fire after an apply anyway.
@@ -55,7 +55,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Ubel LLVM PoC, Stage 0 (${{ matrix.arch }})"
+            echo "## Ubel LLVM PoC, tier benchmarks, Stages 0 and 1A (${{ matrix.arch }})"
             echo
             echo "Runner \`$(uname -m)\`, $("$CLANG" --version | head -n 1)"
             echo
