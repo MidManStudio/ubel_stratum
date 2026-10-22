@@ -73,12 +73,15 @@ fn ordering_from_value(v: &Value) -> Option<Ordering> {
 impl<'ast> Interpreter<'ast> {
     /// The function a type's impl of `trait_name` registered for `method`.
     pub(crate) fn user_trait_fn(&self, value: &Value, trait_name: &str, method: &str) -> Option<FunctionId> {
-        let type_name = match value {
-            Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => type_name,
+        let type_name: String = match value {
+            Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => type_name.clone(),
+            // A primitive, a tuple or an array has an impl of its own only
+            // once one was written by hand.
+            _ if self.builtin_prelude_impls => value.impl_key()?.into_owned(),
             _ => return None,
         };
         self.trait_method_table
-            .get(&(type_name.clone(), trait_name.to_string()))
+            .get(&(type_name, trait_name.to_string()))
             .and_then(|m| m.get(method))
             .copied()
     }
@@ -192,7 +195,7 @@ impl<'ast> Interpreter<'ast> {
     /// `Ok(None)` means "not mine": the operands are plain values and the
     /// ordinary operator code runs.
     pub(crate) fn user_comparison(&mut self, op: BinOp, lhs: &Value, rhs: &Value) -> Result<Option<Value>, Signal> {
-        if !(may_have_user_ops(lhs) || may_have_user_ops(rhs)) { return Ok(None); }
+        if !(self.may_have_user_ops(lhs) || self.may_have_user_ops(rhs)) { return Ok(None); }
         match op {
             BinOp::Eq => Ok(Some(Value::Bool(self.values_equal(lhs, rhs)?))),
             BinOp::Ne => {

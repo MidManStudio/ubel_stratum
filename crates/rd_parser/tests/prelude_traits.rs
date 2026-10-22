@@ -1095,9 +1095,10 @@ fn an_impl_with_the_wrong_signature_is_type_125() {
 }
 
 #[test]
-fn an_impl_for_a_built_in_type_is_still_not_supported() {
+fn a_prelude_impl_for_a_built_in_type_that_has_it_natively_is_type_128() {
+    // `int` is `PartialEq` already; tests/builtin_impls.rs covers the rest.
     let src = "impl PartialEq for int {\n    fn eq(self, other: int) bool { return true }\n}\nfn main() void { println(1) }\n";
-    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
+    assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-128"]));
 }
 
 #[test]

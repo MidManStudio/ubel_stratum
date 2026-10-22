@@ -38,6 +38,12 @@ impl DefId {
 /// The kind of entity a `DefId` names.
 #[derive(Debug, Clone)]
 pub enum DefKind {
+    /// A built-in type (a primitive, a tuple or an array) that an `extend` or
+    /// an `impl` block is written for. Made by type inference so the tables
+    /// keyed by a definition (methods, trait impls) serve built-in types too;
+    /// its name is the type as a diagnostic writes it, and no source text
+    /// ever names it.
+    BuiltinType,
     /// A top-level or nested function.
     Function {
         tier:     TierAnnotation,

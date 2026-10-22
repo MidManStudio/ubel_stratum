@@ -162,6 +162,16 @@ pub struct Interpreter<'ast> {
     /// `trait_method_table`, so a trait's method runs even when the concrete
     /// type has an inherent method of the same name. Empty by default.
     pub(crate) trait_call_sites: HashMap<Span, String>,
+    /// `type` alias name -> the built-in key (`ast::types::builtin_impl_key`)
+    /// of an alias whose target is a primitive, a tuple or an array, so an
+    /// `extend` or `impl` written for the alias registers under the key of
+    /// the type it stands for.
+    pub(crate) alias_builtin_keys: HashMap<String, String>,
+    /// Set once a prelude trait is implemented by hand for a built-in type
+    /// (`impl Hash for double`). Only then do comparisons, hashing and
+    /// cloning of primitives, tuples and arrays look for a user's impl, so a
+    /// program without one keeps the fast path (`user_ops`).
+    pub(crate) builtin_prelude_impls: bool,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -181,6 +191,8 @@ impl<'ast> Interpreter<'ast> {
             trait_names: std::collections::HashSet::new(),
             trait_method_table: HashMap::new(),
             trait_call_sites: HashMap::new(),
+            alias_builtin_keys: HashMap::new(),
+            builtin_prelude_impls: false,
         };
         interp.register_builtins();
         interp
@@ -293,6 +305,25 @@ impl<'ast> Interpreter<'ast> {
 
     /// The `extend`/inherent-`impl` twin of the `Item::Struct` arm's own
     /// method registration a few lines down in `run_program` — same
+    /// The key an `extend` or `impl` block registers its methods under, and
+    /// whether the target is a built-in type. A struct or an enum is its own
+    /// name (an alias resolved to the real one); a primitive, a tuple or an
+    /// array, written directly or through an alias, is its run-time key
+    /// (`ast::types::builtin_impl_key`). `None` for anything else.
+    fn impl_target_key(&self, target: &'ast Type<'ast>) -> Option<(String, bool)> {
+        match target.kind {
+            TypeKind::Named { path, .. } => {
+                let written = path.first().copied()?;
+                let canon = self.canonical_type(written);
+                match self.alias_builtin_keys.get(canon) {
+                    Some(key) => Some((key.clone(), true)),
+                    None      => Some((canon.to_string(), false)),
+                }
+            }
+            ref kind => crate::ast::types::builtin_impl_key(kind).map(|k| (k, true)),
+        }
+    }
+
     /// `register_method` + `method_table` insert per method, just reached
     /// from a `target_type` instead of a struct's own member list. `None`
     /// for anything that isn't a plain named path (nothing else is a
@@ -304,10 +335,9 @@ impl<'ast> Interpreter<'ast> {
         methods:     &'ast [MethodDecl<'ast>],
         top_level_fns: &mut Vec<FunctionId>,
     ) {
-        let TypeKind::Named { path, .. } = target_type.kind else { return; };
-        let Some(written) = path.first().copied() else { return; };
-        // `extend P { .. }` with `type P = Point` extends `Point`.
-        let struct_name = self.canonical_type(written).to_string();
+        // `extend P { .. }` with `type P = Point` extends `Point`; one written
+        // for a primitive, a tuple or an array registers under its key.
+        let Some((struct_name, _)) = self.impl_target_key(target_type) else { return; };
         for m in methods.iter().copied() {
             let id = self.register_method(&struct_name, m);
             self.method_table
@@ -330,10 +360,11 @@ impl<'ast> Interpreter<'ast> {
         trait_defaults: &HashMap<&'ast str, Vec<MethodDecl<'ast>>>,
         top_level_fns: &mut Vec<FunctionId>,
     ) {
-        let TypeKind::Named { path, .. } = imp.target_type.kind else { return; };
-        let Some(written) = path.first().copied() else { return; };
         let Some(trait_name) = imp.trait_path.and_then(|p| p.last().copied()) else { return; };
-        let type_name = self.canonical_type(written).to_string();
+        let Some((type_name, is_builtin)) = self.impl_target_key(imp.target_type) else { return; };
+        if is_builtin && expr::is_prelude_trait(trait_name) {
+            self.builtin_prelude_impls = true;
+        }
 
         let defaults: &[MethodDecl<'ast>] = trait_defaults
             .get(trait_name).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -374,6 +405,8 @@ impl<'ast> Interpreter<'ast> {
                         if let Some(target) = path.last() {
                             self.type_aliases.insert(a.name.to_string(), target.to_string());
                         }
+                    } else if let Some(key) = crate::ast::types::builtin_impl_key(&a.ty.kind) {
+                        self.alias_builtin_keys.insert(a.name.to_string(), key);
                     }
                 }
                 Item::Trait(t) => {
@@ -399,7 +432,8 @@ impl<'ast> Interpreter<'ast> {
                 Item::TypeAlias(a) => {
                     // Only an alias whose target is a named type can be
                     // constructed or called through; `type Score = int`
-                    // has nothing to canonicalize to.
+                    // has nothing to canonicalize to, and is known by its
+                    // built-in key instead (the pre-declare pass above).
                     if let TypeKind::Named { path, .. } = a.ty.kind {
                         if let Some(target) = path.last() {
                             self.type_aliases.insert(a.name.to_string(), target.to_string());
@@ -700,6 +734,16 @@ impl<'ast> Interpreter<'ast> {
             }
         }
         cur
+    }
+
+    /// Whether comparing, hashing or cloning this value could involve a
+    /// user's impl: always for a struct, an enum, a tuple or an ownership
+    /// wrapper, and for the other built-in values only once a prelude trait
+    /// has been implemented by hand for a built-in type.
+    #[inline]
+    pub(crate) fn may_have_user_ops(&self, v: &Value) -> bool {
+        user_ops::may_have_user_ops(v)
+            || (self.builtin_prelude_impls && v.impl_key().is_some())
     }
 
     pub fn lookup(&self, name: &str) -> EvalResult {

@@ -17,7 +17,7 @@ use crate::ast::expressions::{
 };
 use crate::ast::literals::{Align, FormatSpec, InterpolationPart, IntSuffix, Literal, NumericBase};
 use crate::ast::types::{Type, TypeKind};
-use crate::interpreter::eval::{stmt, pattern, user_ops, FunctionBody, FunctionDef, Interpreter};
+use crate::interpreter::eval::{stmt, pattern, FunctionBody, FunctionDef, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
 
 // ── Main entry ────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             let coll = eval_expr(interp, target)?;
             let idx  = eval_expr(interp, index)?;
             if let Value::Dict(rc) = &coll {
-                if user_ops::may_have_user_ops(&idx) {
+                if interp.may_have_user_ops(&idx) {
                     return match interp.dict_position(rc, &idx)? {
                         Some(i) => Ok(rc.borrow()[i].1.clone()),
                         None    => Err(Signal::Panic("key not found in dictionary".into())),
@@ -986,7 +986,7 @@ fn write_lvalue<'ast>(
                         )))
                     }
                 }
-                (Value::Dict(rc), key) if user_ops::may_have_user_ops(&key) => {
+                (Value::Dict(rc), key) if interp.may_have_user_ops(&key) => {
                     match interp.dict_position(&rc, &key)? {
                         Some(i) => rc.borrow_mut()[i].1 = value,
                         None    => rc.borrow_mut().push((key, value)),
@@ -1170,11 +1170,7 @@ fn eval_call_with_receiver<'ast>(
     // method) runs the trait's method for the receiver's type, never an
     // inherent method of the same name that only the concrete type sees.
     if let Some(trait_name) = interp.trait_call_sites.get(&callee_span) {
-        let type_name = match &receiver {
-            Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => Some(type_name.clone()),
-            _ => None,
-        };
-        if let Some(type_name) = type_name {
+        if let Some(type_name) = dispatch_key(&receiver) {
             let fn_id = interp.trait_method_table
                 .get(&(type_name, trait_name.clone()))
                 .and_then(|m| m.get(method_name))
@@ -1192,8 +1188,17 @@ fn eval_call_with_receiver<'ast>(
     eval_method_call(interp, receiver, method_name, &args)
 }
 
+/// What a receiver's methods are registered under: a struct's or enum's own
+/// type name, or a built-in value's key (`Value::impl_key`).
+fn dispatch_key(v: &Value) -> Option<String> {
+    match v {
+        Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => Some(type_name.clone()),
+        other => other.impl_key().map(|k| k.into_owned()),
+    }
+}
+
 /// The traits declared in the prelude (`ubel_stratum_rd::prelude`).
-fn is_prelude_trait(name: &str) -> bool {
+pub(crate) fn is_prelude_trait(name: &str) -> bool {
     matches!(name, "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Clone" | "Hash")
 }
 
@@ -1221,7 +1226,7 @@ fn ordering_value(variant: &str) -> Value {
 /// there). `None` when they are unordered (a NaN).
 fn order_of(interp: &mut Interpreter<'_>, a: &Value, b: &Value) -> Result<Option<std::cmp::Ordering>, Signal> {
     // A struct, enum or tuple may hold a user's impl somewhere inside.
-    if user_ops::may_have_user_ops(a) || user_ops::may_have_user_ops(b) {
+    if interp.may_have_user_ops(a) || interp.may_have_user_ops(b) {
         return interp.values_cmp(a, b);
     }
     let truth = |op: BinOp| -> Result<bool, Signal> {
@@ -1262,7 +1267,7 @@ fn native_prelude_method(interp: &mut Interpreter<'_>, receiver: Value, method: 
     let as_bool = |v: Value| matches!(v, Value::Bool(true));
     // A struct, enum or tuple is compared through the interpreter, so a
     // user's impl on a field or an element is called.
-    let user = user_ops::may_have_user_ops(&receiver) || user_ops::may_have_user_ops(&other);
+    let user = interp.may_have_user_ops(&receiver) || interp.may_have_user_ops(&other);
     match method {
         "eq" if user => Ok(Value::Bool(interp.values_equal(&receiver, &other)?)),
         "ne" if user => Ok(Value::Bool(!interp.values_equal(&receiver, &other)?)),
@@ -1332,7 +1337,7 @@ fn eval_method_call(
                 "push"     => return m::push(rc, args),
                 "pop"      => return Ok(m::pop(rc)),
                 "contains" => {
-                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                    if args.first().is_some_and(|v| interp.may_have_user_ops(v)) {
                         let items: Vec<Value> = rc.borrow().iter().cloned().collect();
                         return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
                     }
@@ -1361,7 +1366,7 @@ fn eval_method_call(
                 "dequeue"  => return Ok(m::dequeue(rc)),
                 "peek"     => return Ok(m::peek(rc)),
                 "contains" => {
-                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                    if args.first().is_some_and(|v| interp.may_have_user_ops(v)) {
                         let items: Vec<Value> = rc.borrow().iter().cloned().collect();
                         return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
                     }
@@ -1382,7 +1387,7 @@ fn eval_method_call(
                 "pop"      => return Ok(m::pop(rc)),
                 "peek"     => return Ok(m::peek(rc)),
                 "contains" => {
-                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                    if args.first().is_some_and(|v| interp.may_have_user_ops(v)) {
                         let items: Vec<Value> = rc.borrow().iter().cloned().collect();
                         return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
                     }
@@ -1414,7 +1419,7 @@ fn eval_method_call(
                 "push"     => return m::push(rc, args),
                 "pop"      => return Ok(m::pop(rc)),
                 "contains" => {
-                    if args.first().is_some_and(user_ops::may_have_user_ops) {
+                    if args.first().is_some_and(|v| interp.may_have_user_ops(v)) {
                         let items: Vec<Value> = rc.borrow().items.iter().cloned().collect();
                         return Ok(Value::Bool(interp.contains_value(&items, &args[0])?));
                     }
@@ -1510,7 +1515,7 @@ fn eval_method_call(
         Value::Dict(rc) => {
             use crate::builtins::instance::dict_methods as m;
             if matches!(method_name, "contains_key" | "get" | "set")
-                && args.first().is_some_and(user_ops::may_have_user_ops)
+                && args.first().is_some_and(|v| interp.may_have_user_ops(v))
             {
                 return interp.dict_op_user(rc, method_name, args);
             }
@@ -1543,9 +1548,21 @@ fn eval_method_call(
     let (type_name, derives_clone) = match &receiver {
         Value::Struct { type_name, derives_clone, .. } => (type_name.clone(), *derives_clone),
         Value::Enum   { type_name, .. }                => (type_name.clone(), false),
-        other => return Err(Signal::Panic(format!(
-            "no method '{}' on {}", method_name, other.type_name()
-        ))),
+        other => {
+            // A method an `extend` or `impl` block gave a primitive, a tuple
+            // or an array. Every native method was tried above, so a native
+            // one wins over a user's of the same name, as sema decides.
+            let user = other.impl_key().and_then(|key| interp.method_table
+                .get(key.as_ref())
+                .and_then(|m| m.get(method_name))
+                .copied());
+            if let Some(fn_id) = user {
+                return interp.call_method(fn_id, receiver, args);
+            }
+            return Err(Signal::Panic(format!(
+                "no method '{}' on {}", method_name, other.type_name()
+            )));
+        }
     };
     if let Some(fn_id) = interp.method_table
         .get(&type_name)
@@ -1597,6 +1614,9 @@ fn eval_qualified_trait_call<'ast>(
     let receiver = values.remove(0);
     // A prelude trait has no impl block to find (see `native_prelude_method`).
     if is_prelude_trait(trait_name) {
+        // Only a struct or an enum can carry its own impl of a prelude trait
+        // into this call. For a built-in value the native method reaches a
+        // hand-written impl through `user_ops` (`builtin_prelude_impls`).
         let has_table_entry = match &receiver {
             Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => interp.trait_method_table
                 .get(&(type_name.clone(), trait_name.to_string()))
@@ -1607,11 +1627,10 @@ fn eval_qualified_trait_call<'ast>(
             return native_prelude_method(interp, receiver, method, &values);
         }
     }
-    let type_name = match &receiver {
-        Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => type_name.clone(),
-        other => return Err(Signal::Panic(format!(
-            "{}.{}(..) on {}, which implements no trait", trait_name, method, other.type_name()
-        ))),
+    let Some(type_name) = dispatch_key(&receiver) else {
+        return Err(Signal::Panic(format!(
+            "{}.{}(..) on {}, which implements no trait", trait_name, method, receiver.type_name()
+        )));
     };
     let fn_id = interp.trait_method_table
         .get(&(type_name.clone(), trait_name.to_string()))

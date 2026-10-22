@@ -366,8 +366,10 @@ fn a_default_may_call_the_traits_other_methods_on_self() {
 // ── Features that are not built yet are reported (TYPE-129) ──────
 
 #[test]
-fn an_impl_for_a_builtin_type_is_reported_not_ignored() {
-    let src = "trait Shape { fn area(self) int }\nimpl Shape for int { fn area(self) int { return 1 } }\nfn main() void { }\n";
+fn an_impl_for_a_collection_is_reported_not_ignored() {
+    // A primitive, a tuple and an array take impls (tests/builtin_impls.rs);
+    // a collection does not yet.
+    let src = "trait Shape { fn area(self) int }\nimpl Shape for List<int> { fn area(self) int { return 1 } }\nfn main() void { }\n";
     assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
 }
 

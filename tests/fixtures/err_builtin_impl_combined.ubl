@@ -1,0 +1,39 @@
+// tests/fixtures/err_builtin_impl_combined.ubl
+// Tuples, arrays and hand-written prelude traits. Two tuple types of one
+// arity cannot both implement a trait (a call tells tuples only by their
+// number of elements), nor can two array types (one kind of value, shared
+// with `List`). A tuple of another type fails a bound. A prelude trait is
+// refused where the type has it natively (`Clone` for `bool`, `PartialEq`
+// for a tuple) and needs the traits it builds on (`Hash` for `double` needs
+// `Eq`). An ordering operator on `char` is refused without a hand-written
+// `PartialOrd`.
+// Expected: sema FAIL (OverlappingImpl TYPE-128 four times, UnsatisfiedBound
+// TYPE-126 once, MissingSupertraitImpl TYPE-132 once, TypeNotOrderable
+// TYPE-118 once).
+
+trait Show {
+    fn show(self) string
+}
+
+impl Show for (int, int) { fn show(self) string { return "a" } }
+impl Show for (string, string) { fn show(self) string { return "b" } }
+
+impl Show for [3]int { fn show(self) string { return "arr" } }
+impl Show for [4]string { fn show(self) string { return "arr" } }
+
+impl Clone for bool { fn clone(self) bool { return self } }
+impl PartialEq for (int, string) { fn eq(self, other: (int, string)) bool { return true } }
+
+impl Hash for double { fn hash(self, state: Hasher) void { } }
+
+fn via<T: Show>(x: T) string {
+    return x.show()
+}
+
+fn main() void {
+    let p = (1, "a")
+    println(via(p))
+    let a: char = 'a'
+    let b: char = 'b'
+    println(a < b)
+}

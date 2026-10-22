@@ -220,6 +220,10 @@ pub enum TypeError {
     OverlappingImpl {
         trait_name: String,
         type_name:  String,
+        /// Why two impls collide when it is not plain from the types: a
+        /// built-in type that has the trait natively, or two types that are
+        /// one kind of value at run time.
+        note:       Option<String>,
         span:       Span,
     },
 
@@ -465,8 +469,11 @@ impl TypeError {
                         method, type_name,
                         traits.iter().map(|t| format!("`{}`", t)).collect::<Vec<_>>().join(", ")),
 
-            TypeError::OverlappingImpl { trait_name, type_name, .. } =>
-                format!("`{}` is implemented for `{}` more than once", trait_name, type_name),
+            TypeError::OverlappingImpl { trait_name, type_name, note, .. } => match note {
+                Some(note) => format!(
+                    "`{}` is implemented for `{}` more than once ({})", trait_name, type_name, note),
+                None => format!("`{}` is implemented for `{}` more than once", trait_name, type_name),
+            },
 
             TypeError::UnsupportedTraitFeature { feature, .. } =>
                 format!("{} is not supported yet", feature),

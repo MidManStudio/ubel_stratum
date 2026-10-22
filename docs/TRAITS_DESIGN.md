@@ -41,7 +41,8 @@
 | **S3a** | **Built** | Supertraits: `trait B: A + C`. An impl needs the impls beneath it (`TYPE-132`, now for every trait), a bound implies them, a default body sees them, a cycle is an error (`TYPE-133`), and the prelude declares its own. See "What S3a settled" below. |
 | **S3b** | **Built** | Generic traits (`trait Convert<T>`, `impl Convert<int> for X`), bounds with arguments (`T: Convert<int>`, `T: Convert<U>`) and generic supertraits (`trait Wide<T>: Convert<T>`), with one impl of a trait per type. See "What S3b settled" below. |
 | **S3c** | **Built** | A method's own generic parameters with bounds (including generic methods in traits) and bounds on a type alias parameter. See "What S3c settled" below. |
-| S3d to S6 | Planned | As in section 4. |
+| **S3d** | **Built** | Impls and `extend` blocks for primitives, tuples and arrays, and hand-written prelude traits where a built-in type lacks them. See "What S3d settled" below. |
+| S3e to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -465,6 +466,61 @@ What reading the code established before this was decided:
   it is not usable as `dyn Trait` under the rule Rust applies. Whether Ubel takes
   that rule is decided when S6 starts.
 
+### What S3d settled
+
+- **Scope.** The 21 primitive types under every spelling (`int`, `long`, `i64`,
+  `isize`, `short`, `byte`, `float`, `f32`, `double`, `f64`, `bool`, `char`,
+  `string`, and so on), tuples and arrays, for `impl Trait for T` and for `extend
+  T` (and an inherent `impl T`). A struct or an enum is unchanged. A collection, an
+  optional, a slice or a function type stays `TYPE-129`, for `impl` and now also for
+  `extend`, which used to pass sema and panic at run time.
+- **One definition per built-in type.** A built-in type that an `impl` or `extend`
+  names gets a `DefKind::BuiltinType` definition, one per type as a diagnostic
+  writes it (`int`, `(int, string)`, `[3]int`). Every table keyed by a definition
+  (methods, `trait_impls`, `trait_impl_args`, the ambiguity tables) then serves
+  built-in types as it serves structs, so bounds, qualified calls, supertraits,
+  default methods, generic traits and generic methods needed no second
+  implementation. An alias of a built-in (`type Score = int`) is that built-in.
+- **Sema keeps the types apart, the run time cannot.** `int`, `long`, `i64` and
+  `isize` are four types to sema, and an impl for `int` does not make `long`
+  implement the trait. At run time they are one kind of value (`Value::Int`), so a
+  call can only find an impl by the kind. The key is `Value::impl_key`: `int`
+  (for `int`, `long`, `i64`, `isize`, `short`), `u32` (`uint`, `u32`, `ushort`),
+  `u64` (`ulong`, `u64`, `usize`), `i8` (`i8`, `byte`), `u8` (`u8`, `ubyte`),
+  `i16`, `i32`, `u16`, `float` (`float`, `f32`), `double` (`double`, `f64`),
+  `bool`, `char`, `string`; a tuple is `tuple<arity>` and an array is `List`, the
+  kind it shares with `List<T>`. A trait has one impl per key. The second is
+  `TYPE-128` and its message says why (two types of one kind, tuples with the same
+  number of elements, arrays of every length and element type).
+  `ast::types::builtin_impl_key` writes the same strings from the type as written,
+  and a unit test pins that the two agree.
+- **Prelude traits.** A prelude trait may be written by hand only where the
+  built-in type does not have it natively (`prelude_status_native`): `Eq`, `Ord`
+  and `Hash` for `float` and `double`; `PartialOrd` and `Ord` for `bool` and
+  `char`; the ordering traits for a tuple and every trait for an array. Where the
+  type has it natively the impl is `TYPE-128` ("the built-in type already
+  implements it"). A hand-written impl needs the traits it builds on
+  (`Hash` for `double` needs `Eq`, `TYPE-132`). Once one exists, an ordering
+  operator accepts the type (`false < true` is `TYPE-118` without `PartialOrd`
+  for `bool`), and comparison, hashing and cloning of built-in values look for the
+  impl (`builtin_prelude_impls`, so a program without one keeps the fast path).
+- **Calls.** A native method wins (strings, tuples and lists have them), then a
+  method an `extend` or `impl` block gave the type (an inherent method beats a trait
+  method, two traits with one name are `TYPE-127`, the qualified form reaches a
+  trait's), then a prelude method. A primitive has no native methods, so a method
+  that is none of those is `TYPE-104`, which used to pass sema and panic at run
+  time, and a function without `self` is not a method. In the body of an impl or
+  an `extend` block `self` and `Self` are the built-in type.
+- **Integer literals inside a tuple** that are still undecided count as `int` when
+  the impl is looked up, so `let p = (1, "a")` finds the impl for `(int, string)`.
+- **Not built.** No expression produces a `[N]T` value (an array literal is a
+  `List<T>` and does not unify with `[3]int`), so an array impl is checked and its
+  methods can be called on a parameter of that type but never run; whether a
+  literal should check against `[N]T` is a language question. A function without
+  `self` in an `extend` block for a primitive can be declared but not called
+  (there is no path syntax for `int`). The generic built-ins wait for impls of
+  generic types.
+
 ### D7: what has to be specified before S4
 
 Two facts found while building S1a bear on the tier design.
@@ -672,7 +728,8 @@ exact-count tests, and the docs updated in the same bundle.
 | **S3a** | Supertraits (built). | D4 ii |
 | **S3b** | Generic traits, bounds with arguments and generic supertraits (built). | D4 ii |
 | **S3c** | A method's own generic parameters with bounds, generic methods in traits, and bounds on a type alias parameter (built). | D4 ii |
-| S3d onward | Impls for built-in types, impls for generic types and associated types. The order is chosen with the project owner. | D4 ii |
+| **S3d** | Impls and `extend` blocks for primitives, tuples and arrays (built). | D4 ii |
+| S3e onward | Impls for generic types (which brings `List`, `Dictionary`, `Option` and the other generic built-ins) and associated types. The order is chosen with the project owner. | D4 ii |
 | **S4** | Tier on trait method signatures. | D7 a |
 | **S5** | Language-item traits, one decision and one delivery each: `Display`/`Debug`, `Iterable<T>`, operators. | D5 C |
 | **S6** | `dyn Trait` in `HIGH`. | D2 B |

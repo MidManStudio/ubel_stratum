@@ -1,0 +1,64 @@
+// tests/fixtures/ok_builtin_impl_isolated.ubl
+// A primitive can implement a trait and take inherent methods. The trait is
+// reached as a method call, through a bounded type parameter and in the
+// qualified form; `extend` adds methods of its own, an alias of a primitive
+// stands for the primitive, a trait's default method applies, a generic trait
+// is checked with its argument, and a method may declare generic parameters
+// of its own. Types of different kinds (`int`, `i32`, `u8`, `double`) each
+// have their own impl.
+// Expected: sema OK, interpret OK.
+
+trait Describe {
+    fn name(self) string
+    fn tag(self, prefix: string) string { return prefix + self.name() }
+}
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+impl Describe for int { fn name(self) string { return "int" } }
+impl Describe for i32 { fn name(self) string { return "i32" } }
+impl Describe for u8 { fn name(self) string { return "u8" } }
+impl Describe for double { fn name(self) string { return "double" } }
+impl Describe for string { fn name(self) string { return "string" } }
+
+impl Convert<string> for int { fn convert(self) string { return "int as string" } }
+
+type Score = int
+
+extend Score {
+    fn double(self) int { return self * 2 }
+    fn pick<U>(self, u: U) U { return u }
+}
+
+extend string {
+    fn shout(self) string { return self + "!" }
+}
+
+fn via<T: Describe>(x: T) string {
+    return x.tag("<")
+}
+
+fn text<T: Convert<string>>(x: T) string {
+    return x.convert()
+}
+
+fn main() void {
+    let a: int = 21
+    let b: i32 = 1
+    let c: u8 = 2
+    let d: double = 1.5
+    assert(a.name() == "int", "a method call")
+    assert(b.name() == "i32", "a type of another kind has its own impl")
+    assert(c.name() == "u8", "a sized unsigned type")
+    assert(d.name() == "double", "a float type")
+    assert(via(a) == "<int", "through a bound, with a default method")
+    assert(Describe.name(b) == "i32", "the qualified form")
+    assert(a.double() == 42, "an extend block, through an alias")
+    assert(a.pick("x") == "x", "a generic method")
+    assert("hi".shout() == "hi!", "extend on string")
+    assert("hi".name() == "string", "impl on string")
+    assert(text(a) == "int as string", "a generic trait with its argument")
+    println(a.double())
+}

@@ -126,9 +126,11 @@ verified safe.
   name them (`T: Convert<int>`), and a trait can build on a generic one. A
   method can declare generic parameters of its own, with bounds, and a trait
   can declare generic methods that an impl repeats; a bound on a type alias's
-  parameter holds at every use of the alias. Next: impls for built-in and
-  generic types, associated types, tiers on trait methods, language-item
-  traits, and `dyn Trait`
+  parameter holds at every use of the alias. A primitive, a tuple or an array
+  can implement a trait and take `extend` methods, and a prelude trait can be
+  written by hand where the type lacks it (`Hash` for `double`). Next: impls
+  for generic types (which brings `List` and `Dictionary`), associated types,
+  tiers on trait methods, language-item traits, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

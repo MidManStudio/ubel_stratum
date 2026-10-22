@@ -101,3 +101,34 @@ pub struct FunctionType<'ast> {
     /// Whether the return type carries `!` (may-fail).
     pub is_fallible: bool,
 }
+
+/// The run-time key under which the methods of an `extend` or `impl` block
+/// written for a built-in type are registered, and under which a call finds
+/// them again. It is the name of the interpreter's value kind
+/// (`Value::impl_key`), so types that are one kind of value at run time share
+/// a key: `int`, `long`, `i64` and `isize` are all `"int"`, `uint` and `u32`
+/// are `"u32"`, `ulong`, `u64` and `usize` are `"u64"`, `float` and `f32` are
+/// `"float"`, `double` and `f64` are `"double"`. A tuple is keyed by its
+/// arity (`"tuple2"`) and an array by `"List"`, the kind of value it shares
+/// with `List<T>`. `None` for every other type.
+pub fn builtin_impl_key(kind: &TypeKind<'_>) -> Option<String> {
+    let key: &str = match kind {
+        TypeKind::Int | TypeKind::Long | TypeKind::I64 | TypeKind::Isize | TypeKind::Short => "int",
+        TypeKind::I8 | TypeKind::Byte => "i8",
+        TypeKind::I16 => "i16",
+        TypeKind::I32 => "i32",
+        TypeKind::U8 | TypeKind::Ubyte => "u8",
+        TypeKind::U16 => "u16",
+        TypeKind::Uint | TypeKind::U32 | TypeKind::Ushort => "u32",
+        TypeKind::Ulong | TypeKind::U64 | TypeKind::Usize => "u64",
+        TypeKind::Float | TypeKind::F32 => "float",
+        TypeKind::Double | TypeKind::F64 => "double",
+        TypeKind::Bool => "bool",
+        TypeKind::Char => "char",
+        TypeKind::Str => "string",
+        TypeKind::Tuple(elems) => return Some(format!("tuple{}", elems.len())),
+        TypeKind::Array { .. } => "List",
+        _ => return None,
+    };
+    Some(key.to_string())
+}

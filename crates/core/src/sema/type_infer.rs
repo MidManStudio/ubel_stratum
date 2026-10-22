@@ -120,6 +120,7 @@ use crate::ast::types::{Type, TypeKind};
 use crate::builtins::instance::{self, MethodReturn, ReceiverWrap};
 use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
+use crate::ast::common::Visibility;
 use crate::sema::symbol_table::{DefId, DefKind};
 use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
 
@@ -561,6 +562,22 @@ struct InferCtx<'a> {
     /// method's own definition. Filled by `collect_method_sig`; read where a
     /// shape is rebuilt from the method's function type.
     method_generics:  HashMap<DefId, MethodGenerics>,
+    /// The definition standing in for each built-in type (a primitive, a
+    /// tuple, an array) an `extend` or `impl` block is written for, by the
+    /// type as a diagnostic writes it (`int`, `(int, string)`, `[3]int`). The
+    /// tables keyed by a definition (`struct_methods`, `trait_impls`,
+    /// `trait_impl_args`) then serve built-in types as they serve structs.
+    builtin_defs:      HashMap<String, DefId>,
+    /// The type each of those definitions stands for.
+    builtin_def_types: HashMap<DefId, TypeId>,
+    /// The definition for the target of each `extend` or `impl` block, by the
+    /// target type's span, so the target is converted once.
+    builtin_targets:   HashMap<Span, (DefId, TypeId)>,
+    /// `(run-time key, trait)` -> the definition that implements the trait
+    /// for that key. Types that are one kind of value at run time (`int`,
+    /// `long`, `i64`, `isize`) cannot be told apart by a call, so each trait
+    /// can be implemented for only one of them.
+    builtin_key_impls: HashMap<(String, DefId), DefId>,
     /// Populated once per struct by `collect_struct_sig`, alongside
     /// `check_derive_attrs`'s own validation of the same `@derive(...)`
     /// list. Sema's own copy, not shared with `Interpreter::
@@ -644,6 +661,10 @@ impl<'a> InferCtx<'a> {
             struct_fields:    HashMap::new(),
             struct_methods:   HashMap::new(),
             method_generics:  HashMap::new(),
+            builtin_defs:      HashMap::new(),
+            builtin_def_types: HashMap::new(),
+            builtin_targets:   HashMap::new(),
+            builtin_key_impls: HashMap::new(),
             struct_derives:   HashMap::new(),
             generic_arity:    HashMap::new(),
             current_tier:     TierAnnotation::High,
@@ -1376,7 +1397,10 @@ impl<'a> InferCtx<'a> {
     /// generic parameters as `Param`s, or `None` when the target is not a
     /// plain named type.
     fn self_type_for_target<'ast>(&mut self, target: &Type<'ast>) -> Option<TypeId> {
-        let def = self.target_type_def_id(target)?;
+        let Some(def) = self.target_type_def_id(target) else {
+            // A primitive, a tuple or an array is its own `Self`.
+            return self.builtin_target(target).map(|(_, ty)| ty);
+        };
         let arity = self.generic_arity.get(&def).copied().unwrap_or(0);
         let args: Vec<TypeId> = (0..arity)
             .map(|i| self.ctx.types.intern(SemaType::Param(i)))
@@ -1412,7 +1436,10 @@ impl<'a> InferCtx<'a> {
         impls.sort_by_key(|(_, _, s)| s.start);
         for (trait_def, target, span) in impls {
             let own_args = self.trait_impl_args.get(&(trait_def, target)).cloned().unwrap_or_default();
-            let ty = self.ctx.types.insert(SemaType::Named { def: target, args: Vec::new() });
+            let ty = match self.builtin_def_types.get(&target) {
+                Some(t) => *t,
+                None    => self.ctx.types.insert(SemaType::Named { def: target, args: Vec::new() }),
+            };
             // The impl's own trait comes first in the closure, then what it
             // builds on, with the impl's arguments carried through
             // (`impl B<int> for T` with `trait B<X>: A<X>` needs `A<int>`).
@@ -1941,6 +1968,24 @@ impl<'a> InferCtx<'a> {
     /// - Every other built-in type: none (`==` on a collection is reference
     ///   identity, so it is not `PartialEq` here).
     fn prelude_status(&mut self, name: &str, ty: TypeId) -> Option<bool> {
+        let native = self.prelude_status_native(name, ty);
+        if native != Some(false) { return native; }
+        // A built-in type that lacks the trait natively has it when an `impl`
+        // wrote it (`Hash` for `double`), and may still get one until the
+        // impls are registered.
+        let ty = self.peel_wrappers(ty);
+        if self.runtime_impl_key(ty).is_none() { return native; }
+        let written = self.prelude_defs.get(name).copied()
+            .is_some_and(|t| self.builtin_implements(ty, t));
+        if written { Some(true) }
+        else if self.impls_registered { native }
+        else { None }
+    }
+
+    /// What a type has of a prelude trait without any `impl` of the user's:
+    /// the traits a struct derives, the fixed set of a primitive, and so on
+    /// (the list above). `prelude_status` adds the hand-written impls.
+    fn prelude_status_native(&mut self, name: &str, ty: TypeId) -> Option<bool> {
         let ty = self.peel_wrappers(ty);
         if ty == TypeId::ERROR { return Some(true); }
         let eq_like  = matches!(name, "PartialEq" | "Eq" | "Clone" | "Hash");
@@ -2006,6 +2051,13 @@ impl<'a> InferCtx<'a> {
             SemaType::Var(_)  => None,
             SemaType::Param(_) => Some(self.current_bounds.get(&ty)
                 .is_some_and(|bs| bs.iter().any(|b| b.trait_def == trait_def))),
+            _ if self.runtime_impl_key(ty).is_some() => {
+                // A primitive, a tuple or an array has the trait when an
+                // `impl` says so, which may not be registered yet.
+                if self.builtin_implements(ty, trait_def) { Some(true) }
+                else if self.impls_registered { Some(false) }
+                else { None }
+            }
             SemaType::Named { def, .. } => {
                 if self.trait_impls.contains_key(&(trait_def, def)) { Some(true) }
                 else if self.impls_registered { Some(false) }
@@ -2082,7 +2134,10 @@ impl<'a> InferCtx<'a> {
                 Some(b) => b.args.clone(),
                 None    => return Some(true),
             },
-            _ => return Some(true),
+            _ => match self.builtin_def_of(ty).and_then(|d| self.trait_impl_args.get(&(trait_def, d))) {
+                Some(a) => a.clone(),
+                None    => return Some(true),
+            },
         };
         if have.len() != args.len() { return Some(true); }
         let mut agree = true;
@@ -2404,17 +2459,21 @@ impl<'a> InferCtx<'a> {
                     if self.struct_derives.get(&td).is_some_and(|d| d.contains(pname)) {
                         let type_name = self.ctx.symbols.lookup(td).name.clone();
                         self.errors.add_type_error(TypeError::OverlappingImpl {
-                            trait_name: pname.to_string(), type_name, span: i.span,
+                            trait_name: pname.to_string(), type_name, note: None, span: i.span,
                         });
                         continue;
                     }
                 }
             }
-            let target_def = self.target_type_def_id(i.target_type).filter(|d|
-                matches!(self.ctx.symbols.lookup(*d).kind, DefKind::Struct { .. } | DefKind::Enum));
+            let builtin = self.builtin_target(i.target_type);
+            let target_def = match builtin {
+                Some((def, _)) => Some(def),
+                None => self.target_type_def_id(i.target_type).filter(|d|
+                    matches!(self.ctx.symbols.lookup(*d).kind, DefKind::Struct { .. } | DefKind::Enum)),
+            };
             let Some(target_def) = target_def else {
                 self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                    feature: "implementing a trait for a type that is not a struct or enum",
+                    feature: "implementing a trait for a type that is not a struct, an enum, a primitive, a tuple or an array",
                     span:    i.span,
                 });
                 continue;
@@ -2434,14 +2493,56 @@ impl<'a> InferCtx<'a> {
 
             if self.trait_impls.contains_key(&(trait_def, target_def)) {
                 self.errors.add_type_error(TypeError::OverlappingImpl {
-                    trait_name: info.name.clone(), type_name, span: i.span,
+                    trait_name: info.name.clone(), type_name, note: None, span: i.span,
                 });
                 continue;
+            }
+            if let Some((_, builtin_ty)) = builtin {
+                // A prelude trait the type already has natively cannot be
+                // implemented again; one it lacks (`Hash` for `double`) can.
+                if let Some(pname) = self.prelude_traits.get(&trait_def).copied() {
+                    if self.prelude_status_native(pname, builtin_ty) == Some(true) {
+                        self.errors.add_type_error(TypeError::OverlappingImpl {
+                            trait_name: info.name.clone(),
+                            type_name,
+                            note: Some("the built-in type already implements it".to_string()),
+                            span: i.span,
+                        });
+                        continue;
+                    }
+                }
+                // Types that are one kind of value at run time cannot be told
+                // apart by a call, so a trait has one impl for all of them.
+                if let Some(key) = self.runtime_impl_key(builtin_ty) {
+                    if let Some(first) = self.builtin_key_impls.get(&(key.clone(), trait_def)).copied() {
+                        let first_name = self.ctx.symbols.lookup(first).name.clone();
+                        let kind = if key.starts_with("tuple") {
+                            "tuples with the same number of elements"
+                        } else if key == "List" {
+                            "arrays of every length and element type"
+                        } else {
+                            "types of the same kind"
+                        };
+                        self.errors.add_type_error(TypeError::OverlappingImpl {
+                            trait_name: info.name.clone(),
+                            type_name,
+                            note: Some(format!(
+                                "`{}` and `{}` are one kind of value at run time, and a call cannot tell {} apart",
+                                first_name, self.ctx.symbols.lookup(target_def).name, kind)),
+                            span: i.span,
+                        });
+                        continue;
+                    }
+                    self.builtin_key_impls.insert((key, trait_def), target_def);
+                }
             }
             self.trait_impls.insert((trait_def, target_def), i.span);
             self.trait_impl_args.insert((trait_def, target_def), impl_args.clone());
             self.require_def_bounds(trait_def, &impl_args, i.span);
-            let self_ty = self.ctx.types.insert(SemaType::Named { def: target_def, args: Vec::new() });
+            let self_ty = match builtin {
+                Some((_, t)) => t,
+                None => self.ctx.types.insert(SemaType::Named { def: target_def, args: Vec::new() }),
+            };
 
             for tm in &info.methods {
                 let impl_m = i.methods.iter().find(|m| m.name == tm.name.as_str());
@@ -2679,7 +2780,8 @@ impl<'a> InferCtx<'a> {
             SemaType::Param(_) => self.current_bounds.get(&ty)
                 .and_then(|bs| bs.iter().find(|b| b.trait_def == trait_def))
                 .map(|b| b.args.clone()),
-            _ => None,
+            _ => self.builtin_def_of(ty)
+                .and_then(|d| self.trait_impl_args.get(&(trait_def, d)).cloned()),
         };
         match known {
             Some(a) if a.len() == arity => a,
@@ -2701,7 +2803,7 @@ impl<'a> InferCtx<'a> {
             SemaType::Param(_) => self.current_bounds.get(&ty)
                 .is_some_and(|bs| bs.iter().any(|b| b.trait_def == trait_def)),
             SemaType::Unknown | SemaType::Var(_) => true,
-            _ => false,
+            _ => self.builtin_implements(ty, trait_def),
         }
     }
 
@@ -2909,11 +3011,140 @@ impl<'a> InferCtx<'a> {
             TypeKind::Named { path, .. } => {
                 let root = path.first().copied()?;
                 // An alias target (`extend P { .. }` with `type P = Point`)
-                // is the aliased struct or enum.
-                self.type_def_of(root)
+                // is the aliased struct or enum. A name that is anything else
+                // (an alias of `int`, a trait) is no user type.
+                self.type_def_of(root).filter(|d| matches!(
+                    self.ctx.symbols.lookup(*d).kind,
+                    DefKind::Struct { .. } | DefKind::Enum,
+                ))
             }
             _ => None,
         }
+    }
+
+    /// The key a built-in type's methods are called under at run time
+    /// (`ast::types::builtin_impl_key` writes the same strings from the type
+    /// as written, `Value::impl_key` from a value): the kind of value, so
+    /// `int`, `long`, `i64` and `isize` share one, a tuple is keyed by its
+    /// arity and an array shares `"List"` with `List<T>`. `None` for a type
+    /// nothing can be implemented for.
+    fn runtime_impl_key(&self, ty: TypeId) -> Option<String> {
+        let key: &str = match self.ctx.types.get(ty) {
+            SemaType::Int | SemaType::Long | SemaType::I64 | SemaType::Isize => "int",
+            SemaType::I8   => "i8",
+            SemaType::I16  => "i16",
+            SemaType::I32  => "i32",
+            SemaType::U8   => "u8",
+            SemaType::U16  => "u16",
+            SemaType::Uint | SemaType::U32 => "u32",
+            SemaType::Ulong | SemaType::U64 | SemaType::Usize => "u64",
+            SemaType::Float | SemaType::F32 => "float",
+            SemaType::Double | SemaType::F64 => "double",
+            SemaType::Bool => "bool",
+            SemaType::Char => "char",
+            SemaType::Str  => "string",
+            SemaType::Tuple(elems) => return Some(format!("tuple{}", elems.len())),
+            SemaType::Array { .. } => "List",
+            _ => return None,
+        };
+        Some(key.to_string())
+    }
+
+    /// The definition for the built-in type an `extend` or `impl` block is
+    /// written for, made on first use, with the type it stands for. `None`
+    /// for a struct or an enum (which have a definition of their own) and for
+    /// any type nothing can be implemented for.
+    fn builtin_target<'ast>(&mut self, ty: &Type<'ast>) -> Option<(DefId, TypeId)> {
+        if let Some(hit) = self.builtin_targets.get(&ty.span) { return Some(*hit); }
+        if self.target_type_def_id(ty).is_some() { return None; }
+        let sty = self.ast_type_to_sema(ty);
+        self.runtime_impl_key(sty)?;
+        let text = self.builtin_text(sty);
+        let def = match self.builtin_defs.get(&text) {
+            Some(d) => *d,
+            None => {
+                let d = self.ctx.symbols.insert(
+                    text.clone(), DefKind::BuiltinType, ty.span, Visibility::Private,
+                );
+                self.builtin_defs.insert(text, d);
+                self.builtin_def_types.insert(d, sty);
+                d
+            }
+        };
+        self.builtin_targets.insert(ty.span, (def, sty));
+        Some((def, sty))
+    }
+
+    /// The definition of a built-in type that has an `extend` or `impl`
+    /// block, if it has one. `ty` has its ownership wrappers peeled.
+    fn builtin_def_of(&self, ty: TypeId) -> Option<DefId> {
+        if self.builtin_defs.is_empty() { return None; }
+        self.runtime_impl_key(ty)?;
+        self.builtin_defs.get(&self.builtin_text(ty)).copied()
+    }
+
+    /// A built-in type as the table of definitions names it. An integer
+    /// literal that is still undecided inside a tuple or an array counts as
+    /// `int`, the type it defaults to, so `let p = (1, "a")` finds the impl
+    /// written for `(int, string)`.
+    fn builtin_text(&self, ty: TypeId) -> String {
+        let ty = self.apply(ty);
+        if self.int_lit_var_of(ty).is_some() { return "int".to_string(); }
+        match self.ctx.types.get(ty) {
+            SemaType::Tuple(elems) => format!("({})", elems.iter()
+                .map(|e| self.builtin_text(*e))
+                .collect::<Vec<_>>()
+                .join(", ")),
+            SemaType::Array { len, elem } => format!("[{}]{}", len, self.builtin_text(*elem)),
+            _ => self.display_type(ty),
+        }
+    }
+
+    /// Whether the built-in type `ty` has an `impl` of `trait_def`.
+    fn builtin_implements(&self, ty: TypeId, trait_def: DefId) -> bool {
+        self.builtin_def_of(ty)
+            .is_some_and(|d| self.trait_impls.contains_key(&(trait_def, d)))
+    }
+
+    /// A method an `extend` or `impl` block gave a built-in type, called on a
+    /// value of it. `None` when the receiver has no such method, so the
+    /// caller goes on as before. The callers try the native methods first, so
+    /// a native one wins over a user's of the same name, as an inherent
+    /// method wins over a trait's.
+    fn try_builtin_user_method<'ast>(
+        &mut self,
+        receiver_ty: TypeId,
+        field:       &str,
+        args:        &[Arg<'ast>],
+        callee_span: Span,
+        call_span:   Span,
+    ) -> Option<TypeId> {
+        if self.builtin_defs.is_empty() { return None; }
+        let bare = self.peel_wrappers(receiver_ty);
+        let def = self.builtin_def_of(bare)?;
+        if self.ambiguous_methods.contains(&(def, field.to_string())) {
+            let traits: Vec<String> = self.method_origins
+                .get(&(def, field.to_string()))
+                .map(|ts| ts.iter()
+                    .filter_map(|t| self.traits.get(t).map(|i| i.name.clone()))
+                    .collect())
+                .unwrap_or_default();
+            self.errors.add_type_error(TypeError::AmbiguousTraitMethod {
+                method:    field.to_string(),
+                traits,
+                type_name: self.display_type(bare),
+                span:      callee_span,
+            });
+            return Some(self.unknown());
+        }
+        let m = self.struct_methods.get(&def)?
+            .iter()
+            .find(|(n, m)| n == field && m.has_self)
+            .map(|(_, m)| m.clone())?;
+        let inst = self.instantiate_method(&m, &[]);
+        self.check_method_args(&inst.params, args, call_span);
+        self.require_method_bounds(&m, &inst, args, call_span);
+        Some(self.maybe_arena_ref(inst.return_type))
     }
 
     /// How many generic parameters the type an `extend` or `impl` block is
@@ -2961,7 +3192,28 @@ impl<'a> InferCtx<'a> {
                 Item::Impl(i) if i.trait_path.is_none() => (i.target_type, i.methods),
                 _ => continue,
             };
-            let Some(def_id) = self.target_type_def_id(target_type) else { continue; };
+            let def_id = match self.target_type_def_id(target_type) {
+                Some(d) => d,
+                None => match self.builtin_target(target_type) {
+                    Some((d, _)) => d,
+                    None => {
+                        // A collection, an optional and the rest have no
+                        // definition to hang methods on. Saying so beats a
+                        // call that panics at run time.
+                        if matches!(target_type.kind,
+                            TypeKind::List(..) | TypeKind::Dictionary(..) | TypeKind::Set(..)
+                            | TypeKind::Queue(..) | TypeKind::Stack(..) | TypeKind::Optional(..)
+                            | TypeKind::Slice(..) | TypeKind::Function(..))
+                        {
+                            self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
+                                feature: "extending a type that is not a struct, an enum, a primitive, a tuple or an array",
+                                span:    target_type.span,
+                            });
+                        }
+                        continue;
+                    }
+                },
+            };
             for m in methods {
                 let Some(fn_ty) = self.ctx.def_type(
                     self.ctx.resolutions.get(m.span).unwrap_or(DefId::INVALID)
@@ -3735,7 +3987,18 @@ impl<'a> InferCtx<'a> {
         methods:     &'ast [MethodDecl<'ast>],
     ) {
         let Some(def_id) = self.target_type_def_id(target_type) else {
+            // A primitive, a tuple or an array is its own `Self`, so `self`
+            // in the body has that type.
+            let builtin = self.builtin_target(target_type).map(|(_, t)| t);
+            let prev_self = self.current_struct_type;
+            let prev_self_type = self.self_type;
+            if let Some(t) = builtin {
+                self.current_struct_type = Some(t);
+                self.self_type = Some(t);
+            }
             for m in methods { self.infer_method_body(m, 0); }
+            self.self_type = prev_self_type;
+            self.current_struct_type = prev_self;
             return;
         };
         let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
@@ -4472,6 +4735,13 @@ impl<'a> InferCtx<'a> {
                             instance::resolve_receiver(&self.ctx.types, receiver_ty)
                         {
                             let Some((ret, arity)) = instance::signature(kind, field) else {
+                                // A method an `extend` or `impl` block gave this
+                                // kind (a string, a tuple, an array).
+                                if let Some(ret) = self.try_builtin_user_method(
+                                    receiver_ty, field, args, callee.span, expr.span,
+                                ) {
+                                    return ret;
+                                }
                                 // `s.lt(t)` on a string: a prelude method on a
                                 // built-in kind that has the trait.
                                 if let Some(ret) = self.try_prelude_method(
@@ -4631,6 +4901,13 @@ impl<'a> InferCtx<'a> {
                                 }
                             };
                         }
+                        // A method an `extend` or `impl` block gave a primitive
+                        // (the other built-in kinds are handled above).
+                        if let Some(ret) = self.try_builtin_user_method(
+                            receiver_ty, field, args, callee.span, expr.span,
+                        ) {
+                            return ret;
+                        }
                         // A prelude method (`eq`, `cmp`, `clone`, ...) on a value
                         // whose type has the trait: a primitive, a derived
                         // struct, an enum, a tuple. A method of the same name
@@ -4639,6 +4916,18 @@ impl<'a> InferCtx<'a> {
                             receiver_ty, field, args, callee.span, expr.span,
                         ) {
                             return ret;
+                        }
+                        // A primitive has no native methods, so a method that
+                        // is neither a user's nor a prelude's does not exist.
+                        // Saying so beats a call that panics at run time.
+                        let bare = self.peel_wrappers(receiver_ty);
+                        if self.runtime_impl_key(bare).is_some_and(|k| k != "List") {
+                            self.errors.add_type_error(TypeError::NoSuchMethod {
+                                method:  field.to_string(),
+                                on_type: self.display_type(bare),
+                                span:    callee.span,
+                            });
+                            return self.unknown();
                         }
                         let struct_recv_ty = match self.ctx.types.get(receiver_ty) {
                             SemaType::Unique(inner)
@@ -5544,6 +5833,13 @@ impl<'a> InferCtx<'a> {
                     // Two unconstrained literals (`1 < 2`) are still just
                     // an integer of some width, and integers are ordered.
                     SemaType::Var(n) if self.int_lit_vars.contains_key(n) => true,
+                    // A built-in type with a hand-written `PartialOrd` or `Ord`
+                    // (`bool`, `char`, a tuple, an array).
+                    _ if self.runtime_impl_key(resolved).is_some() => {
+                        let written = |name: &str| self.prelude_defs.get(name)
+                            .is_some_and(|t| self.builtin_implements(resolved, *t));
+                        written("PartialOrd") || written("Ord")
+                    }
                     // Derived, or hand-written (`impl PartialOrd`, or `impl Ord`
                     // which needs it).
                     SemaType::Named { def, .. } => {

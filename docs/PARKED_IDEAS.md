@@ -974,7 +974,35 @@ Known gaps of S3c, recorded rather than hidden:
   use inside another alias's own definition checks the trait but not its
   arguments.
 
-**Traits, slices S3d to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S3d (built).** Impls and `extend` blocks for primitives, tuples and
+arrays, and hand-written prelude traits where a built-in type lacks them. See
+`docs/TRAITS_DESIGN.md`, "What S3d settled".
+
+Known gaps of S3d, recorded rather than hidden:
+
+- No expression produces a `[N]T` value. An array literal is a `List<T>` and does
+  not unify with `[3]int` (`let a: [3]int = [1, 2, 3]` is `TYPE-101`), so an array
+  impl is checked by sema and can be called on a parameter of that type, but no
+  program runs one. A method that does not exist on such a parameter is not
+  reported either (the type has native `List` methods the checker does not list).
+- A function without `self` in an `extend` block for a primitive can be declared
+  but not called: `int.zero()` is `NAME-001`, since `int` is not a path.
+- A tuple impl for elements other than the default integer type is hard to reach:
+  tuples are not unified structurally with integer literals
+  (`let p: (long, int) = (1, 2)` is `TYPE-101`), and an undecided literal counts
+  as `int` when the impl is looked up.
+- A diagnostic that names a tuple with an undecided integer literal in it writes
+  the literal's variable (`(?T14, string)`).
+- `7.double()` lexes as `7.` followed by a name. The literal has to be in
+  parentheses: `(7).double()`.
+- A native method of a built-in type wins over an `extend` method of the same name
+  without a diagnostic (`extend string { fn len(self) int { .. } }` is never
+  called as `s.len()`).
+- Several impls of one trait for types of one kind (two tuple types of one
+  arity, `int` and `long`) are `TYPE-128` because a call cannot tell them apart.
+  Telling them apart needs the exact type at run time.
+
+**Traits, slices S3e to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

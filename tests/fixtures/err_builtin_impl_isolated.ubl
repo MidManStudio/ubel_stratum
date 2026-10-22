@@ -1,0 +1,46 @@
+// tests/fixtures/err_builtin_impl_isolated.ubl
+// What impls and `extend` blocks for built-in types can get wrong. Two types
+// that are one kind of value at run time (`int` and `long`) cannot both
+// implement a trait; a prelude trait the type already has natively cannot be
+// implemented again; `impl` and `extend` for a collection are not supported
+// yet; a type without the impl fails a bound; a method that does not exist
+// on a primitive, or a function without `self`, is not a method call; an impl
+// that misses a method or has the wrong signature is reported as for a
+// struct. The valid impl in between is not reported.
+// Expected: sema FAIL (OverlappingImpl TYPE-128 twice, UnsupportedTraitFeature
+// TYPE-129 twice, UnsatisfiedBound TYPE-126 once, NoSuchMethod TYPE-104 twice,
+// TraitMethodMissing TYPE-123 once, TraitMethodSignatureMismatch TYPE-125
+// once).
+
+trait Show {
+    fn show(self) string
+}
+
+trait Area {
+    fn area(self) int
+}
+
+impl Show for int { fn show(self) string { return "int" } }
+impl Show for long { fn show(self) string { return "long" } }
+impl Eq for string { }
+
+impl Show for List<int> { fn show(self) string { return "list" } }
+extend List<int> { fn first2(self) int { return 1 } }
+
+impl Area for bool { }
+impl Area for char { fn area(self) string { return "no" } }
+
+extend int { fn zero() int { return 0 } }
+
+fn via<T: Show>(x: T) string {
+    return x.show()
+}
+
+fn main() void {
+    let n: int = 1
+    let f: double = 1.5
+    println(via(n))
+    println(via(f))
+    println(n.nothing())
+    println(n.zero())
+}

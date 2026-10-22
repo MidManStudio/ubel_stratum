@@ -1,0 +1,61 @@
+// tests/fixtures/ok_builtin_impl_combined.ubl
+// Impls for tuples and for prelude traits on built-in types, together with
+// supertraits. A tuple type has its own impl and a tuple value finds it, also
+// through a bound; tuples of another arity have theirs. A prelude trait is
+// written by hand only where the type lacks it natively: `Hash` for
+// `double` makes it a dictionary key, and `PartialOrd` for `bool` lets `<`
+// compare booleans.
+// Expected: sema OK, interpret OK.
+
+trait Show {
+    fn show(self) string
+}
+
+trait Loud: Show {
+    fn loud(self) string
+}
+
+impl Show for (int, string) { fn show(self) string { return "pair" } }
+impl Show for (int, int, int) { fn show(self) string { return "triple" } }
+
+impl Show for int { fn show(self) string { return "int" } }
+impl Loud for int { fn loud(self) string { return "INT" } }
+
+impl Eq for double { }
+impl Hash for double { fn hash(self, state: Hasher) void { } }
+
+impl PartialOrd for bool {
+    fn partial_cmp(self, other: bool) Ordering? {
+        if self == other { return Ordering.Equal }
+        if self { return Ordering.Greater }
+        return Ordering.Less
+    }
+}
+
+fn via<T: Show>(x: T) string {
+    return x.show()
+}
+
+fn both<T: Loud>(x: T) string {
+    return x.show() + x.loud()
+}
+
+fn bigger<T: PartialOrd>(a: T, b: T) bool {
+    return a < b
+}
+
+fn main() void {
+    let p = (1, "a")
+    let t = (1, 2, 3)
+    assert(p.show() == "pair", "a tuple type")
+    assert(via(p) == "pair", "through a bound")
+    assert(Show.show(t) == "triple", "another arity in the qualified form")
+    let n: int = 5
+    assert(both(n) == "intINT", "a supertrait on a primitive")
+    let d: Dictionary<double, int> = Dictionary.new()
+    d.set(1.5, 2)
+    assert(d.contains_key(1.5), "a double key")
+    assert(false < true, "bool ordering")
+    assert(bigger(false, true), "a bound on a hand-written PartialOrd")
+    println(p.show())
+}

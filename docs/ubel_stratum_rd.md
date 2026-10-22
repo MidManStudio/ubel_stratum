@@ -229,6 +229,59 @@ interpreter where a test needs runtime values.
   in `instantiate_trait_shape`, whose argument list always has the trait's arity
   (now a debug assertion). All 42 that remain are caught.
 
+### `tests/builtin_impls.rs`
+
+**What it does:** Integration tests for impls and `extend` blocks on built-in
+types, slice S3d (51 tests), plus a unit test in `interpreter/value.rs` that pins
+`Value::impl_key` against `ast::types::builtin_impl_key` for every spelling of every
+type. Programs go through `check_source` for stage, codes, messages and positions
+and through the interpreter for run-time values.
+
+**Decisions:**
+- Every primitive spelling is generated into a program that implements a trait,
+  calls it as a method, through a bound and in the qualified form, and takes an
+  `extend` block; each prints its own spelling.
+- Calls: a method with arguments, a literal in parentheses, `Self`, default methods
+  three ways, a generic method on a primitive, a generic trait with its argument,
+  aliases of primitives and of tuples, the body of an impl checked with `self` as the
+  built-in type, `Self` in an `extend` signature.
+- Sema keeps types apart: an impl for `int` does not satisfy `long`, a missing impl
+  is `TYPE-104` or `TYPE-126`, types of different kinds each have an impl.
+- One kind of value, one impl: `int`/`long` is `TYPE-128` with the exact text, every
+  pair inside each of the seven kind groups, the same type twice, two traits on types
+  of one kind, tuples of one arity (and of different arity side by side), two array
+  types.
+- Native methods win over `extend`, an `extend` method beats a trait method and the
+  qualified form reaches the trait, two traits with one name are `TYPE-127`, the
+  qualified form picks one, supertraits are required of a primitive impl, missing
+  and mismatched methods are reported.
+- Prelude traits: refused where native (`Eq` for `int`, `Hash` for `string`, `Clone`
+  for `bool`, `PartialEq` for a tuple) with the exact message, allowed where not
+  (`Hash` for `double` makes a dictionary key), needing their supertraits, ordering
+  operators on `bool` and `char`, a hand-written impl used through a bound and in the
+  qualified form.
+- A method that does not exist on a primitive is `TYPE-104` (it used to panic), a
+  function without `self` is not a method, an array parameter keeps its native
+  methods, `impl` and `extend` for a collection are `TYPE-129`, errors inside a
+  built-in target are reported once, and structs and enums keep working beside all
+  of it.
+- Four fixtures sit beside it: `ok_builtin_impl_isolated`, `err_builtin_impl_isolated`,
+  `ok_builtin_impl_combined` and `err_builtin_impl_combined`. The two tests that
+  pinned built-in impls as `TYPE-129` (`tests/traits.rs`, `tests/prelude_traits.rs`)
+  now assert the new behaviour.
+- Mutation-checked: 39 mutations of the key mapping, the definitions, the
+  conversion of a target, the overlap rules, the prelude status, the bound checks,
+  the call hooks, the `Self` handling and the interpreter's registration and
+  dispatch. The first pass left six alive. Four needed tests (an arity error inside
+  a tuple target reported once, `Self` in an `extend` signature, a native method on
+  an array parameter, the key unit test), and one of those found a real gap, `self`
+  untyped in the body of a built-in impl, which is fixed. One conjunct of the
+  primitive check could not matter and was removed, and one change to the qualified
+  call turned out to be unneeded and was reverted. Run again on the finished code,
+  38 of the 39 are caught. The one that is not changes nothing a program can
+  observe: the empty-table fast path in `builtin_def_of`, kept because it spares a
+  type-text allocation on every method call of a program without built-in impls.
+
 ### `prelude.rs`, `tests/prelude_traits.rs`
 
 **What it does:** `prelude.rs` holds the declarations every program sees

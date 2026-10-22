@@ -390,6 +390,23 @@ impl Value {
         }
     }
 
+    /// The key a built-in value's `extend` and `impl` methods are registered
+    /// under (`ast::types::builtin_impl_key` writes the same strings from the
+    /// type as written): the kind of value, with a tuple's arity. `None` for
+    /// a struct or an enum (they carry their own type name) and for the
+    /// kinds nothing can be implemented for.
+    pub fn impl_key(&self) -> Option<std::borrow::Cow<'static, str>> {
+        use std::borrow::Cow;
+        match self {
+            Value::Bool(_) | Value::Int(_) | Value::I8(_) | Value::I16(_) | Value::I32(_)
+            | Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::UInt(_)
+            | Value::Float(_) | Value::Double(_) | Value::Char(_) | Value::Str(_)
+            | Value::List(_) => Some(Cow::Borrowed(self.type_name())),
+            Value::Tuple(elems) => Some(Cow::Owned(format!("tuple{}", elems.len()))),
+            _ => None,
+        }
+    }
+
     /// Ubel conditions must be `bool`; anything else is a runtime panic.
     pub fn is_truthy(&self) -> Result<bool, Signal> {
         match self {
@@ -1048,6 +1065,42 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Value::impl_key` (what a call looks up) and
+    /// `ast::types::builtin_impl_key` (what an `impl` registers under) are
+    /// written apart and have to agree for every type a value can have.
+    #[test]
+    fn impl_key_of_a_value_is_the_key_of_each_type_that_holds_it() {
+        use crate::ast::common::Span;
+        use crate::ast::types::{builtin_impl_key, Type, TypeKind};
+        let at = Span { start: 0, end: 0, line: 1, column: 1 };
+        let int_ty = Type { kind: TypeKind::Int, span: at };
+        let cases: Vec<(Vec<TypeKind>, Value)> = vec![
+            (vec![TypeKind::Int, TypeKind::Long, TypeKind::I64, TypeKind::Isize, TypeKind::Short], Value::Int(1)),
+            (vec![TypeKind::I8, TypeKind::Byte], Value::I8(1)),
+            (vec![TypeKind::I16], Value::I16(1)),
+            (vec![TypeKind::I32], Value::I32(1)),
+            (vec![TypeKind::U8, TypeKind::Ubyte], Value::U8(1)),
+            (vec![TypeKind::U16], Value::U16(1)),
+            (vec![TypeKind::Uint, TypeKind::U32, TypeKind::Ushort], Value::U32(1)),
+            (vec![TypeKind::Ulong, TypeKind::U64, TypeKind::Usize], Value::UInt(1)),
+            (vec![TypeKind::Float, TypeKind::F32], Value::Float(1.0)),
+            (vec![TypeKind::Double, TypeKind::F64], Value::Double(1.0)),
+            (vec![TypeKind::Bool], Value::Bool(true)),
+            (vec![TypeKind::Char], Value::Char('a')),
+            (vec![TypeKind::Str], Value::str_from("s")),
+            (vec![TypeKind::Array { len: 3, elem: &int_ty }], Value::List(Rc::new(RefCell::new(Vec::new())))),
+            (vec![TypeKind::Tuple(&[])], Value::Tuple(Vec::new())),
+        ];
+        for (kinds, value) in cases {
+            let key = value.impl_key().map(|k| k.into_owned());
+            for kind in kinds {
+                assert_eq!(builtin_impl_key(&kind), key, "for {:?}", kind);
+            }
+        }
+        assert_eq!(builtin_impl_key(&TypeKind::Infer), None);
+        assert_eq!(Value::Null.impl_key(), None);
+    }
 
     #[test]
     fn test_debug_string_quotes_str_display_does_not() {

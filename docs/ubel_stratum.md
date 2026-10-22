@@ -1494,3 +1494,26 @@ is described under `tests/method_generics.rs` in `docs/ubel_stratum_rd.md`: 45
 mutations, 42 caught and 3 on code that proved dead and was removed. Every line it
 wrote was checked for em dashes and first or second person.
 
+A twenty-first delivery (traits slice S3d) touched `core/src/ast/types.rs`
+(`builtin_impl_key`), `interpreter/value.rs` (`Value::impl_key`),
+`interpreter/eval/mod.rs`, `expr.rs` and `user_ops.rs`, `sema/symbol_table.rs`
+(`DefKind::BuiltinType`), `sema/type_infer.rs` and the TypeError enum (`TYPE-128`
+carries a note). Sema gives each built-in type that an `impl` or `extend` names a
+definition (`builtin_target`), so the tables keyed by a definition serve it;
+`runtime_impl_key`, `builtin_def_of`, `builtin_implements` and
+`try_builtin_user_method` do the lookups, `prelude_status` adds hand-written impls to
+the native status (`prelude_status_native`), the bound and qualified-call paths
+consult them, a method that does not exist on a primitive is `TYPE-104`, and `self`
+and `Self` in a built-in impl are the built-in type. The interpreter registers an
+impl or `extend` under its run-time key, tries the natives and then `method_table`
+for a built-in receiver, dispatches trait and qualified calls on `Value::impl_key`,
+and consults user impls for built-in values once a prelude trait has been written by
+hand for one. It added `tests/builtin_impls.rs` (51 tests), a unit test in
+`interpreter/value.rs`, four fixtures (`ok_builtin_impl_isolated`,
+`err_builtin_impl_isolated`, `ok_builtin_impl_combined`, `err_builtin_impl_combined`)
+and changed two tests (`tests/traits.rs`, `tests/prelude_traits.rs`). The workspace
+has 802 passing tests. The fixture sweep went from 256 lexed, 248 parsed and 135
+through sema to 260, 252 and 137, with 136 interpreted. The mutation pass is described
+under `tests/builtin_impls.rs` in `docs/ubel_stratum_rd.md`. Every line it wrote was
+checked for em dashes and first or second person.
+
