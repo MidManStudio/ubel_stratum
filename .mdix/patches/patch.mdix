@@ -1,11 +1,9 @@
 // Brought to u by MidManStudio
 //
-// LLVM proof of concept, Stage 0: bring the status docs up to date.
-//
-// Three one-line edits, each anchored on the exact text it replaces, so they
-// cannot overwrite anything else in these files. Apply with the "Apply Patches"
-// workflow. This file replaces the previous patch.mdix, whose only job (the
-// traits S3c fixture removal) has already been applied.
+// LLVM proof of concept, Stage 1B: the status docs said nothing is generated from Ubel
+// source yet, which is no longer true for a small subset. Four one-line edits, each
+// anchored on the exact text it replaces, so they cannot overwrite anything else in
+// these files. Apply with the "Apply Patches" workflow.
 
 @CONFIG(
   version    -> "1.0.0",
@@ -22,7 +20,8 @@
 
 @DATA(
   patch_files::
-    patch_replace_text("web/site/src/project-status.md", "| 4 | Not started | LLVM backend, native binaries |", "| 4 | Started | LLVM backend, native binaries. So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet (`docs/LLVM_POC.md`) |")
-    patch_replace_text("web/site/src/introduction.md", "| 4 | Not started | LLVM backend, native binaries |", "| 4 | Started | LLVM backend, native binaries. So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet (`docs/LLVM_POC.md`) |")
-    patch_replace_text("CONTRIBUTING.md", "with the LLVM backend not yet started, see", "with only a measurement proof of concept of the LLVM backend so far, see docs/LLVM_POC.md and")
+    patch_replace_text("web/site/src/project-status.md", "So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet", "So far a proof of concept: hand-written IR measures the three tiers, and a small emitter turns a subset of Ubel (int and bool functions, control flow, arena blocks) into LLVM IR that matches the interpreter")
+    patch_replace_text("web/site/src/introduction.md", "So far only a measurement proof of concept: hand-written IR for the three tiers, nothing generated from Ubel source yet", "So far a proof of concept: hand-written IR measures the three tiers, and a small emitter turns a subset of Ubel (int and bool functions, control flow, arena blocks) into LLVM IR that matches the interpreter")
+    patch_replace_text("README.md", "so far only a measurement proof of concept, see", "so far a proof of concept (tier measurements, plus an emitter for a small subset of Ubel), see")
+    patch_replace_text("CONTRIBUTING.md", "with only a measurement proof of concept of the LLVM backend so far, see docs/LLVM_POC.md and", "with only a proof of concept of the LLVM backend so far (measured tiers and a small emitter), see docs/LLVM_POC.md and")
 )
