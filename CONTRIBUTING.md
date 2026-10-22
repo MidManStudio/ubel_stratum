@@ -1,7 +1,7 @@
 # Contributing to Ubel Stratum
 
 Thanks for taking a look at this. Ubel Stratum is early — Phase 3 of 5
-(tree-walking interpreter, with only a measurement proof of concept of the LLVM backend so far, see docs/LLVM_POC.md and
+(tree-walking interpreter, with only a proof of concept of the LLVM backend so far (measured tiers and a small emitter), see docs/LLVM_POC.md and
 `README.md`) — which means there's real design still being worked out
 in the open, not just bug fixes on a settled language. Read before you
 write; this project has strong, specific, *documented* conventions, and

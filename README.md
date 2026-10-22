@@ -28,7 +28,7 @@ this reason — see Phase 1 below). Source files use the `.ubl` extension.
 1. ✅ **Phase 1**: Core design, memory model, lexer (Logos), arena AST, parser
 2. ✅ **Phase 2**: Semantic analysis — name resolution, type inference, tier enforcer
 3. ✅ **Phase 3**: Tree-walking interpreter — **current execution model**
-4. 📋 **Phase 4**: LLVM backend → native binary — **the real end goal; so far only a measurement proof of concept, see [docs/LLVM_POC.md](docs/LLVM_POC.md)**
+4. 📋 **Phase 4**: LLVM backend → native binary — **the real end goal; so far a proof of concept (tier measurements, plus an emitter for a small subset of Ubel), see [docs/LLVM_POC.md](docs/LLVM_POC.md)**
 5. 📋 **Phase 5**: Standard library, tooling, package manager
 
 Phase 1's parser is worth a specific note: LALRPOP was the original plan, but its
