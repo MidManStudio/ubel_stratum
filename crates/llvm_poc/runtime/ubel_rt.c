@@ -36,6 +36,25 @@ uint64_t ubel_now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+/* ------------------------------------------------------ emitted-program support */
+
+void ubel_print_i64(int64_t v)            { fprintf(stdout, "%lld", (long long)v); }
+void ubel_print_bool(int32_t b)           { fputs(b ? "true" : "false", stdout); }
+void ubel_print_str(const char *s, int64_t len) { fwrite(s, 1, (size_t)len, stdout); }
+void ubel_print_nl(void)                  { fputc('\n', stdout); }
+
+void ubel_trap_div_zero(void) {
+    fflush(stdout);
+    fprintf(stderr, "runtime error: division by zero\n");
+    exit(1);
+}
+
+void ubel_trap_no_return(void) {
+    fflush(stdout);
+    fprintf(stderr, "runtime error: a function with a return type reached its end without returning\n");
+    exit(1);
+}
+
 /* ===================================================================== GC */
 
 _Static_assert(sizeof(void *) == 4 || sizeof(void *) == 8, "Stage 0 supports 32- and 64-bit targets");
@@ -386,6 +405,9 @@ static void arena_install_chunk(ubel_arena *a, uint64_t payload) {
 }
 
 static ubel_arena *scan_head;
+static uint64_t arenas_live;
+
+uint64_t ubel_arena_live(void) { return arenas_live; }
 
 ubel_arena *ubel_arena_create(uint64_t chunk_size) {
     ubel_arena *a = (ubel_arena *)malloc(sizeof *a);
@@ -396,6 +418,7 @@ ubel_arena *ubel_arena_create(uint64_t chunk_size) {
     a->scan_next = a->scan_prev = NULL;
     a->scannable = 0;
     arena_install_chunk(a, a->chunk_size);
+    arenas_live++;
     return a;
 }
 
@@ -431,6 +454,7 @@ void *ubel_arena_grow(ubel_arena *a, uint64_t size) {
 }
 
 void ubel_arena_destroy(ubel_arena *a) {
+    arenas_live--;
     if (a->scannable) {
         if (a->scan_prev) a->scan_prev->scan_next = a->scan_next; else scan_head = a->scan_next;
         if (a->scan_next) a->scan_next->scan_prev = a->scan_prev;

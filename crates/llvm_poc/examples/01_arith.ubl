@@ -1,0 +1,12 @@
+// Arithmetic, comparisons, bitwise operators and bool printing.
+fn main() void {
+    let a = 17
+    let b = 5
+    println(a + b, a - b, a * b, a / b, a % b)
+    println(-a, a & b, a | b, a ^ b, a << 2, a >> 1, ~a)
+    println(a > b, a < b, a >= 17, a <= 16, a == 17, a != 17)
+    println(!(a > b), a > b && b > 0, a < b || b == 5)
+    let neg = 0 - 20
+    println(neg / 3, neg % 3, neg >> 2)
+    println(2 + 3 * 4, (2 + 3) * 4, 100 - 10 - 5, 2 * 3 % 4)
+}

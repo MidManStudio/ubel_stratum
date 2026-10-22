@@ -1,0 +1,21 @@
+// Short-circuit evaluation: the right operand must not run when the left decides it,
+// and arguments are evaluated before anything is printed.
+fn t(label: int) bool {
+    println($"t{label}")
+    return true
+}
+
+fn f(label: int) bool {
+    println($"f{label}")
+    return false
+}
+
+fn main() void {
+    println(f(1) && t(2))
+    println(t(3) && t(4))
+    println(t(5) || f(6))
+    println(f(7) || f(8))
+    let r = f(9) || t(10) && t(11)
+    println(r)
+    println(t(12), f(13), t(14))
+}

@@ -1,0 +1,13 @@
+// println forms: several arguments, string literals, interpolated strings.
+fn main() void {
+    let a = 3
+    let b = 4
+    println("hello")
+    println("sum is", a + b)
+    println($"a={a} b={b} sum={a + b} lt={a < b}")
+    println("mixed:", a, b, a < b, "end")
+    print("no newline, ")
+    print(a)
+    println()
+    println($"{a}{b}")
+}

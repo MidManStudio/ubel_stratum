@@ -1,0 +1,6 @@
+// Not supported yet: arrays and collections.
+// expect-refusal: type
+fn main() void {
+    let a = [1, 2, 3]
+    println(a.len())
+}

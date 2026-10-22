@@ -1,0 +1,6 @@
+// Not supported yet: strings as values (they work only directly inside println).
+// expect-refusal: this literal as a value
+fn main() void {
+    let s = "hello"
+    println(s)
+}

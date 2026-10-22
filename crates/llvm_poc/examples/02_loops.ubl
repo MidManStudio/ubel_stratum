@@ -1,0 +1,54 @@
+// while, loop, for over ranges, break, continue, nested loops, an empty range.
+fn main() void {
+    let mut total = 0
+    for i in 0 .. 5 {
+        total += i
+    }
+    println(total)
+
+    let mut squares = 0
+    for i in 1 ..= 5 {
+        squares += i * i
+    }
+    println(squares)
+
+    let mut n = 0
+    while n < 10 {
+        n += 3
+    }
+    println(n)
+
+    let mut c = 0
+    loop {
+        c += 1
+        if c == 7 {
+            break
+        }
+    }
+    println(c)
+
+    let mut odd = 0
+    for i in 0 .. 10 {
+        if i % 2 == 0 {
+            continue
+        }
+        odd += i
+    }
+    println(odd)
+
+    let mut tri = 0
+    for r in 0 .. 5 {
+        for q in 0 .. 5 {
+            if q > 2 {
+                break
+            }
+            tri += r
+        }
+    }
+    println(tri)
+
+    for e in 5 .. 5 {
+        println(e)
+    }
+    println("done")
+}

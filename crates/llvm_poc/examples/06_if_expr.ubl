@@ -1,0 +1,24 @@
+// `if` used for its value, and implicit return of a function's last expression.
+fn max(a: int, b: int) int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn square(x: int) int {
+    x * x
+}
+
+fn classify(n: int) int {
+    let r = if n < 0 { 0 - 1 } elif n == 0 { 0 } else { 1 }
+    return r
+}
+
+fn main() void {
+    println(max(3, 9), max(9, 3), max(4, 4))
+    println(square(7), square(0 - 3))
+    println(classify(0 - 8), classify(0), classify(8))
+    let big = if max(2, 3) > 2 { true } else { false }
+    println(big)
+}

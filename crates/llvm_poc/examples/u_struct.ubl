@@ -1,0 +1,11 @@
+// Not supported yet: struct declarations. The emitter must refuse, not miscompile.
+// expect-refusal: struct declarations
+struct Point {
+    x: int
+    y: int
+}
+
+fn main() void {
+    let p = Point { x = 1, y = 2 }
+    println(p.x)
+}

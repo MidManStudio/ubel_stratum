@@ -1,0 +1,7 @@
+// Not supported yet: closures.
+// expect-refusal: fn(int)
+fn main() void {
+    let k = 3
+    let f = fn(x: int) x + k
+    println(f(4))
+}

@@ -1,0 +1,63 @@
+// Recursion and calls between functions.
+fn fib(n: int) int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn fact(n: int) int {
+    if n <= 1 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+
+fn gcd(a: int, b: int) int {
+    if b == 0 {
+        return a
+    }
+    return gcd(b, a % b)
+}
+
+fn collatz_steps(start: int) int {
+    let mut n = start
+    let mut steps = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        steps += 1
+    }
+    return steps
+}
+
+fn is_prime(n: int) bool {
+    if n < 2 {
+        return false
+    }
+    let mut d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+fn main() void {
+    println(fib(0), fib(1), fib(10), fib(20))
+    println(fact(1), fact(5), fact(10))
+    println(gcd(48, 18), gcd(17, 5), gcd(100, 75))
+    println(collatz_steps(1), collatz_steps(7), collatz_steps(27))
+    let mut primes = 0
+    for k in 0 ..= 50 {
+        if is_prime(k) {
+            primes += 1
+        }
+    }
+    println($"primes up to 50: {primes}")
+}

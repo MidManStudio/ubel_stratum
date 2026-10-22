@@ -22,6 +22,22 @@ extern "C" {
 
 uint64_t ubel_now_ns(void);
 
+/* ----------------------------------------------- support for emitted programs --- */
+
+/* What `println` / `print` lower to (Stage 1B). Output goes to stdout in the same
+ * format the interpreter uses: integers in decimal, bools as true / false. */
+void ubel_print_i64(int64_t v);
+void ubel_print_bool(int32_t b);
+void ubel_print_str(const char *s, int64_t len);
+void ubel_print_nl(void);
+
+/* Runtime errors the interpreter would report; here they print to stderr and exit(1). */
+void ubel_trap_div_zero(void);
+void ubel_trap_no_return(void);
+
+/* Number of arenas created and not yet destroyed. A correct program ends with 0. */
+uint64_t ubel_arena_live(void);
+
 /* ---------------------------------------------------------------- HIGH --- */
 
 /* Pointer-width note: the collector works in pointer-sized words (4 bytes on

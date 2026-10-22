@@ -1,0 +1,8 @@
+// Division by zero: the interpreter reports an error and the native build traps. Both must
+// fail, and anything printed before the failure must match.
+fn main() void {
+    println("before")
+    let z = 0
+    println(10 / z)
+    println("not reached")
+}

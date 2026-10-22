@@ -1,0 +1,6 @@
+// Not supported yet: sized integers. Must be refused rather than treated as int.
+// expect-refusal: i32
+fn main() void {
+    let x: i32 = 5
+    println(x)
+}

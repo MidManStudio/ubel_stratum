@@ -1,0 +1,83 @@
+// An arena must be destroyed on every way out of its block. The test harness runs this
+// with UBEL_CHECK_LEAKS=1, which fails the run if any arena is still live at exit.
+@tier(mid)
+fn early(n: int) int {
+    with arena(1KB) {
+        if n > 5 {
+            return n * 2
+        }
+        if n < 0 {
+            return 0 - 1
+        }
+    }
+    return n
+}
+
+@tier(mid)
+fn nested(n: int) int {
+    let mut t = 0
+    with arena(1KB) {
+        with arena(2KB) {
+            if n == 1 {
+                return 100
+            }
+            t += n
+        }
+        t += 1
+    }
+    return t
+}
+
+@tier(mid)
+fn looped(n: int) int {
+    let mut t = 0
+    for i in 0 .. n {
+        with arena(1KB) {
+            if i == 2 {
+                continue
+            }
+            if i == 6 {
+                break
+            }
+            t += i
+        }
+    }
+    return t
+}
+
+@tier(mid)
+fn loop_inside_arena(n: int) int {
+    let mut t = 0
+    with arena(4KB) {
+        for i in 0 .. n {
+            if i == 3 {
+                break
+            }
+            t += 10
+        }
+        t += 1
+    }
+    return t
+}
+
+@tier(mid)
+fn dynamic_size(n: int) int {
+    let mut t = 0
+    with arena(n * 1024) {
+        t = n
+    }
+    return t
+}
+
+fn main() void {
+    println(early(3), early(9), early(0 - 4))
+    println(nested(1), nested(5))
+    println(looped(10), looped(4))
+    println(loop_inside_arena(10), loop_inside_arena(2))
+    println(dynamic_size(4))
+    let mut total = 0
+    for k in 0 .. 1000 {
+        total += early(k % 10) + nested(k % 3) + looped(k % 8)
+    }
+    println(total)
+}

@@ -1,0 +1,36 @@
+// Calls across all three tiers. HIGH calls MID and LOW, MID calls LOW. The emitted IR marks
+// each cross-tier call; the lowering itself is a plain call.
+@tier(low) {
+    fn low_sq(x: int) int {
+        return x * x
+    }
+
+    fn low_sum_sq(n: int) int {
+        let mut t = 0
+        for i in 1 ..= n {
+            t += low_sq(i)
+        }
+        return t
+    }
+}
+
+@tier(mid)
+fn mid_work(n: int) int {
+    let mut acc = 0
+    with arena(64KB) {
+        for i in 1 ..= n {
+            acc += low_sq(i)
+        }
+    }
+    return acc + low_sum_sq(n)
+}
+
+fn high_driver(n: int) int {
+    return mid_work(n) + low_sq(n)
+}
+
+fn main() void {
+    println(high_driver(10))
+    println(mid_work(3))
+    println(low_sum_sq(4))
+}

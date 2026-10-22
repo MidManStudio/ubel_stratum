@@ -1,0 +1,34 @@
+# crates/llvm_poc/Cargo.toml
+#
+# Stage 1B of the LLVM proof of concept: emit textual LLVM IR from Ubel source.
+#
+# This crate is deliberately its own workspace root (the `[workspace]` table at the bottom),
+# the same arrangement as crates/wasm_playground. Nothing in the main workspace changes,
+# and the main workspace's members, profiles and lockfile are untouched. It depends on the
+# core and parser crates by path, read-only.
+#
+# Build and run it explicitly:
+#   cargo build --release --manifest-path crates/llvm_poc/Cargo.toml
+#   bash crates/llvm_poc/scripts/run_equiv.sh
+#
+# There is no libLLVM dependency: the emitter writes textual IR and clang assembles it.
+[package]
+name        = "ubel_llvm"
+version     = "0.1.0"
+edition     = "2021"
+publish     = false
+description = "Stage 1B of the Ubel LLVM proof of concept: emit textual LLVM IR from Ubel source"
+
+[lib]
+name = "ubel_llvm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ubel-llvm"
+path = "src/main.rs"
+
+[dependencies]
+ubel_stratum    = { path = "../core" }
+ubel_stratum_rd = { path = "../rd_parser" }
+
+[workspace]

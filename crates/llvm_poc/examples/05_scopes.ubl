@@ -1,0 +1,32 @@
+// Shadowing, nested scopes, declarations and compound assignment.
+fn main() void {
+    let x = 1
+    println(x)
+    if true {
+        let x = 100
+        println(x)
+    }
+    println(x)
+    let z = x + 10
+    println(z)
+
+    let mut acc = 100
+    acc += 5
+    acc -= 3
+    acc *= 2
+    acc /= 4
+    acc %= 7
+    println(acc)
+
+    let mut bits = 6
+    bits &= 3
+    bits |= 8
+    bits ^= 5
+    bits <<= 2
+    bits >>= 1
+    println(bits)
+
+    y := 40
+    y += 2
+    println(y)
+}
