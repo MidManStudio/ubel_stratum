@@ -344,6 +344,35 @@ static void run_boundaries(const char *only, int iters, double scale, int requir
     }
 }
 
+/* The CPU model, so a result can be tied to the hardware that produced it. Shared CI runners
+ * are not uniform: three runs on the x86_64 pool differed by up to 65% in absolute time. */
+static void host_cpu(char *out, size_t cap) {
+    out[0] = '\0';
+    FILE *p = popen("lscpu 2>/dev/null | grep -m1 -i 'model name'", "r");
+    if (p) {
+        if (fgets(out, (int)cap, p) == NULL) out[0] = '\0';
+        pclose(p);
+    }
+    if (!out[0]) {
+        FILE *f = fopen("/proc/cpuinfo", "r");
+        char line[256];
+        while (f && fgets(line, sizeof line, f)) {
+            if (strncmp(line, "model name", 10) == 0 || strncmp(line, "Hardware", 8) == 0) {
+                snprintf(out, cap, "%s", line);
+                break;
+            }
+        }
+        if (f) fclose(f);
+    }
+    char *colon = strchr(out, ':');
+    if (colon) memmove(out, colon + 1, strlen(colon));
+    size_t n = strlen(out);
+    while (n && (out[n - 1] == '\n' || out[n - 1] == ' ')) out[--n] = '\0';
+    size_t lead = strspn(out, " \t");
+    if (lead) memmove(out, out + lead, strlen(out + lead) + 1);
+    if (!out[0]) snprintf(out, cap, "unknown");
+}
+
 int main(int argc, char **argv) {
     ubel_gc_init(__builtin_frame_address(0));
 
@@ -393,6 +422,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "done: %s\n", bn->name);
     }
 
+    char cpu[256];
+    host_cpu(cpu, sizeof cpu);
+    printf("Host CPU: %s\n\n", cpu);
     printf("Stage 0 tier benchmark: %d timed run(s) per tier, scale %.3g. "
            "Times are min / median in ms. Ratio = tier time / HIGH time, so below 1.00 is faster than HIGH.\n\n",
            iters, scale);

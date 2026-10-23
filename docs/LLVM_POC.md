@@ -1,6 +1,6 @@
 # LLVM proof of concept
 
-Status: **Stage 0 and Stage 1A measured on CI. Stage 1B (emit IR from Ubel source) has a first slice that matches the interpreter on a small subset, checked locally, not yet run on CI.**
+Status: **Stage 0 and Stage 1A measured on CI (four runs). Stage 1B (emit IR from Ubel source) has a first slice that matches the interpreter on a small subset, verified on CI on x86_64 and aarch64. A browser-playground feasibility check is recorded below.**
 
 > **Everything in this document is provisional.** This is a proof of concept. The
 > numbers come from a hand-written runtime on two shared CI runners, the designs
@@ -24,9 +24,9 @@ lowered to IR that behaves like the interpreter.
 
 | stage | what | status |
 |---|---|---|
-| 0 | the three tiers in isolation, hand-written IR | measured on CI (runs #1, #3) |
-| 1A | how the tiers talk to each other, hand-written IR | measured on CI (run #3) |
-| 1B | emit IR from Ubel source, compare with the interpreter | first slice done, local checks only |
+| 0 | the three tiers in isolation, hand-written IR | measured on CI (runs #1, #3, #4) |
+| 1A | how the tiers talk to each other, hand-written IR | measured on CI (runs #3, #4) |
+| 1B | emit IR from Ubel source, compare with the interpreter | first slice verified on CI (15 of 15 on both runners) |
 
 ## Stage 0: the three tiers in isolation
 
@@ -54,6 +54,8 @@ crates/llvm_poc/scripts/run_bench.sh     build and run the benchmarks (also --se
 crates/llvm_poc/Cargo.toml, src/         Stage 1B: the emitter crate (ubel_llvm)
 crates/llvm_poc/examples/*.ubl           Stage 1B test programs
 crates/llvm_poc/scripts/run_equiv.sh     Stage 1B: native build against the interpreter
+crates/llvm_poc/scripts/run_wasm_demo.sh Feasibility demo: emitted IR compiled to wasm32 and run in Node
+crates/llvm_poc/wasm/wasm_rt.c, run.js   freestanding wasm runtime and the Node host for that demo
 ```
 
 ## Running it
@@ -64,6 +66,7 @@ bash crates/llvm_poc/scripts/run_bench.sh              # Stage 0 and 1A benchmar
 bash crates/llvm_poc/scripts/run_bench.sh --iters 9 --only tree
 bash crates/llvm_poc/scripts/run_bench.sh --only xing  # Stage 1A only (xing-lifecycle, xing-callback, xing-iter, xing-low)
 bash crates/llvm_poc/scripts/run_equiv.sh              # Stage 1B: emitter against the interpreter
+bash crates/llvm_poc/scripts/run_wasm_demo.sh          # emitted IR as WebAssembly, run in Node (needs wasm32 clang, wasm-ld, node)
 ```
 
 The benchmarks need clang 15 or newer (opaque pointers). `EXTRA_FLAGS=-m32` and
@@ -119,11 +122,29 @@ GC activity in the fastest HIGH run of run #3:
 | aarch64 | churn+live | 21 | 50.79 | 51.9% | 2.481 | 6265 KiB |
 | aarch64 | tree | 24 | 0.15 | 0.4% | 0.007 | 3 KiB |
 
-**Runner variance.** The aarch64 runner reproduced run #1 almost exactly. The x86_64
-runner did not: absolute times were about 40% lower in run #3 (`arith` went from 124 ms
-to 89 ms), so the x86 pool is probably not uniform hardware (not verified). Ratios were
-mostly stable, with one notable exception: `churn` LOW/HIGH moved from 1.21 to 0.99. So
-compare tiers within one run, and treat small ratios as hardware-dependent.
+### Run #4: same runners, 15 timed runs per tier, scale 1
+
+Commit 22b0865, CI run number 4 of the benchmark workflow.
+
+| runner | benchmark | HIGH (GC) | MID (arena) | LOW (malloc/free) | MID / HIGH | LOW / HIGH |
+|---|---|---:|---:|---:|---:|---:|
+| x86_64 | churn | 41.27 | 8.73 | 48.38 | 0.21 | 1.17 |
+| x86_64 | churn+live | 99.08 | 9.36 | 51.49 | 0.09 | 0.52 |
+| x86_64 | tree | 37.54 | 13.94 | 56.28 | 0.37 | 1.50 |
+| aarch64 | churn | 44.82 | 15.62 | 63.99 | 0.35 | 1.43 |
+| aarch64 | churn+live | 98.38 | 16.65 | 67.65 | 0.17 | 0.69 |
+| aarch64 | tree | 41.80 | 14.83 | 72.06 | 0.35 | 1.72 |
+
+GC activity in run #4, `churn+live`: 21 collections, 55.91 ms of GC (56.4% of the run) and
+a 2.72 ms maximum pause on x86_64; 51.27 ms (52.1%) and 2.49 ms on aarch64.
+
+**Runner variance, from three runs.** The aarch64 runner is stable: `churn` HIGH was 45.17,
+44.82 and 44.82 ms across runs #1, #3 and #4. The x86_64 runner is not: the same workload
+took 48.70, 29.46 and 41.27 ms, a 65% spread, so the x86 pool is probably not uniform
+hardware (not verified; later reports print the CPU model so this can be checked). Ratios
+mostly held, with one exception: `churn` LOW/HIGH on x86 was 1.21, 0.99 and 1.17, so the
+parity seen in run #3 was an outlier on faster hardware. Compare tiers within one run, run
+more than once, and treat small ratios as hardware-dependent.
 
 ### What the numbers say (both runs, both architectures)
 
@@ -131,14 +152,15 @@ compare tiers within one run, and treat small ratios as hardware-dependent.
   4x to 6x faster than LOW on every workload. Allocation is a bump of about 1.5 to 5 ns
   and freeing the whole arena costs almost nothing.
 - **HIGH versus LOW depends on how much data is live, and on the hardware.** With little
-  live data (`churn`, `tree`) HIGH ranges from parity with `malloc`/`free` to 1.7x faster:
-  garbage costs almost nothing to collect (GC is under 1% of the run) while `free` pays
+  live data (`churn`, `tree`) HIGH ranges from parity with `malloc`/`free` to 1.7x faster
+  (most runs 1.2x or better): garbage costs almost nothing to collect (GC is under 1% of the run) while `free` pays
   per object. With a 6.4 MB live set (`churn+live`) the order flips and `malloc`/`free`
   is 1.4x to 2.4x faster than HIGH.
 - **HIGH's cost has two parts.** The allocation path itself is about 7 to 14 ns per
-  object against about 1.5 to 5 ns for a bump allocation. On top of that, marking the
+  object against about 1.5 to 5 ns for a bump allocation (HIGH's figure moves with the x86
+  hardware). On top of that, marking the
   live set costs about 10 to 15 ns per live list node on every collection, and with a
-  6.4 MB live set that was 52% to 59% of the run. Collections are paced by the live size
+  6.4 MB live set that was 52% to 59% of the run in all four runs. Collections are paced by the live size
   (GOGC=100 style), so the cost scales with live data times the number of collections.
 - **Pause.** One stop-the-world collection of the 6.4 MB live list took about 2.2 to
   3.1 ms. A linked list is the worst case for tracing (every step is a dependent load),
@@ -240,10 +262,12 @@ LOW mallocs and frees.
 | 256 | 7.3 | 1.7 | 7.3 | 11.2 | 4.0 | 15.9 |
 | 1024 | 7.3 | 1.6 | 7.4 | 11.1 | 3.9 | 16.1 |
 
-MID beats HIGH and LOW from 2 objects per arena on both architectures. At N = 1 an arena
-costs more than just allocating (1.10x HIGH on x86, 1.52x on aarch64). The fixed cost of
-one arena is roughly the N = 1 time minus the steady state: about 6 ns on x86 and 12 ns
-on aarch64.
+MID beats HIGH and LOW from 2 objects per arena on both architectures, in both runs. At N = 1
+an arena costs more than just allocating (1.10x to 1.26x HIGH on x86, 1.52x to 1.57x on
+aarch64). The fixed cost of one arena is roughly the N = 1 time minus the steady state:
+6 to 11 ns on x86 (it moved between runs with the hardware) and 12 ns on aarch64. Run #4
+measured 12.8, 6.5, 3.8, 2.7 and 2.4 ns per MID object at N = 1, 2, 4, 8 and 16 on x86,
+with the same shape on aarch64.
 
 **Callback and copy-out.** Per repetition, a binary expression tree is built and
 evaluated. `callback`: HIGH calls MID, MID builds the tree in an arena and calls a HIGH
@@ -258,16 +282,17 @@ and HIGH evaluates the copy. The other three do the whole job in one tier. ns pe
 | aarch64 | depth 4 (31 nodes) | 155 | 469 | 142 | 381 | 535 |
 | aarch64 | depth 9 (1023 nodes) | 4323 | 15785 | 4305 | 12780 | 18714 |
 
-- **Crossing cost (callback minus MID only):** 10 ns at depth 4 on x86 and 13 ns on
-  aarch64, 18 ns at depth 9 on aarch64. The x86 depth 9 difference was negative (-68 ns),
-  which is measurement noise, so the true crossing cost there is below what this
-  benchmark can resolve. These figures include the closure's work (an indirect call, a
-  counter update and a GC allocation of the result), not just the call.
-- **The callback is cheap compared with doing the job in one tier:** 2.5x to 3.0x faster
+- **Crossing cost (callback minus MID only), over runs #3 and #4:** 10 ns at depth 4 on
+  both architectures in both runs (13 ns once on aarch64), and 15 to 18 ns at depth 9 where
+  it was positive. Depth 9 also produced -68 ns and -44 ns, which is noise: about +/-50 ns is
+  the floor of this benchmark at that size, so the true crossing cost there is below what it
+  can resolve. These figures include the closure's work (an indirect call, a counter update
+  and a GC allocation of the result), not just the call.
+- **The callback is cheap compared with doing the job in one tier:** 2.4x to 3.0x faster
   than building the tree in the GC heap.
-- **Owned results cost real work.** Copy-out is 6.2 to 6.6 ns per node copied on x86 and
-  10.5 to 11.2 on aarch64, and arena build plus copy-out is 1.2x to 1.3x slower than
-  building straight in the GC heap. If the whole result has to be GC-owned anyway, the
+- **Owned results cost real work.** Copy-out is 6 to 10 ns per node copied on x86 (it moved
+  with the hardware) and 10.5 to 11.2 on aarch64, and arena build plus copy-out is 1.2x to
+  1.3x slower than building straight in the GC heap in every run. If the whole result has to be GC-owned anyway, the
   arena buys nothing here; it pays when the callback reads and returns something small.
 - The callback variant allocates only a 16-byte result per tree, so it never reached a
   collection at the default trigger. GC behaviour inside callbacks is exercised by
@@ -283,19 +308,21 @@ result and allocates garbage, so collections happen while the MID frame is live)
 | aarch64 | scannable arena array | 2.85 | 57 | 0.90 | 0.518 | yes |
 | aarch64 | GC-owned list | 3.51 | 70 | 1.05 | 0.690 | yes |
 
-The scannable arena array was 19% to 28% faster here than a GC-owned list, because the
-list costs an extra GC allocation per item. That is one workload with a small arena;
+The scannable arena array was 18% to 28% faster here than a GC-owned list across runs #3 and
+#4 (run #4: 2.53 against 3.29 ms on x86, 2.86 against 3.50 ms on aarch64), because the list
+costs an extra GC allocation per item. That is one workload with a small arena;
 scanning cost grows with arena size, so it does not mean scannable arenas are the answer.
 
 **Hazard demo** (20,000 items, a collection every 16 KiB of GC allocation), identical on
-both runners: the plain arena array returned a **wrong** result (253 collections, live
+both runners in both runs: the plain arena array returned a **wrong** result (253 collections, live
 results freed); the scannable arena returned the correct result (53 collections). The
 collection counts differ because collections are paced by live size, and the plain arena
 hides its live data from the collector.
 
 **Calls into LOW** (32-word buffer sum): HIGH to LOW 2.99 ns, MID to LOW 3.07 ns, inlined
-baseline 3.00 ns on x86; 7.00, 7.01 and 6.82 ns on aarch64. The call boundary is not
-measurable against a few ns of work, but this is a small function with no allocation, so it
+baseline 3.00 ns on x86 in run #3, and 4.19, 4.18 and 3.81 ns in run #4; 7.00, 7.01 and
+6.82 ns on aarch64. The call boundary costs between 0 and 0.4 ns, which is not measurable
+against a few ns of work, but this is a small function with no allocation, so it
 says nothing yet about larger functions, indirect calls or cross-module optimization.
 
 ## Stage 1B: emitting IR from Ubel source
@@ -363,8 +390,12 @@ live at exit. Programs named `u_*` must be refused for the feature they use, and
 `fail_*` programs must fail in both the interpreter and the native build with the same
 output before the failure.
 
-Local results (x86_64 sandbox, clang 18, Rust 1.75, not yet CI): all 15 pass, for
-64-bit and `-m32` builds. Nine programs are identical to the interpreter (arithmetic,
+**CI results** (first run of the emit workflow, commit 22b0865): all 15 pass on both the
+x86_64 and the aarch64 runner, with clang 18.1.3 and cargo 1.99.0, and the whole job took
+50 seconds. That also confirms the pinned lockfile builds on a current cargo.
+
+Local results (x86_64 sandbox, clang 18, Rust 1.75): all 15 pass, for
+64-bit and `-m32` builds. Nine programs are identical to the interpreter on every platform tried (arithmetic,
 loops, recursion, short-circuit order, scopes, `if` expressions, interpolation, calls
 across all three tiers, and arena cleanup on every exit path), one fails identically
 (division by zero), and five unsupported programs are refused for the right reason.
@@ -408,6 +439,32 @@ and `object` pinned to older releases. The lockfile shipped with `crates/llvm_po
 already pinned that way and builds on both old and new cargo; the root lockfile is
 untouched.
 
+## Could the playground do this?
+
+The question: the web playground runs Ubel in the browser by compiling the interpreter to
+WebAssembly. Can the LLVM pipeline be offered the same way? Split into four parts, with what
+was tested and what was not.
+
+| part | verdict | evidence |
+|---|---|---|
+| **Show the generated IR** next to the program | **very likely feasible, small** | The emitter is pure Rust over the same core and parser crates the playground already compiles to wasm, with no libLLVM and no file access in the library. **Not tested**: this sandbox has no wasm32 Rust target. A `cargo check --target wasm32-unknown-unknown` step in CI would settle it. |
+| **Run** the emitted code in a WebAssembly engine | **works** | Tested: the IR for all 10 runnable examples compiles with `clang --target=wasm32`, links with `wasm-ld` against a freestanding runtime (`wasm/wasm_rt.c`, printing and traps imported from JavaScript) and runs in Node with output identical to the interpreter and no arena left alive. The binaries are 0.5 to 1.4 KB. See `scripts/run_wasm_demo.sh`. |
+| **Compile** IR to wasm inside the browser | **possible but heavy** | Browser builds of LLVM exist and accept LLVM IR and a WebAssembly target. One packaged browser compiler is about 60 MB and reserves 256 MiB of wasm memory; Wasmer's clang-in-browser demo is a 100 MB download. Not tried here. Only sensible as an opt-in feature, not the default playground load. |
+| **HIGH tier** (the GC) on wasm | **needs design work** | The PoC collector finds roots by scanning the machine stack and registers conservatively. In WebAssembly the operand stack and locals are not addressable memory, so that cannot see them; only the linear-memory shadow stack is visible. HIGH on wasm needs precise roots, for example an explicit shadow stack that the compiler maintains. This is reasoning from how wasm works, not something tested here. `mmap`, `setjmp` and `__builtin_unwind_init` also do not exist there, so the runtime needs a port. MID and LOW are not affected the same way. |
+
+What the demo did **not** cover: the Stage 1B subset never allocates from the GC heap and
+never allocates from an arena (it only creates and destroys them), so the demo says nothing
+about GC or arena allocation in wasm. Timings in a browser would not represent native
+performance either, so this is a demonstration vehicle, not a benchmark.
+
+A reasonable order, if the playground is pursued: first an "IR" panel (emit in the browser,
+no compiler needed), which also shows the tier-boundary comments and the arena create and
+destroy calls; then, optionally, an opt-in "run as compiled code" that loads an in-browser
+LLVM only on demand; and only if browser-only execution of HIGH matters, work out precise
+roots first. A second option is a small direct WebAssembly backend for the same subset, which
+avoids the 60 MB compiler, at the cost of maintaining a second backend that does not exercise
+LLVM. That trade-off is for later discussion.
+
 ## Validation still to do
 
 None of this has been started, and the plan is open to change.
@@ -421,9 +478,10 @@ None of this has been started, and the plan is open to change.
   compiler and the memory model. The candidate shape is an expression parser and evaluator
   like `ast_builder.ubl`, or a Mid Engine style workload (per-frame temporary data, ECS
   queries, packet processing). To be chosen together.
-- **Benchmark methodology.** Add warm-up runs, report dispersion (for example median
-  absolute deviation), keep the raw timing samples, make inputs and allocation counts
-  explicit, and use hardware counters where available. The minimum of N runs is easy to
+- **Benchmark methodology.** The report now prints the host CPU model (added after three
+  runs showed the x86 pool varies). Still to add: warm-up runs, dispersion (for example
+  median absolute deviation), the raw timing samples, explicit inputs and allocation counts,
+  and hardware counters where available. The minimum of N runs is easy to
   flatter on shared runners.
 - **Memory safety beyond checksums.** Equal checksums do not prove memory safety. The
   forced-GC self-test and the ASan/UBSan runs help; sanitizers cannot see through the
@@ -469,6 +527,11 @@ cross-language baselines, the small Ubel application, and the GC research agenda
 
 ## Log
 
+- 2026-10-22: Stage 1B verified on CI (15 of 15 on x86_64 and aarch64, cargo 1.99.0).
+  Benchmark run #4 recorded; three x86 runs show the runner pool is not uniform, so the
+  report now prints the host CPU model. Browser-playground feasibility checked: emitted IR
+  runs in a wasm engine (10 of 10 identical to the interpreter), in-browser LLVM exists but
+  is large, HIGH-tier GC on wasm needs precise roots. `run_wasm_demo.sh` added.
 - 2026-10-21 (later): Stage 1A run #3 recorded. Stage 1B first slice added: `ubel_llvm`
   emitter crate, 15 example programs, `run_equiv.sh`; matches the interpreter locally at
   -O0, -O2 and under ASan + UBSan, 64-bit and 32-bit. Arena cleanup on every exit path

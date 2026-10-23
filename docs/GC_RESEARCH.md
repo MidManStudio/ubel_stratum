@@ -83,6 +83,12 @@ algorithm.
 - **Write-barrier sites exist already.** Every pointer store into a GC object (child links,
   closure creation, list links) would need a barrier in a concurrent or generational
   collector, as would GC pointers stored into scannable arenas.
+- **WebAssembly changes the root problem.** Conservative stack scanning relies on reading the
+  machine stack, and in WebAssembly the operand stack and locals are not addressable memory;
+  only the shadow stack in linear memory is. A HIGH tier that runs in a browser therefore
+  needs precise roots (an explicit shadow stack maintained by the compiler, or compiler
+  generated root maps). This follows from how wasm works and was not tested; it is one more
+  reason to treat precise roots as a design goal and not only an optimization.
 - **Native pointers.** If the LLVM backend calls into C (the Mid Engine packet codec, for
   example), non-moving makes that simple. A moving collector would need handles or
   pinning at that boundary.
