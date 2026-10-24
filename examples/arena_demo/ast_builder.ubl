@@ -11,7 +11,8 @@
 // Today the emitter cannot compile it yet. What each part needs, in the order the emitter
 // will most likely get there:
 //
-//   part 2  edge struct, `&L` fields, borrows, field chains through references, `with arena`
+//   part 2  edge struct, `&L` fields, borrows, field chains, `with arena`: DONE, see
+//           crates/llvm_poc/examples/13_edge_arena.ubl (same node shapes and functions)
 //   part 1  enums with payloads, `match`, strings as values, interpolation, `==` on strings
 //   part 3  a non-capturing closure passed to a MID function, returning a string
 //

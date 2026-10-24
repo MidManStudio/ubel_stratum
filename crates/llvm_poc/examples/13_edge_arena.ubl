@@ -1,0 +1,98 @@
+// Edge structs in MID: nodes that live in an arena and point at each other through `&L`
+// fields. This is part 2 of examples/arena_demo/ast_builder.ubl (the same node shapes, the
+// same build-and-evaluate and checksum functions) without the callback, the enum and the
+// strings. A `&x` is the same pointer as `x`; the lifetime is checked by sema and erased.
+edge struct IntNode [lifetime L] {
+    value: int
+}
+
+edge struct BinNode [lifetime L] {
+    op:  int
+    lhs: &L IntNode
+    rhs: &L IntNode
+}
+
+edge struct CallNode [lifetime L] {
+    callee: int
+    arg:    &L BinNode
+}
+
+@tier(low)
+fn square(v: int) int {
+    return v * v
+}
+
+@tier(mid)
+fn build_and_eval(a: int, b: int, mul: bool) int {
+    with arena(64KB) {
+        let x = IntNode { value = a }
+        let y = IntNode { value = b }
+        let bin = BinNode { op = if mul { 1 } else { 0 }, lhs = &x, rhs = &y }
+        let call = CallNode { callee = 1, arg = &bin }
+
+        let l = call.arg.lhs.value
+        let r = call.arg.rhs.value
+        let v = if call.arg.op == 0 { l + r } else { l * r }
+        return if call.callee == 1 { square(v) } else { v }
+    }
+}
+
+// One arena per iteration, nodes pointing at nodes.
+@tier(mid)
+fn checksum(n: int) int {
+    let mut total = 0
+    for i in 0 .. n {
+        with arena(1KB) {
+            let x = IntNode { value = i }
+            let y = IntNode { value = i + 1 }
+            let bin = BinNode { op = 0, lhs = &x, rhs = &y }
+            let call = CallNode { callee = 0, arg = &bin }
+            total += call.arg.lhs.value + call.arg.rhs.value
+        }
+    }
+    return total
+}
+
+// Leaving the arena early, after linking nodes in it.
+@tier(mid)
+fn first_over(limit: int) int {
+    with arena(256) {
+        let mut i = 0
+        loop {
+            let x = IntNode { value = i }
+            let y = IntNode { value = i * 2 }
+            let bin = BinNode { op = 1, lhs = &x, rhs = &y }
+            if bin.lhs.value * bin.rhs.value > limit {
+                return bin.lhs.value
+            }
+            i += 1
+        }
+    }
+}
+
+@tier(mid)
+fn sum_until(limit: int) int {
+    let mut total = 0
+    for i in 0 .. 100 {
+        with arena(128) {
+            let x = IntNode { value = i }
+            let y = IntNode { value = 1 }
+            let bin = BinNode { op = 0, lhs = &x, rhs = &y }
+            if i % 2 == 1 {
+                continue
+            }
+            total += bin.lhs.value + bin.rhs.value
+            if total > limit {
+                break
+            }
+        }
+    }
+    return total
+}
+
+fn main() void {
+    println("build_and_eval:", build_and_eval(1, 2, false), build_and_eval(6, 7, true))
+    println("checksum:", checksum(1000))
+    println("first_over:", first_over(200))
+    println("sum_until:", sum_until(150))
+}

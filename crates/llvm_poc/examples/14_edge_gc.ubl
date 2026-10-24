@@ -1,0 +1,52 @@
+// Edge structs under garbage collection. Each `fresh` call builds a Pair and two Leaves in
+// the GC heap and returns a reference to the Pair. The Holder's field is replaced again and
+// again while garbage forces collections, so the newest Pair and its Leaves are reachable
+// only through `&L` fields of older objects. If the collector did not trace reference
+// fields, they would be freed and reused and the sums below would come out wrong. A second
+// Holder is built once and must survive all of it.
+edge struct Leaf [lifetime L] {
+    v: int
+}
+
+edge struct Pair [lifetime L] {
+    a: &L Leaf
+    b: &L Leaf
+    n: int
+}
+
+edge struct Holder [lifetime L] {
+    pair: &L Pair
+    k:    int
+}
+
+fn fresh [lifetime L] (k: int) &L Pair {
+    let la = Leaf { v = k }
+    let lb = Leaf { v = k * 2 }
+    let p = Pair { a = &la, b = &lb, n = k }
+    return &p
+}
+
+fn churn(rounds: int) int {
+    let mut sum = 0
+    let mut i = 0
+    while i < rounds {
+        let junk = fresh(i)
+        sum += junk.a.v + junk.b.v - junk.n * 3
+        i += 1
+    }
+    return sum
+}
+
+fn main() void {
+    let keep = Holder { pair = fresh(7), k = 1 }
+    let holder = Holder { pair = fresh(0), k = 0 }
+    let mut check = 0
+    for k in 1 ..= 300 {
+        holder.pair = fresh(k)
+        let z = churn(500)
+        check += holder.pair.a.v + holder.pair.b.v + holder.pair.n + z
+        holder.k += 1
+    }
+    println(check, holder.k, holder.pair.a.v, holder.pair.b.v)
+    println(keep.pair.a.v, keep.pair.b.v, keep.pair.n, keep.k)
+}

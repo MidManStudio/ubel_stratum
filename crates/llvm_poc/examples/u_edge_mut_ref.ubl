@@ -1,0 +1,15 @@
+// Not supported yet: `&mut` references.
+// expect-refusal: `&mut` references
+struct Cell {
+    n: int
+}
+
+fn bump(c: &mut Cell) {
+    c.n += 1
+}
+
+fn main() void {
+    let c = Cell { n = 1 }
+    bump(&mut c)
+    println(c.n)
+}

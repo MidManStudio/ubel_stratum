@@ -1,0 +1,16 @@
+// Not supported yet: an explicit `*` dereference of a struct reference. Field access already
+// goes through the reference, so only the explicit form is refused.
+// expect-refusal: explicit `*` dereference
+edge struct Cell [lifetime L] {
+    n: int
+}
+
+fn read [lifetime L] (c: &L Cell) int {
+    let d = *c
+    return d.n
+}
+
+fn main() void {
+    let c = Cell { n = 4 }
+    println(read(&c))
+}

@@ -1,0 +1,9 @@
+// Not supported yet: a reference to something that is not a struct.
+// expect-refusal: references to anything but a struct
+edge struct Cache [lifetime L] {
+    item: &L int
+}
+
+fn main() void {
+    println(1)
+}

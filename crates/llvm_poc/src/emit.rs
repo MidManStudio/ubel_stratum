@@ -12,15 +12,20 @@
 //! * `println` / `print` of ints, bools, string literals and interpolated strings;
 //! * `with arena(size) { ... }`, with the arena destroyed on EVERY way out of the block:
 //!   falling off the end, `return`, `break` and `continue`;
-//! * plain structs (fields of `int`, `bool` or another struct): literals, field reads,
+//! * plain and `edge` structs (fields of `int`, `bool`, another struct, or a `&L Struct`
+//!   reference): literals, field reads,
 //!   field assignment (also compound and nested), and passing/returning them. A struct
 //!   value is a pointer, like the interpreter's reference semantics: `let b = a` aliases.
 //!   A literal allocates from the GC heap in a HIGH function and from the innermost open
 //!   arena inside `with arena`; anywhere else (MID outside an arena, LOW) it is refused.
+//!   A reference to a struct (`&x`, a `&L T` field, parameter or result, with or without a
+//!   `[lifetime L]` on the function or struct) is the same pointer as the struct value: the
+//!   lifetime is checked by sema and erased here.
 //!
 //! Everything else is refused with a located "not supported yet" error instead of being
 //! guessed at: enums, strings as values, collections, closures, generics, struct methods,
-//! `match`, sized integers, floats.
+//! `&mut`, explicit `*` dereference, references to anything but a struct, `match`, sized
+//! integers, floats.
 //!
 //! # Lowering model
 //!
@@ -528,6 +533,15 @@ impl<'a> Emitter<'a> {
             TypeKind::Int => Ok(Ty::I64),
             TypeKind::Bool => Ok(Ty::I1),
             TypeKind::Void => Ok(Ty::Void),
+            TypeKind::Reference { mutable, inner, .. } => {
+                if mutable {
+                    return unsupported(t.span, "`&mut` references");
+                }
+                match self.ty_of_type(inner)? {
+                    Ty::Struct(sid) => Ok(Ty::Struct(sid)),
+                    _ => unsupported(t.span, "references to anything but a struct (`&L int` and the like)"),
+                }
+            }
             TypeKind::Named { path, args } => {
                 if !args.is_empty() {
                     return unsupported(t.span, "generic types");
@@ -553,15 +567,11 @@ impl<'a> Emitter<'a> {
                 continue;
             }
             if let Item::Struct(s) = item {
-                if s.is_edge {
-                    return unsupported(s.span, "`edge struct`");
-                }
                 if !s.generic_params.is_empty() {
                     return unsupported(s.span, "generic structs");
                 }
-                if !s.lifetime_params.is_empty() {
-                    return unsupported(s.span, "structs with lifetime parameters");
-                }
+                // `edge struct Name [lifetime L]`: the lifetime is sema's business, a `&L T`
+                // field is an ordinary pointer here, so edge structs need nothing special.
                 if !s.attributes.is_empty() {
                     return unsupported(s.span, "attributes on structs");
                 }
@@ -638,6 +648,7 @@ impl<'a> Emitter<'a> {
                     | ExprKind::UnaryOp { .. }
                     | ExprKind::If(_)
                     | ExprKind::ShortDecl { .. }
+                    | ExprKind::Borrow { .. }
             );
             let mut id = start;
             loop {
@@ -646,6 +657,8 @@ impl<'a> Emitter<'a> {
                     SemaType::Unknown if own_type_is_authoritative => return Ok(()),
                     SemaType::GcRef(inner) => id = *inner,
                     SemaType::ArenaRef { inner, .. } => id = *inner,
+                    SemaType::OwnedRef { mutable: false, inner } => id = *inner,
+                    SemaType::Reference { mutable: false, inner, .. } => id = *inner,
                     SemaType::Named { def, args }
                         if args.is_empty() && self.struct_ids.contains_key(&self.ctx.symbols.lookup(*def).name) =>
                     {
@@ -1172,6 +1185,21 @@ impl<'a> Emitter<'a> {
             ExprKind::Call { callee, args } => self.call(e, callee, args),
             ExprKind::If(ife) => self.if_value(ife, e.span),
             ExprKind::StructLit { path, fields } => self.struct_lit(e, path, fields),
+            // `&x` of a struct is the struct's own pointer: the interpreter's reference to a
+            // struct aliases it, and sema has already checked the lifetime.
+            ExprKind::Borrow { mutable, place } => {
+                if mutable {
+                    return unsupported(e.span, "`&mut` borrows");
+                }
+                let v = self.expr(place)?;
+                match v.ty {
+                    Ty::Struct(_) => Ok(v),
+                    _ => unsupported(e.span, "borrowing anything but a struct value (`&n` of an int)"),
+                }
+            }
+            ExprKind::Deref(_) => {
+                unsupported(e.span, "explicit `*` dereference (field access already goes through a reference)")
+            }
             ExprKind::Field { target, field } => {
                 let (addr, ty) = self.field_addr(target, field, e.span)?;
                 let t = self.fresh();

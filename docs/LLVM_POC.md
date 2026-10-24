@@ -1,6 +1,6 @@
 # LLVM proof of concept
 
-Status: **Stage 0 and Stage 1A measured on CI (four runs). Stage 1B (emit IR from Ubel source) has a first slice verified on CI on x86_64 and aarch64, and a second slice (plain structs, per-tier allocation) verified locally only so far. A browser-playground feasibility check is recorded below.**
+Status: **Stage 0 and Stage 1A measured on CI (five runs). Stage 1B (emit IR from Ubel source): slices 1 and 2 (scalars, plain structs with per-tier allocation) verified on CI on x86_64 and aarch64; slice 3 (edge structs and references) verified locally only so far. A browser-playground feasibility check is recorded below.**
 
 > **Everything in this document is provisional.** This is a proof of concept. The
 > numbers come from a hand-written runtime on two shared CI runners, the designs
@@ -26,7 +26,7 @@ lowered to IR that behaves like the interpreter.
 |---|---|---|
 | 0 | the three tiers in isolation, hand-written IR | measured on CI (runs #1, #3, #4) |
 | 1A | how the tiers talk to each other, hand-written IR | measured on CI (runs #3, #4) |
-| 1B | emit IR from Ubel source, compare with the interpreter | slice 1 verified on CI (15 of 15 on both runners); slice 2, structs, 21 of 21 locally, not yet run on CI |
+| 1B | emit IR from Ubel source, compare with the interpreter | slices 1 and 2 verified on CI (15, then 21, then 22 of 22 on both runners); slice 3, edge structs, 27 of 27 locally, not yet run on CI |
 
 ## Stage 0: the three tiers in isolation
 
@@ -146,6 +146,39 @@ mostly held, with one exception: `churn` LOW/HIGH on x86 was 1.21, 0.99 and 1.17
 parity seen in run #3 was an outlier on faster hardware. Compare tiers within one run, run
 more than once, and treat small ratios as hardware-dependent.
 
+
+### Run #5: same runners, after the struct slices
+
+Commit 0d5079d, CI run number 5 of the benchmark workflow, the first with the host CPU
+printed (x86_64: AMD EPYC 7763; aarch64: Neoverse-N2). The runtime's only change since run #4
+is an attribute that exempts the stack scan from ASan instrumentation, which cannot change
+code built without a sanitizer, and the benchmark programs are the same hand-written IR.
+
+| runner | benchmark | HIGH (GC) | MID (arena) | LOW (malloc/free) | MID / HIGH | LOW / HIGH |
+|---|---|---:|---:|---:|---:|---:|
+| x86_64 | churn | 50.35 | 10.18 | 80.55 | 0.20 | 1.60 |
+| x86_64 | churn+live | 116.75 | 10.89 | 80.97 | 0.09 | 0.69 |
+| x86_64 | tree | 47.89 | 17.18 | 82.81 | 0.36 | 1.73 |
+| aarch64 | churn | 44.75 | 15.62 | 63.87 | 0.35 | 1.43 |
+| aarch64 | churn+live | 98.63 | 16.53 | 67.36 | 0.17 | 0.68 |
+| aarch64 | tree | 41.83 | 14.65 | 71.81 | 0.35 | 1.72 |
+
+- aarch64 reproduces run #4 in every ratio (0.35, 0.17, 0.35 and 1.43, 0.69, 1.72 before; 0.35,
+  0.17, 0.35 and 1.43, 0.68, 1.72 now).
+- x86_64 MID / HIGH matches run #4 (0.20, 0.09, 0.36 now; 0.21, 0.09, 0.37 before). **LOW did
+  not:** LOW / HIGH on `churn` is 1.60 now against 1.17, and on `tree` 1.73 against 1.50.
+  Compared with run #4, LOW's absolute time is 66% higher on `churn` (80.55 against 48.38 ms)
+  while HIGH's is 22% higher and MID's 17%. That is larger than the earlier LOW/HIGH spread on
+  x86 (0.99 to 1.21). It is not explained; it fits the already-noted x86 pool variance, and one
+  more x86 run with the CPU printed would show whether it follows the host.
+- GC activity on `churn+live`: x86_64 63.06 ms (54.0% of the run), 3.085 ms maximum pause;
+  aarch64 51.36 ms (52.1%), 2.500 ms. Inside the earlier ranges.
+- Boundaries: crossing cost 11 ns per depth-4 tree on x86 and 10 ns on aarch64 (the depth-9
+  figures, 83 ns and -74 ns, are inside the known noise of about +/-50 ns); copy-out 13.0 to
+  13.5 ns per node on x86 (earlier range was 6 to 11, same caveat as above) and 10.5 to 11.1 on
+  aarch64; MID first beats HIGH and LOW at 2 objects per arena on both; the hazard demo still
+  loses live results with a plain arena (253 collections) and passes with a scannable one.
+
 ### What the numbers say (both runs, both architectures)
 
 - **MID is the clear win for bulk temporary data.** 2.7x to 11x faster than HIGH and
@@ -160,7 +193,7 @@ more than once, and treat small ratios as hardware-dependent.
   object against about 1.5 to 5 ns for a bump allocation (HIGH's figure moves with the x86
   hardware). On top of that, marking the
   live set costs about 10 to 15 ns per live list node on every collection, and with a
-  6.4 MB live set that was 52% to 59% of the run in all four runs. Collections are paced by the live size
+  6.4 MB live set that was 52% to 59% of the run in all five runs. Collections are paced by the live size
   (GOGC=100 style), so the cost scales with live data times the number of collections.
 - **Pause.** One stop-the-world collection of the 6.4 MB live list took about 2.2 to
   3.1 ms. A linked list is the worst case for tracing (every step is a dependent load),
@@ -356,6 +389,15 @@ reference semantics: `let b = a` makes an alias, and a callee that writes a fiel
 the caller's struct (probed, not assumed; see the front-end findings below). At most 32
 fields per struct, so every object fits the runtime's size limit on 32-bit targets.
 
+**Edge structs and references (slice 3).** `edge struct Name [lifetime L]` is accepted, and a
+reference to a struct is the same pointer as the struct value: `&x`, a `&L T` field, a
+parameter or result of type `&L T`, and a `[lifetime L]` on a function. The lifetime is
+sema's business and is erased here, so edge structs need no layout of their own. A `&L T`
+field counts as a pointer field for the collector's mask. Field chains through references
+(`call.arg.lhs.value`) work like any other field chain. Refused, by name: `&mut`, an
+explicit `*` dereference, a reference to anything but a struct (`&L int`), optional
+references (`&L T?`).
+
 Everything else is **refused with a located "not supported yet" error** instead of being
 guessed at: enums, strings as values, collections, closures, generics, struct methods,
 `edge struct`, `match`, sized integers and floats; also printing or comparing a struct value. The test suite checks that each refusal names the right
@@ -430,7 +472,7 @@ To check that the leak check can fail, the emitter was deliberately broken twice
 cleanup skipped on `return` the suite went red (1070 arenas left alive), and with
 cleanup skipped on `break` and `continue` it went red again (753).
 
-**Slice 2, structs (local only, not yet on CI).** 21 programs: twelve runnable (three new),
+**Slice 2, structs (verified on CI: run #2 at d0d34d5, 21 of 21 on x86_64 and aarch64, ASan+UBSan included, which also confirms the stack-scan exemption works on CI).** 21 programs: twelve runnable (three new),
 one failing, eight refusals. All 21 pass on x86_64 64-bit, and all 21 pass as 32-bit i386
 binaries (`EXTRA_FLAGS=-m32`; the output is a 32-bit ELF), with the same `.ll` file.
 `examples/10_struct_basic` covers aliasing, field writes through a callee, nested structs
@@ -448,7 +490,20 @@ The wasm demo skips the three allocating examples instead of failing them (10 pa
 The harness also guards the target program: the interpreter must run
 `examples/arena_demo/ast_builder.ubl` and print `ast_builder.expected` (checked by hand),
 and the run reports whether the emitter compiles it yet (22 checks in all). Corrupting the
-expected file turns the run red.
+expected file turns the run red. CI run #3 at 0d5079d: 22 of 22 on both runners.
+
+**Slice 3, edge structs and references (local only, not yet on CI).** 27 checks: fourteen
+runnable programs (two new), one failing, eleven refusals (three new), and the target-program
+guard. All 27 pass at 64-bit and as 32-bit binaries. `examples/13_edge_arena` is part 2 of the
+target program (the same node shapes, `build_and_eval`, `checksum`) without the callback,
+enum and strings, plus early exits after linking nodes in an arena. `examples/14_edge_gc`
+builds a Pair and two Leaves per call in the GC heap, returns a `&L Pair`, and replaces a
+Holder's field again and again under heavy garbage, so the newest objects are reachable only
+through `&L` fields of older ones. To check that `14_edge_gc` can fail, the pointer mask was
+deliberately forced to zero: the program crashed with a segmentation fault and printed
+nothing (an earlier attempt at this check had a path error and proved nothing; it was redone).
+The wasm demo now skips five programs (10 passed). The target program's first refusal moved
+from `edge struct` to `enum declarations`.
 
 ### Known differences from the interpreter
 
@@ -625,14 +680,14 @@ that they agree: a recursive GC enum tree (`Expr`, with `show` and `eval`, in HI
 fixed-shape arena graph of edge structs (in MID, evaluated through `&L` references, with
 the result handed to HIGH as a string by a callback). It also runs a thousand short-lived
 arenas. It is the program the native emitter is grown toward, and it is **not compilable
-yet**: the emitter stops at its first `edge struct`.
+yet**: the emitter now stops at its first `enum`.
 
 What it needs, by part, in the order I would build it (reasoned, not yet measured):
 
-1. **Edge structs with `&L` fields, borrows, lifetime parameters on functions.** A struct
-   value is already a pointer, so `&x` is the same pointer and a `&L T` field is a `ptr`
-   field. This is the smallest step and makes `checksum` (arena per iteration, nodes
-   pointing at nodes) compile.
+1. ~~Edge structs with `&L` fields, borrows, lifetime parameters on functions.~~ Done
+   (slice 3, see above): a struct value is already a pointer, so `&x` is the same pointer
+   and a `&L T` field is a `ptr` field. `checksum` and `build_and_eval` minus the callback
+   compile and match the interpreter.
 2. **Enums with payloads and `match`** (tag plus payload words, pointer masks for payload
    pointers, bindings in arms, recursion). Needs a layout decision per enum.
 3. **Strings as values** (interpolation that builds one, `==`, printing one). Needs a string
@@ -642,7 +697,7 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    using the Stage 1A closure proposal (GC object, code pointer in the first word) with zero
    captures at first. This completes `build_and_eval` and `compile_expression`.
 
-Parallel track that does not block the above: run the slice 2 CI workflows, and the GC
+Parallel track that does not block the above: run the slice 3 CI workflows, and the GC
 hardening items in `docs/GC_RESEARCH.md` (global roots, large objects, a collect-on-every-
 allocation debug mode), since items 2 to 4 all allocate more kinds of object.
 
@@ -654,6 +709,11 @@ methodology work.
 
 ## Log
 
+- 2026-10-24: Stage 1B slice 3: edge structs and struct references (`&x`, `&L T` fields,
+  `[lifetime L]` on functions), 27 of 27 locally at 64-bit and 32-bit, not yet on CI. CI
+  confirmed slices 1 and 2 (run #2: 21 of 21; run #3: 22 of 22, both runners). Benchmark
+  run #5 recorded: aarch64 identical to run #4, x86 LOW moved more than HIGH or MID,
+  unexplained. The target program's first refusal is now `enum`.
 - 2026-10-23: Stage 1B slice 2: plain structs (GC allocation in HIGH, arena bump allocation
   inside `with arena`; MID-outside-arena and LOW literals refused). 21 of 21 locally at
   64-bit and 32-bit, not yet on CI. Fixed a parameter-name collision in the emitter and made
