@@ -1,210 +1,162 @@
 // examples/arena_demo/ast_builder.ubl
 //
-// Demonstrates how Ubel Stratum's own compiler could be written in Ubel —
-// the "bootstrap" goal. The MID-tier arena patterns here mirror exactly what
-// the current Rust implementation does with bumpalo.
+// The "compiler front end written in Ubel" demo, rewritten to RUN. The first version of this
+// file was a design sketch and had never been through the front end (it did not parse). This
+// one parses, passes sema and runs in the interpreter:
 //
-// Tier map:
-//   MID tier  → lexing + parsing → arena-allocated AST nodes
-//   LOW tier  → the Arena type itself (malloc/mmap under the hood)
-//   HIGH tier → diagnostics, IDE, driver, ECS systems
+//     cargo run --manifest-path crates/llvm_poc/Cargo.toml --release -- interp examples/arena_demo/ast_builder.ubl
+//
+// It is also the north-star program of the LLVM proof of concept (docs/LLVM_POC.md): the
+// native emitter grows toward compiling it, and the interpreter's output is the reference.
+// Today the emitter cannot compile it yet. What each part needs, in the order the emitter
+// will most likely get there:
+//
+//   part 2  edge struct, `&L` fields, borrows, field chains through references, `with arena`
+//   part 1  enums with payloads, `match`, strings as values, interpolation, `==` on strings
+//   part 3  a non-capturing closure passed to a MID function, returning a string
+//
+// Tier map (the same split the bootstrap goal has):
+//   HIGH  the driver and the pretty-printer: GC-managed enum trees and strings
+//   MID   the transient AST: arena-resident nodes that die with the `with arena` block
+//   LOW   plain integer helpers, callable from anywhere
+//
+// What is different from the sketch, and why (all found by running it):
+//   - Enums cannot carry arena references and cannot take a lifetime, so the arena AST is
+//     built from edge structs with mandatory `&L` fields, one struct per node shape. The
+//     recursive tree lives in the HIGH enum. A recursive arena tree needs optional
+//     references, and `&L Node?` accepts neither `null` nor any other way to say "none".
+//   - Sema rejects passing an arena value as a call argument, so arena nodes are built and
+//     read inline in one function. Only plain ints and strings cross a call.
+//   - `arena` is a reserved word and there is no `arena.alloc`: a struct literal written
+//     inside `with arena(size)` is what allocates from that arena.
+//   - Lambdas have no return type annotation; the body after the parameters is the result.
+//   - No spans: structs are references in the interpreter, so the sketch's "plain value
+//     type, copy freely" `Span` would alias instead of copy.
 
-from std.mem summon [Arena]
+// ── Part 1 (HIGH): the AST as a recursive enum, with a printer and an evaluator ─────────
 
-// ── Plain value types (no arena pointer, copy freely) ─────────────────────────
-
-struct Span {
-    pub start: uint
-    pub end:   uint
-    pub line:  uint
-    pub col:   uint
+enum Expr {
+    Num(int),
+    Var(string),
+    Add(Expr, Expr),
+    Mul(Expr, Expr),
+    Neg(Expr),
+    Call(string, Expr),
 }
 
-extend Span {
-    pub fn merge(self, other: Span) Span {
-        return Span {
-            start = self.start
-            end   = other.end
-            line  = self.line
-            col   = self.col
+fn show(e: Expr) string {
+    match e {
+        Expr.Num(n) => return $"{n}",
+        Expr.Var(name) => return name,
+        Expr.Add(a, b) => return $"({show(a)} + {show(b)})",
+        Expr.Mul(a, b) => return $"({show(a)} * {show(b)})",
+        Expr.Neg(a) => return $"-{show(a)}",
+        Expr.Call(name, arg) => return $"{name}({show(arg)})",
+    }
+}
+
+fn apply(name: string, v: int) int {
+    if name == "square" {
+        return v * v
+    }
+    if name == "double" {
+        return v + v
+    }
+    return v
+}
+
+// `x` is the value every `Var` evaluates to.
+fn eval(e: Expr, x: int) int {
+    match e {
+        Expr.Num(n) => return n,
+        Expr.Var(name) => return x,
+        Expr.Add(a, b) => return eval(a, x) + eval(b, x),
+        Expr.Mul(a, b) => return eval(a, x) * eval(b, x),
+        Expr.Neg(a) => return 0 - eval(a, x),
+        Expr.Call(name, arg) => return apply(name, eval(arg, x)),
+    }
+}
+
+// ── Part 2 (MID): the same shape of tree, arena-resident and short-lived ────────────────
+
+edge struct IntNode [lifetime L] {
+    value: int
+}
+
+edge struct BinNode [lifetime L] {
+    op:  int
+    lhs: &L IntNode
+    rhs: &L IntNode
+}
+
+edge struct CallNode [lifetime L] {
+    callee: int
+    arg:    &L BinNode
+}
+
+@tier(low)
+fn square(v: int) int {
+    return v * v
+}
+
+// Builds `square(a + b)` (or `a * b` when `mul` is true) in a fresh arena, evaluates it by
+// following the node references, and hands only the result out, through the callback. The
+// arena goes away on the way out of the block, taking every node with it.
+@tier(mid)
+fn build_and_eval(a: int, b: int, mul: bool, cb: fn(int) string) string {
+    with arena(64KB) {
+        let x = IntNode { value = a }
+        let y = IntNode { value = b }
+        let bin = BinNode { op = if mul { 1 } else { 0 }, lhs = &x, rhs = &y }
+        let call = CallNode { callee = 1, arg = &bin }
+
+        let l = call.arg.lhs.value
+        let r = call.arg.rhs.value
+        let v = if call.arg.op == 0 { l + r } else { l * r }
+        let result = if call.callee == 1 { square(v) } else { v }
+        return cb(result)
+    }
+}
+
+// Many short-lived trees, one arena each: the cost of the arena lifecycle per tree.
+@tier(mid)
+fn checksum(n: int) int {
+    let mut total = 0
+    for i in 0 .. n {
+        with arena(1KB) {
+            let x = IntNode { value = i }
+            let y = IntNode { value = i + 1 }
+            let bin = BinNode { op = 0, lhs = &x, rhs = &y }
+            let call = CallNode { callee = 0, arg = &bin }
+            total += call.arg.lhs.value + call.arg.rhs.value
         }
     }
+    return total
 }
 
-// ── Arena-resident AST node types ─────────────────────────────────────────────
-//
-// `edge struct Name [lifetime L]` means:
-//   - This struct lives in the arena named by lifetime L
-//   - Any field typed `&L T` is an arena pointer, NOT a GC reference
-//   - The compiler refuses to let &L pointers escape the `with arena { }` block
-//
-// Rust equivalent:  pub struct ExprNode<'ast> { ... }
-//                   arena.alloc(ExprNode { ... })  →  &'ast ExprNode<'ast>
+// ── Part 3 (HIGH): the driver. The arena machinery stays out of sight ───────────────────
 
-edge struct ExprNode [lifetime parse] {
-    pub kind: ExprKind
-    pub span: Span
+// Compiles `square(a + b)` two ways and checks that they agree: the enum tree evaluated
+// directly, and the arena tree evaluated in MID code, whose result reaches HIGH as a string
+// through the callback.
+fn compile_expression(a: int, b: int) string {
+    let tree = Expr.Call("square", Expr.Add(Expr.Num(a), Expr.Num(b)))
+    let direct = eval(tree, 0)
+    let via_arena = build_and_eval(a, b, false, fn(v: int) $"{v}")
+    let agree = via_arena == $"{direct}"
+    return $"{show(tree)} = {via_arena}  (enum tree says {direct}, agree: {agree})"
 }
 
-// Enum payload — variants hold arena references where needed.
-// Note: enum variants use "." for access (no "::" in Ubel)
-enum ExprKind {
-    IntLit   { value: int }
-    FloatLit { value: float }
-    // Interned source text — points into source buffer (same arena lifetime)
-    Ident    { name: &parse string }
-    BinOp {
-        op:  BinOpKind
-        lhs: &parse ExprNode
-        rhs: &parse ExprNode
-    }
-    Call {
-        callee: &parse ExprNode
-        // Arena-allocated slice of arena pointers
-        args:   &parse []&parse ExprNode
-    }
-    Block {
-        stmts: &parse []&parse StmtNode
-    }
-}
+fn main() void {
+    println(compile_expression(1, 2))
+    println(compile_expression(3, 4))
 
-enum BinOpKind { Add Sub Mul Div Eq Ne Lt Le Gt Ge }
+    // `Var` takes the value of x; `Neg` and `Mul` work on the enum tree too.
+    let poly = Expr.Add(Expr.Mul(Expr.Var("x"), Expr.Neg(Expr.Num(3))), Expr.Num(10))
+    println($"{show(poly)} at x = 5 is {eval(poly, 5)}")
 
-edge struct StmtNode [lifetime parse] {
-    pub kind: StmtKind
-    pub span: Span
-}
+    // The same tree shape with `*` instead of `+`, through the arena path.
+    println(build_and_eval(6, 7, true, fn(v: int) $"6 * 7, squared: {v}"))
 
-enum StmtKind {
-    Expr   { expr: &parse ExprNode }
-    Let    { name: &parse string, ty: &parse string?, init: &parse ExprNode? }
-    Return { value: &parse ExprNode? }
-}
-
-// ── Arena allocation helpers ──────────────────────────────────────────────────
-//
-// These are the `parser.alloc(...)` helpers from the Rust implementation.
-// Each one takes the arena explicitly (or it would be a field on the Parser struct).
-
-@tier(mid)
-fn make_int(value: int, span: Span, arena: Arena) &parse ExprNode {
-    return arena.alloc(ExprNode {
-        kind = ExprKind.IntLit { value = value }
-        span = span
-    })
-}
-
-@tier(mid)
-fn make_ident(name: &parse string, span: Span, arena: Arena) &parse ExprNode {
-    return arena.alloc(ExprNode {
-        kind = ExprKind.Ident { name = name }
-        span = span
-    })
-}
-
-@tier(mid)
-fn make_bin_op(
-    op:    BinOpKind
-    lhs:   &parse ExprNode
-    rhs:   &parse ExprNode
-    span:  Span
-    arena: Arena
-) &parse ExprNode {
-    return arena.alloc(ExprNode {
-        kind = ExprKind.BinOp { op = op, lhs = lhs, rhs = rhs }
-        span = span
-    })
-}
-
-@tier(mid)
-fn make_call(
-    callee: &parse ExprNode
-    args:   []&parse ExprNode
-    span:   Span
-    arena:  Arena
-) &parse ExprNode {
-    // arena.alloc_slice copies the stack slice into bump storage
-    let arena_args = arena.alloc_slice(args)
-    return arena.alloc(ExprNode {
-        kind = ExprKind.Call { callee = callee, args = arena_args }
-        span = span
-    })
-}
-
-// ── The parse pass — MID tier ─────────────────────────────────────────────────
-//
-// `with arena(size) { }` allocates a bump arena.
-// Everything created inside lives in that arena.
-// The CALLBACK is how results safely exit — the compiler checks the return
-// type contains no &parse references.
-//
-// This is the same contract as the Rust impl's callback/iterator/view pattern.
-
-@tier(mid)
-fn parse_expr_tree(source: string, callback: fn(&parse ExprNode) string) string {
-    with arena(128 KB) {
-        // ── Build AST for: `result = foo(1 + 2)` ──────────────────────────
-
-        let z = Span { start = 0, end = 0, line = 1, col = 1 }
-        let s1 = Span { start = 7, end = 8, line = 1, col = 8 }
-        let s2 = Span { start = 10, end = 11, line = 1, col = 11 }
-        let s_add = Span { start = 7, end = 11, line = 1, col = 8 }
-        let s_call = Span { start = 3, end = 12, line = 1, col = 4 }
-        let s_name = Span { start = 0, end = 6, line = 1, col = 1 }
-
-        // Intern the callee name — alloc_str copies into the arena
-        let callee_name = arena.alloc_str("foo")
-        let callee = make_ident(callee_name, s_name, arena)
-
-        // Build `1 + 2`
-        let lhs = make_int(1, s1, arena)
-        let rhs = make_int(2, s2, arena)
-        let sum = make_bin_op(BinOpKind.Add, lhs, rhs, s_add, arena)
-
-        // Build `foo(1 + 2)` — args is a stack slice, gets interned below
-        let root = make_call(callee, [sum], s_call, arena)
-
-        // Callback receives a borrow into the arena.
-        // Return type is `string` (GC-managed) — no &parse leaks.
-        return callback(root)
-
-        // Arena freed here — single pointer bump-back. Zero allocator calls.
-    }
-}
-
-// ── HIGH-tier driver — sees none of the arena machinery ──────────────────────
-
-pub fn compile_expression(source: string) string {
-    // The callback closure sees `&parse ExprNode` but returns `string`.
-    // The compiler's tier enforcer verifies no arena pointer escapes.
-    return parse_expr_tree(source, fn(root: &parse ExprNode) string {
-        return pretty_print(root)
-    })
-}
-
-// Recursive printer — called from HIGH tier through the callback
-@tier(high)
-fn pretty_print(node: &parse ExprNode) string {
-    match node.kind {
-        ExprKind.IntLit   { value }             => return value.to_string()
-        ExprKind.Ident    { name }              => return name
-        ExprKind.BinOp    { op, lhs, rhs }      => {
-            let l = pretty_print(lhs)
-            let r = pretty_print(rhs)
-            let op_str = match op {
-                BinOpKind.Add => "+"
-                BinOpKind.Sub => "-"
-                BinOpKind.Mul => "*"
-                BinOpKind.Div => "/"
-                _             => "?"
-            }
-            return $"({l} {op_str} {r})"
-        }
-        ExprKind.Call { callee, args }          => {
-            let callee_str = pretty_print(callee)
-            let arg_strs = from a in args select pretty_print(a)
-            return $"{callee_str}({arg_strs.join(", ")})"
-        }
-        _ => return "<unsupported>"
-    }
+    println("checksum:", checksum(1000))
 }

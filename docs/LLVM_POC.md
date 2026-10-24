@@ -445,6 +445,10 @@ refusals each name the right feature (struct methods, MID literal outside an are
 literal, printing a struct).
 The wasm demo skips the three allocating examples instead of failing them (10 passed,
 3 skipped), because the wasm runtime has no GC and no arena memory.
+The harness also guards the target program: the interpreter must run
+`examples/arena_demo/ast_builder.ubl` and print `ast_builder.expected` (checked by hand),
+and the run reports whether the emitter compiles it yet (22 checks in all). Corrupting the
+expected file turns the run red.
 
 ### Known differences from the interpreter
 
@@ -464,7 +468,7 @@ Found while writing the test programs; none is fixed here.
 - In nested `for` loops over range literals, comparing the two loop variables
   (`if q > r`) fails sema with ``type `?T40` doesn't support ordering comparisons``. It
   looks like an inference gap in loop-variable types.
-- `Program.items` includes the injected prelude (Option, Result and friends) with
+- `Program.items` includes the injected prelude (`Ordering`, `Hasher` and the core traits) with
   synthetic spans (`Span::is_prelude()`). Anything that walks the items must skip them.
 - `SemaContext.expr_types` can hold unresolved type variables, for example for an `if`
   expression, and the unifier's substitution table is not exposed. A backend therefore
@@ -477,11 +481,25 @@ Found while building the struct slice, same status (found, not fixed):
 - Structs have **reference semantics** in the interpreter: `let b = a`, passing to a
   function, and `let c = o.i` for a nested struct all alias. `examples/arena_demo/ast_builder.ubl`
   calls `Span` a "plain value type, copy freely", which is not what the interpreter does.
-- **`examples/arena_demo/ast_builder.ubl` does not parse today.** `arena` is a reserved word
-  (so `arena: Arena` fails), `arena.alloc`, `alloc_str` and `alloc_slice` do not exist in the
-  Ubel front end (only in Rust test code), lambda return-type annotations are rejected, and
-  the `from a in args select ...` form was removed. It is a design sketch, not a runnable
-  program. Renaming `arena` alone is not enough.
+- **The first `examples/arena_demo/ast_builder.ubl` was a sketch that did not parse.**
+  `arena` is a reserved word (so `arena: Arena` fails), `arena.alloc`, `alloc_str` and
+  `alloc_slice` do not exist in the Ubel front end (only in Rust test code), lambda
+  return-type annotations are rejected, and the `from a in args select ...` form was removed.
+  It has been rewritten to run (2026-10-23, see "The target program" under Next stages).
+- **A recursive arena tree cannot be written in today's language.** Enums cannot take a
+  lifetime parameter and cannot carry arena references (`enum E [lifetime L]` is a parse
+  error). A user-declared `Maybe<&L Node>` held in an edge struct field is rejected by sema as
+  escaping the block. `&L Node?` parses, but `null` is rejected for it (`expected &L Node?,
+  found null`), and neither `none` nor an `orelse` operator exists, so there is no way to
+  build a leaf. The prelude has no `Option`. Fixed-shape node graphs (one edge struct per
+  node shape, mandatory `&L` fields) work, and so do recursive GC enums. This is a language
+  gap, not an emitter one: the bootstrap goal needs optional arena references, arena-capable
+  enums, or arena-resident lists.
+- Passing an arena value as a call argument is rejected by sema even when the parameter is a
+  lifetime-generic reference (`fn eval_call [lifetime L] (c: &L CallNode)` called with
+  `&call` inside `with arena`). In practice arena nodes have to be built and read inside
+  one function; only ints and strings cross a call. Lambdas take their body right after the
+  parameter list (`fn(v: int) $"{v}"`) with no return type.
 - `mid` (and presumably `low`, `high`) cannot be used as a field name.
 - Inside `with arena`, sema leaves some expression types `Unknown` (field access on an arena
   struct and every operator built on it, and assignments). The emitter derives those types
@@ -599,18 +617,40 @@ None of this has been started, and the plan is open to change.
 
 ## Next stages
 
-Structs are in (slice 2). `ast_builder.ubl` cannot be a target as written (see the
-front-end findings), so the route to it is a runnable stand-in written in today's syntax,
-then the real file once the language settles what it is missing. What the stand-in needs, in
-a sensible order: `edge struct` with lifetimes and `&a` fields (arena nodes pointing at each
-other), enums with payloads and `match`, strings as values, closures (the callback ABI
-proposal), and a decision on where MID helpers outside `with arena` allocate. The real file
-additionally needs front-end changes: `arena` as a usable name or a different spelling,
-an allocation spelling that exists, lambda return types, and the removed `from ... select`.
+### The target program: `examples/arena_demo/ast_builder.ubl`
 
-Other open candidates: publish resolved types from sema, LOW allocation, the cross-language
-baselines, the small Ubel application, and the GC research agenda (root and stress tests
-first, see `docs/GC_RESEARCH.md`).
+Rewritten to run (it parses, passes sema, and the interpreter prints the reference output;
+the arithmetic in it was checked by hand). It builds `square(a + b)` two ways and checks
+that they agree: a recursive GC enum tree (`Expr`, with `show` and `eval`, in HIGH) and a
+fixed-shape arena graph of edge structs (in MID, evaluated through `&L` references, with
+the result handed to HIGH as a string by a callback). It also runs a thousand short-lived
+arenas. It is the program the native emitter is grown toward, and it is **not compilable
+yet**: the emitter stops at its first `edge struct`.
+
+What it needs, by part, in the order I would build it (reasoned, not yet measured):
+
+1. **Edge structs with `&L` fields, borrows, lifetime parameters on functions.** A struct
+   value is already a pointer, so `&x` is the same pointer and a `&L T` field is a `ptr`
+   field. This is the smallest step and makes `checksum` (arena per iteration, nodes
+   pointing at nodes) compile.
+2. **Enums with payloads and `match`** (tag plus payload words, pointer masks for payload
+   pointers, bindings in arms, recursion). Needs a layout decision per enum.
+3. **Strings as values** (interpolation that builds one, `==`, printing one). Needs a string
+   representation decision, and **large-object support in the collector first**: a string
+   can exceed the 512-byte small-object limit and the runtime aborts on that today.
+4. **Non-capturing closures** passed to a MID function and called there (`cb(result)`),
+   using the Stage 1A closure proposal (GC object, code pointer in the first word) with zero
+   captures at first. This completes `build_and_eval` and `compile_expression`.
+
+Parallel track that does not block the above: run the slice 2 CI workflows, and the GC
+hardening items in `docs/GC_RESEARCH.md` (global roots, large objects, a collect-on-every-
+allocation debug mode), since items 2 to 4 all allocate more kinds of object.
+
+Decisions the language still owes the emitter: where a MID helper outside `with arena`
+allocates (the target program sidesteps it, because sema stops arena values crossing calls
+anyway), how LOW allocates, and the recursive-arena-tree gap above. Other open candidates:
+publish resolved types from sema, the cross-language baselines, and the benchmark
+methodology work.
 
 ## Log
 
@@ -618,7 +658,8 @@ first, see `docs/GC_RESEARCH.md`).
   inside `with arena`; MID-outside-arena and LOW literals refused). 21 of 21 locally at
   64-bit and 32-bit, not yet on CI. Fixed a parameter-name collision in the emitter and made
   the runtime's stack scan ASan-exempt. Wasm demo now skips allocating programs. Front-end
-  findings recorded, including that `ast_builder.ubl` does not parse.
+  findings recorded. `examples/arena_demo/ast_builder.ubl` (a sketch that did not parse)
+  rewritten as a runnable program and made the emitter's target; roadmap to it recorded.
 - 2026-10-22: Stage 1B verified on CI (15 of 15 on x86_64 and aarch64, cargo 1.99.0).
   Benchmark run #4 recorded; three x86 runs show the runner pool is not uniform, so the
   report now prints the host CPU model. Browser-playground feasibility checked: emitted IR

@@ -129,6 +129,26 @@ for src in "$here"/examples/*.ubl; do
   fi
 done
 
+# The target program (examples/arena_demo/ast_builder.ubl). The emitter cannot compile it yet,
+# so it is not part of the equivalence loop above. What IS checked: the interpreter still
+# accepts it and prints the output that was checked by hand (ast_builder.expected), so the file
+# cannot go stale again. Whether the emitter compiles it is reported, never failed on: it is
+# the thing the emitter is being grown toward.
+target="$here/../../examples/arena_demo/ast_builder.ubl"
+golden="$here/../../examples/arena_demo/ast_builder.expected"
+if [ -f "$target" ] && [ -f "$golden" ]; then
+  if "$bin" interp "$target" >"$out/ast_builder.actual" 2>"$out/ast_builder.err" && diff -q "$golden" "$out/ast_builder.actual" >/dev/null; then
+    ok "ast_builder (target)" "the interpreter runs it and prints the checked output"
+  else
+    bad "ast_builder (target)" "the interpreter no longer runs it or its output changed: $(head -n 2 "$out/ast_builder.err" | tr '\n' ' ')$(diff "$golden" "$out/ast_builder.actual" 2>/dev/null | head -n 3 | tr '\n' ' ')"
+  fi
+  if "$bin" emit "$target" -o "$out/ast_builder.ll" >/dev/null 2>"$out/ast_builder.emit.err"; then
+    echo "  note  ast_builder: the emitter COMPILES it now. Move it into the equivalence suite."
+  else
+    echo "  note  ast_builder: not compilable yet:$(sed -n 2p "$out/ast_builder.emit.err")"
+  fi
+fi
+
 echo
 echo "equivalence: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

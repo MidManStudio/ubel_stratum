@@ -259,7 +259,7 @@ pub(crate) fn emit_program(program: &Program, ctx: &SemaContext) -> R<String> {
     let mut e = Emitter::new(ctx);
     e.collect_structs(program)?;
 
-    // The front end injects the prelude (Option, Result and friends) as ordinary items with
+    // The front end injects the prelude (Ordering, Hasher and the core traits) as ordinary items with
     // synthetic spans. Programs that do not use it should not be refused because of it.
     for item in program.items {
         if item.span().is_prelude() {
