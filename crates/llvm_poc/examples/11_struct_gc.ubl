@@ -1,0 +1,43 @@
+// Structs under garbage collection. A three-level chain is replaced again and again while
+// a lot of short-lived garbage forces collections, so the new objects are reachable only
+// through a field of an older one. If the collector did not trace the pointer fields of a
+// struct (the heap mask), those objects would be freed and reused, and the sums below
+// would come out wrong. A second chain is built once and must survive all of it.
+struct Leaf {
+    v: int
+}
+
+struct Body {
+    leaf: Leaf
+    w: int
+}
+
+struct Top {
+    body: Body
+    n: int
+}
+
+fn churn(rounds: int) int {
+    let mut sum = 0
+    let mut i = 0
+    while i < rounds {
+        let junk = Body { leaf = Leaf { v = i }, w = i }
+        sum += junk.leaf.v - junk.w
+        i += 1
+    }
+    return sum
+}
+
+fn main() void {
+    let keep = Top { body = Body { leaf = Leaf { v = 7 }, w = 11 }, n = 1 }
+    let top = Top { body = Body { leaf = Leaf { v = 0 }, w = 0 }, n = 0 }
+    let mut check = 0
+    for k in 1 ..= 400 {
+        top.body = Body { leaf = Leaf { v = k }, w = k * 2 }
+        let z = churn(1000)
+        check += top.body.leaf.v + top.body.w + z
+        top.n += 1
+    }
+    println(check, top.n, top.body.leaf.v, top.body.w)
+    println(keep.body.leaf.v, keep.body.w, keep.n)
+}

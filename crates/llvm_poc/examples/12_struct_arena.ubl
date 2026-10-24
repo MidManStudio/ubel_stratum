@@ -1,0 +1,116 @@
+// Structs in MID and across tiers. A literal inside `with arena` is bump-allocated from the
+// innermost open arena and dies with it; a HIGH struct handed down to MID and LOW code is
+// the same pointer, so a write through it is visible to the caller afterwards. (Sema does
+// not let an arena struct be passed to a function that takes a plain struct, so only HIGH
+// structs go down to LOW code here.)
+struct Vec2 {
+    x: int
+    y: int
+}
+
+// Flat on purpose: sema rejects an arena struct stored inside another arena struct unless
+// both are `edge struct` with lifetimes, which the emitter does not support yet.
+struct Rect {
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+}
+
+struct Holder {
+    inner: Vec2
+    k: int
+}
+
+@tier(low)
+fn len2(v: Vec2) int {
+    return v.x * v.x + v.y * v.y
+}
+
+@tier(mid)
+fn area(w: int, h: int) int {
+    with arena(256) {
+        let r = Rect { x0 = 0, y0 = 0, x1 = w, y1 = h }
+        r.x1 += 1
+        return (r.x1 - r.x0) * (r.y1 - r.y0)
+    }
+}
+
+// Far more objects than one 128-byte chunk holds, so the arena has to grow.
+@tier(mid)
+fn many(n: int) int {
+    with arena(128) {
+        let mut sum = 0
+        for i in 0 .. n {
+            let v = Vec2 { x = i, y = i * 2 }
+            sum += v.x + v.x * v.x + v.y * v.y
+        }
+        return sum
+    }
+}
+
+// Early exits from inside the arena, after allocating in it.
+@tier(mid)
+fn first_over(limit: int) int {
+    with arena(64) {
+        let mut i = 0
+        loop {
+            let v = Vec2 { x = i, y = i }
+            if v.x * v.y > limit {
+                return v.x
+            }
+            i += 1
+        }
+    }
+}
+
+@tier(mid)
+fn skip_odd(n: int) int {
+    let mut sum = 0
+    for i in 0 .. n {
+        with arena(64) {
+            let v = Vec2 { x = i, y = 1 }
+            if v.x % 2 == 1 {
+                continue
+            }
+            sum += v.x
+        }
+    }
+    return sum
+}
+
+// Two arenas open at once: each literal goes into the innermost one.
+@tier(mid)
+fn nested(a: int, b: int) int {
+    with arena(128) {
+        let outer = Vec2 { x = a, y = a + 1 }
+        with arena(128) {
+            let inner = Vec2 { x = b, y = b + 1 }
+            return outer.x + outer.y + inner.x + inner.y
+        }
+    }
+}
+
+// A MID function that receives a HIGH struct: it writes through it, reads it, keeps a
+// pointer to it inside an arena object, and passes it down to LOW code.
+@tier(mid)
+fn touch(g: Vec2) int {
+    with arena(128) {
+        g.x = 100
+        let h = Holder { inner = g, k = 5 }
+        h.inner.y += 1
+        let local = Vec2 { x = 3, y = 4 }
+        return h.k + h.inner.x + h.inner.y + local.x * local.x + local.y * local.y + len2(g)
+    }
+}
+
+fn main() void {
+    println("area:", area(4, 5))
+    println("many:", many(1000))
+    println("first_over:", first_over(50))
+    println("skip_odd:", skip_odd(10))
+    println("nested:", nested(1, 10))
+    let g = Vec2 { x = 1, y = 2 }
+    println("touch:", touch(g))
+    println(g.x, g.y, len2(g))
+}

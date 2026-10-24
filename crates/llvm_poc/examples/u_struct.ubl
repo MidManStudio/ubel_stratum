@@ -1,11 +1,13 @@
-// Not supported yet: struct declarations. The emitter must refuse, not miscompile.
-// expect-refusal: struct declarations
-struct Point {
-    x: int
-    y: int
+// Not supported yet: methods on a struct. The emitter must refuse, not miscompile.
+// expect-refusal: struct methods
+struct Counter {
+    n: int
+
+    fn bump(self) int {
+        return self.n + 1
+    }
 }
 
 fn main() void {
-    let p = Point { x = 1, y = 2 }
-    println(p.x)
+    println(1)
 }

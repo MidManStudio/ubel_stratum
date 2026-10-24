@@ -11,11 +11,16 @@
 //! * calls between user functions;
 //! * `println` / `print` of ints, bools, string literals and interpolated strings;
 //! * `with arena(size) { ... }`, with the arena destroyed on EVERY way out of the block:
-//!   falling off the end, `return`, `break` and `continue`.
+//!   falling off the end, `return`, `break` and `continue`;
+//! * plain structs (fields of `int`, `bool` or another struct): literals, field reads,
+//!   field assignment (also compound and nested), and passing/returning them. A struct
+//!   value is a pointer, like the interpreter's reference semantics: `let b = a` aliases.
+//!   A literal allocates from the GC heap in a HIGH function and from the innermost open
+//!   arena inside `with arena`; anywhere else (MID outside an arena, LOW) it is refused.
 //!
 //! Everything else is refused with a located "not supported yet" error instead of being
-//! guessed at: structs, enums, strings as values, collections, closures, generics, `match`,
-//! sized integers, floats.
+//! guessed at: enums, strings as values, collections, closures, generics, struct methods,
+//! `match`, sized integers, floats.
 //!
 //! # Lowering model
 //!
@@ -30,14 +35,14 @@
 //! (exit 1, message on stderr). Shifts by 64 or more are undefined. The test programs avoid
 //! overflow and over-wide shifts; the differences are documented in `docs/LLVM_POC.md`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::fmt::Write as _;
 
 use ubel_stratum::ast::{
     AllocatorKind, Arg, ArgKind, AssignOp, BinOp, BindingTarget, Block, Expr, ExprKind,
-    FunctionDecl, IfBranchBody, IfExpr, InterpolationPart, Item, Literal, ParamKind, Program,
-    SizeExpr, Span, Stmt, StmtKind, TierAnnotation, TypeKind, UnaryOp,
+    FieldInit, FunctionDecl, IfBranchBody, IfExpr, InterpolationPart, Item, Literal, ParamKind, Program,
+    SizeExpr, Span, Stmt, StmtKind, StructDecl, StructMember, TierAnnotation, TypeKind, UnaryOp,
 };
 use ubel_stratum::sema::{SemaContext, SemaType};
 
@@ -93,6 +98,8 @@ enum Ty {
     I64,
     I1,
     Void,
+    /// A struct value: a pointer to an object, `usize` indexes `Emitter::structs`.
+    Struct(usize),
 }
 
 impl Ty {
@@ -101,9 +108,26 @@ impl Ty {
             Ty::I64 => "i64",
             Ty::I1 => "i1",
             Ty::Void => "void",
+            Ty::Struct(_) => "ptr",
         }
     }
 }
+
+#[derive(Clone)]
+struct FieldInfo {
+    name: String,
+    ty: Ty,
+}
+
+#[derive(Clone)]
+struct StructInfo {
+    name: String,
+    fields: Vec<FieldInfo>,
+}
+
+/// Fields per struct. A GC object is at most 64 pointer-words, which is 256 bytes on a
+/// 32-bit target, and a field is at most 8 bytes, so 32 fields always fit.
+const MAX_STRUCT_FIELDS: usize = 32;
 
 #[derive(Clone, Debug)]
 struct Val {
@@ -206,6 +230,13 @@ fn stmt_kind_name(k: &StmtKind) -> &'static str {
 struct Emitter<'a> {
     ctx: &'a SemaContext,
     sigs: HashMap<String, Sig>,
+    structs: Vec<StructInfo>,
+    struct_ids: HashMap<String, usize>,
+    /// Which structs are allocated somewhere, so only their helper functions are emitted.
+    sized: BTreeSet<usize>,
+    masked: BTreeSet<usize>,
+    uses_gc: bool,
+    uses_bump: bool,
 
     funcs: String,
     strings: String,
@@ -226,6 +257,7 @@ struct Emitter<'a> {
 
 pub(crate) fn emit_program(program: &Program, ctx: &SemaContext) -> R<String> {
     let mut e = Emitter::new(ctx);
+    e.collect_structs(program)?;
 
     // The front end injects the prelude (Option, Result and friends) as ordinary items with
     // synthetic spans. Programs that do not use it should not be refused because of it.
@@ -238,6 +270,7 @@ pub(crate) fn emit_program(program: &Program, ctx: &SemaContext) -> R<String> {
                 let sig = e.signature(f)?;
                 e.sigs.insert(f.name.to_string(), sig);
             }
+            Item::Struct(_) => {} // registered by collect_structs
             other => {
                 return unsupported(other.span(), format!("{} declarations", other.kind_name()));
             }
@@ -262,6 +295,12 @@ impl<'a> Emitter<'a> {
         Emitter {
             ctx,
             sigs: HashMap::new(),
+            structs: Vec::new(),
+            struct_ids: HashMap::new(),
+            sized: BTreeSet::new(),
+            masked: BTreeSet::new(),
+            uses_gc: false,
+            uses_bump: false,
             funcs: String::new(),
             strings: String::new(),
             str_n: 0,
@@ -291,11 +330,99 @@ impl<'a> Emitter<'a> {
         out.push_str("declare void @ubel_print_nl()\n");
         out.push_str("declare void @ubel_trap_div_zero()\n");
         out.push_str("declare void @ubel_trap_no_return()\n\n");
+        if self.uses_gc {
+            out.push_str("declare ptr  @ubel_gc_alloc(i64, i64)\n");
+        }
+        if self.uses_bump {
+            out.push_str("declare ptr  @ubel_arena_grow(ptr, i64)\n");
+        }
+        if self.uses_gc || self.uses_bump {
+            out.push('\n');
+        }
         if !self.strings.is_empty() {
             out.push_str(&self.strings);
             out.push('\n');
         }
+        out.push_str(&self.struct_defs());
         out.push_str(&self.funcs);
+        if self.uses_bump {
+            out.push_str("!0 = !{!\"branch_weights\", i32 1999, i32 1}\n");
+        }
+        out
+    }
+
+    /// Struct types, and for every struct that is allocated, the size and pointer-mask
+    /// helpers. Both are computed from the TARGET's data layout with the `getelementptr
+    /// null` trick, so one `.ll` file is right for 32-bit and 64-bit builds alike. Bit i of
+    /// a mask means the pointer-sized word at byte offset i * sizeof(ptr) holds a pointer.
+    fn struct_defs(&self) -> String {
+        let mut out = String::new();
+        for s in &self.structs {
+            let fields: Vec<&str> = s.fields.iter().map(|f| f.ty.ir()).collect();
+            let _ = writeln!(out, "%struct.{} = type {{ {} }}", s.name, fields.join(", "));
+        }
+        if self.uses_bump {
+            out.push_str("%ubel_arena = type { ptr, ptr, ptr, i64 }\n");
+        }
+        if !self.structs.is_empty() {
+            out.push('\n');
+        }
+        for &sid in &self.sized {
+            let s = &self.structs[sid];
+            let _ = writeln!(
+                out,
+                "define internal i64 @ubel_sz.{n}() alwaysinline nounwind readnone {{\nentry:\n  ret i64 ptrtoint (ptr getelementptr (%struct.{n}, ptr null, i32 1) to i64)\n}}",
+                n = s.name
+            );
+        }
+        for &sid in &self.masked {
+            let s = &self.structs[sid];
+            let ptr_fields: Vec<usize> = s
+                .fields
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| matches!(f.ty, Ty::Struct(_)))
+                .map(|(i, _)| i)
+                .collect();
+            let mut body = String::from("  %psz = ptrtoint ptr getelementptr (ptr, ptr null, i32 1) to i64\n");
+            let mut acc = String::from("0");
+            for (k, fi) in ptr_fields.iter().enumerate() {
+                let _ = writeln!(body, "  %off{k} = ptrtoint ptr getelementptr (%struct.{}, ptr null, i32 0, i32 {fi}) to i64", s.name);
+                let _ = writeln!(body, "  %idx{k} = udiv i64 %off{k}, %psz");
+                let _ = writeln!(body, "  %bit{k} = shl i64 1, %idx{k}");
+                let _ = writeln!(body, "  %m{k} = or i64 {acc}, %bit{k}");
+                acc = format!("%m{k}");
+            }
+            let _ = writeln!(
+                out,
+                "define internal i64 @ubel_mask.{}() alwaysinline nounwind readnone {{\nentry:\n{body}  ret i64 {acc}\n}}",
+                s.name
+            );
+        }
+        if self.uses_bump {
+            out.push_str(concat!(
+                "; MID-tier bump allocation, the fast path inlined. `size` is a multiple of 16.\n",
+                "define internal ptr @ubel_arena_bump(ptr %a, i64 %size) alwaysinline nounwind {\n",
+                "entry:\n",
+                "  %curp = getelementptr inbounds %ubel_arena, ptr %a, i32 0, i32 0\n",
+                "  %endp = getelementptr inbounds %ubel_arena, ptr %a, i32 0, i32 1\n",
+                "  %cur  = load ptr, ptr %curp\n",
+                "  %end  = load ptr, ptr %endp\n",
+                "  %new  = getelementptr i8, ptr %cur, i64 %size\n",
+                "  %ok   = icmp ule ptr %new, %end\n",
+                "  br i1 %ok, label %fast, label %slow, !prof !0\n",
+                "fast:\n",
+                "  store ptr %new, ptr %curp\n",
+                "  ret ptr %cur\n",
+                "slow:\n",
+                "  %p = call ptr @ubel_arena_grow(ptr %a, i64 %size)\n",
+                "  ret ptr %p\n",
+                "}\n",
+            ));
+        }
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
         out
     }
 
@@ -378,6 +505,14 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    fn need_printable(&self, got: &Val, span: Span) -> R<()> {
+        self.need_value(got, span)?;
+        if let Ty::Struct(_) = got.ty {
+            return unsupported(span, "printing a struct value (print its fields)");
+        }
+        Ok(())
+    }
+
     fn need_value(&self, got: &Val, span: Span) -> R<()> {
         if got.ty == Ty::Void {
             Err(CompileError::at(span, "this expression has no value"))
@@ -393,19 +528,133 @@ impl<'a> Emitter<'a> {
             TypeKind::Int => Ok(Ty::I64),
             TypeKind::Bool => Ok(Ty::I1),
             TypeKind::Void => Ok(Ty::Void),
-            _ => unsupported(t.span, "this type (only `int`, `bool` and `void` so far)"),
+            TypeKind::Named { path, args } => {
+                if !args.is_empty() {
+                    return unsupported(t.span, "generic types");
+                }
+                match path {
+                    [name] => match self.struct_ids.get(*name) {
+                        Some(&sid) => Ok(Ty::Struct(sid)),
+                        None => unsupported(t.span, format!("the type `{name}` (only int, bool, void and plain structs so far)")),
+                    },
+                    _ => unsupported(t.span, "qualified type names"),
+                }
+            }
+            _ => unsupported(t.span, "this type (only `int`, `bool`, `void` and plain structs so far)"),
         }
+    }
+
+    /// Register every struct before any signature is resolved, so structs can refer to
+    /// each other in any order. Pass one claims the names, pass two resolves field types.
+    fn collect_structs(&mut self, program: &Program) -> R<()> {
+        let mut decls: Vec<&StructDecl> = Vec::new();
+        for item in program.items {
+            if item.span().is_prelude() {
+                continue;
+            }
+            if let Item::Struct(s) = item {
+                if s.is_edge {
+                    return unsupported(s.span, "`edge struct`");
+                }
+                if !s.generic_params.is_empty() {
+                    return unsupported(s.span, "generic structs");
+                }
+                if !s.lifetime_params.is_empty() {
+                    return unsupported(s.span, "structs with lifetime parameters");
+                }
+                if !s.attributes.is_empty() {
+                    return unsupported(s.span, "attributes on structs");
+                }
+                if self.struct_ids.contains_key(s.name) {
+                    return Err(CompileError::at(s.span, format!("the struct `{}` is declared twice", s.name)));
+                }
+                self.struct_ids.insert(s.name.to_string(), self.structs.len());
+                self.structs.push(StructInfo { name: s.name.to_string(), fields: Vec::new() });
+                decls.push(s);
+            }
+        }
+        for (sid, s) in decls.iter().enumerate() {
+            let mut fields = Vec::new();
+            for m in s.members {
+                match m {
+                    StructMember::Field(f) => {
+                        let ty = self.ty_of_type(f.ty)?;
+                        if ty == Ty::Void {
+                            return unsupported(f.span, "`void` fields");
+                        }
+                        fields.push(FieldInfo { name: f.name.to_string(), ty });
+                    }
+                    StructMember::Method(m) => return unsupported(m.span, "struct methods"),
+                    StructMember::Property(p) => return unsupported(p.span, "struct properties"),
+                }
+            }
+            if fields.is_empty() {
+                return unsupported(s.span, "structs with no fields");
+            }
+            if fields.len() > MAX_STRUCT_FIELDS {
+                return unsupported(s.span, format!("structs with more than {MAX_STRUCT_FIELDS} fields (runtime object size limit)"));
+            }
+            self.structs[sid].fields = fields;
+        }
+        Ok(())
+    }
+
+    fn field_index(&self, sid: usize, name: &str, span: Span) -> R<(usize, Ty)> {
+        let s = &self.structs[sid];
+        s.fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == name)
+            .map(|(i, f)| (i, f.ty))
+            .ok_or_else(|| CompileError::at(span, format!("the struct `{}` has no field `{name}`", s.name)))
     }
 
     /// Refuse expressions sema typed as something the emitter does not lower, such as
     /// a sized integer, a float or a collection, before they can be miscompiled as `int`.
     fn check_sema_type(&self, e: &Expr) -> R<()> {
-        if let Some(id) = self.ctx.expr_types.get(&e.span) {
-            match self.ctx.types.get(*id) {
-                SemaType::Int | SemaType::Bool | SemaType::Void | SemaType::Str | SemaType::Var(_) => {}
-                other => {
-                    let shown = other.display(&self.ctx.types, &self.ctx.symbols);
-                    return unsupported(e.span, format!("values of type `{shown}` (only int, bool and void so far)"));
+        // An assignment has no value the emitter uses (it is lowered as void, and both the
+        // place and the right-hand side are checked on their own), and sema leaves its type
+        // `Unknown` inside `with arena`, so its own type says nothing useful.
+        if let ExprKind::Assign { .. } = e.kind {
+            return Ok(());
+        }
+        if let Some(&start) = self.ctx.expr_types.get(&e.span) {
+            // Sema wraps a struct value in the tier of the place it was built in (a GC or an
+            // arena reference); the emitter only needs the struct underneath.
+            //
+            // Inside `with arena`, sema leaves some expressions typed `Unknown` (field access on
+            // an arena struct, and every operator built on it). For the expression kinds the
+            // emitter lowers, its own type comes from declarations it has already restricted to
+            // int, bool, void and plain structs (parameters, fields, signatures) and from
+            // operands it checks itself, so `Unknown` is let through for exactly those kinds.
+            // Every other kind is refused by the emitter whatever sema says.
+            let own_type_is_authoritative = matches!(
+                e.kind,
+                ExprKind::Ident(_)
+                    | ExprKind::Field { .. }
+                    | ExprKind::Call { .. }
+                    | ExprKind::StructLit { .. }
+                    | ExprKind::BinOp { .. }
+                    | ExprKind::UnaryOp { .. }
+                    | ExprKind::If(_)
+                    | ExprKind::ShortDecl { .. }
+            );
+            let mut id = start;
+            loop {
+                match self.ctx.types.get(id) {
+                    SemaType::Int | SemaType::Bool | SemaType::Void | SemaType::Str | SemaType::Var(_) => return Ok(()),
+                    SemaType::Unknown if own_type_is_authoritative => return Ok(()),
+                    SemaType::GcRef(inner) => id = *inner,
+                    SemaType::ArenaRef { inner, .. } => id = *inner,
+                    SemaType::Named { def, args }
+                        if args.is_empty() && self.struct_ids.contains_key(&self.ctx.symbols.lookup(*def).name) =>
+                    {
+                        return Ok(())
+                    }
+                    _ => {
+                        let shown = self.ctx.types.get(start).display(&self.ctx.types, &self.ctx.symbols);
+                        return unsupported(e.span, format!("values of type `{shown}` (only int, bool, void and plain structs so far)"));
+                    }
                 }
             }
         }
@@ -461,7 +710,9 @@ impl<'a> Emitter<'a> {
         for (i, p) in f.params.iter().enumerate() {
             if let ParamKind::Named { name, .. } = p.kind {
                 let ty = sig.params[i];
-                let reg = format!("%p.{i}");
+                // A name no Ubel identifier can produce (it starts with a dot), so a parameter
+                // register never collides with the stack slot of a local named `p`, `arg`, ...
+                let reg = format!("%.arg{i}");
                 header_params.push(format!("{} {}", ty.ir(), reg));
                 let slot = self.declare(name, ty);
                 self.inst(&format!("store {} {}, ptr {}", ty.ir(), reg, slot));
@@ -883,27 +1134,32 @@ impl<'a> Emitter<'a> {
                 }
             },
             ExprKind::Assign { op, target, value } => {
-                let name = match target.kind {
-                    ExprKind::Ident(n) => n,
-                    _ => return unsupported(target.span, "assignment to anything but a local variable"),
+                // The place being assigned: a local's slot, or the address of a struct field.
+                // For a field the object expression is evaluated before the right-hand side.
+                let (addr, pty) = match target.kind {
+                    ExprKind::Ident(name) => {
+                        let local = self
+                            .lookup(name)
+                            .ok_or_else(|| CompileError::at(target.span, format!("not supported yet: assignment to `{name}` (only local variables and struct fields so far)")))?;
+                        (local.slot, local.ty)
+                    }
+                    ExprKind::Field { target: obj, field } => self.field_addr(obj, field, target.span)?,
+                    _ => return unsupported(target.span, "assignment to anything but a local variable or a struct field"),
                 };
-                let local = self
-                    .lookup(name)
-                    .ok_or_else(|| CompileError::at(target.span, format!("not supported yet: assignment to `{name}` (only local variables so far)")))?;
                 let rhs = self.expr(value)?;
                 let stored = match assign_binop(op) {
                     None => {
-                        self.need(local.ty, &rhs, value.span)?;
+                        self.need(pty, &rhs, value.span)?;
                         rhs
                     }
                     Some(bop) => {
                         let cur = self.fresh();
-                        self.inst(&format!("{cur} = load {}, ptr {}", local.ty.ir(), local.slot));
-                        let curv = Val { v: cur, ty: local.ty };
+                        self.inst(&format!("{cur} = load {}, ptr {addr}", pty.ir()));
+                        let curv = Val { v: cur, ty: pty };
                         self.binop(bop, &curv, &rhs, e.span)?
                     }
                 };
-                self.inst(&format!("store {} {}, ptr {}", stored.ty.ir(), stored.v, local.slot));
+                self.inst(&format!("store {} {}, ptr {addr}", stored.ty.ir(), stored.v));
                 Ok(Val::void())
             }
             ExprKind::ShortDecl { name, value } => {
@@ -915,8 +1171,117 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Call { callee, args } => self.call(e, callee, args),
             ExprKind::If(ife) => self.if_value(ife, e.span),
+            ExprKind::StructLit { path, fields } => self.struct_lit(e, path, fields),
+            ExprKind::Field { target, field } => {
+                let (addr, ty) = self.field_addr(target, field, e.span)?;
+                let t = self.fresh();
+                self.inst(&format!("{t} = load {}, ptr {addr}", ty.ir()));
+                Ok(Val { v: t, ty })
+            }
             ref other => unsupported(e.span, expr_kind_name(other)),
         }
+    }
+
+    /// Address of `obj.field`: evaluates `obj` (a pointer) and indexes into the struct.
+    fn field_addr(&mut self, obj: &Expr, field: &str, span: Span) -> R<(String, Ty)> {
+        let o = self.expr(obj)?;
+        let sid = match o.ty {
+            Ty::Struct(i) => i,
+            _ => return unsupported(span, "field access on anything but a struct"),
+        };
+        let (idx, fty) = self.field_index(sid, field, span)?;
+        let name = self.structs[sid].name.clone();
+        let g = self.fresh();
+        self.inst(&format!("{g} = getelementptr inbounds %struct.{name}, ptr {}, i32 0, i32 {idx}", o.v));
+        Ok((g, fty))
+    }
+
+    /// `Name { a = .., b = .. }`. The field expressions are evaluated first, in source order
+    /// (side effects happen in the order written, as in the interpreter), then the object is
+    /// allocated and filled. Where it is allocated follows the tier the literal is written in:
+    ///
+    /// * inside `with arena`: bump allocation from the innermost open arena (MID);
+    /// * in a HIGH function: the GC heap, with a pointer mask from the target's layout;
+    /// * in a MID function outside any arena, and in LOW: refused, because the language does
+    ///   not say yet where those allocate (MEMORY_MODEL.md, open decision 3).
+    fn struct_lit(&mut self, e: &Expr, path: &[&str], inits: &[FieldInit]) -> R<Val> {
+        let name = match path {
+            [n] => *n,
+            _ => return unsupported(e.span, "qualified struct names"),
+        };
+        let sid = match self.struct_ids.get(name) {
+            Some(&i) => i,
+            None => return unsupported(e.span, format!("struct literals of `{name}` (only plain structs declared in this file)")),
+        };
+        let arena = self.arenas.last().cloned();
+        if arena.is_none() {
+            match self.cur_tier {
+                TierAnnotation::High => {}
+                TierAnnotation::Mid => {
+                    return unsupported(
+                        e.span,
+                        "a struct literal in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)",
+                    )
+                }
+                TierAnnotation::Low => {
+                    return unsupported(e.span, "struct literals in `@tier(low)` (how LOW allocates is not decided yet)")
+                }
+            }
+        }
+
+        let n = self.structs[sid].fields.len();
+        let mut vals: Vec<Option<Val>> = vec![None; n];
+        for init in inits {
+            let (idx, fty) = self.field_index(sid, init.name, init.span)?;
+            if vals[idx].is_some() {
+                return Err(CompileError::at(init.span, format!("the field `{}` is given twice", init.name)));
+            }
+            let v = self.expr(init.value)?;
+            self.need(fty, &v, init.value.span)?;
+            vals[idx] = Some(v);
+        }
+        for (i, v) in vals.iter().enumerate() {
+            if v.is_none() {
+                let missing = self.structs[sid].fields[i].name.clone();
+                return Err(CompileError::at(e.span, format!("the literal is missing the field `{missing}`")));
+            }
+        }
+
+        let sname = self.structs[sid].name.clone();
+        self.sized.insert(sid);
+        let size = self.fresh();
+        self.inst(&format!("{size} = call i64 @ubel_sz.{sname}()"));
+        let p = self.fresh();
+        match arena {
+            Some(a) => {
+                self.uses_bump = true;
+                let up = self.fresh();
+                self.inst(&format!("{up} = add i64 {size}, 15"));
+                let rounded = self.fresh();
+                self.inst(&format!("{rounded} = and i64 {up}, -16"));
+                self.inst(&format!("{p} = call ptr @ubel_arena_bump(ptr {a}, i64 {rounded}) ; MID: bump allocation of {sname}"));
+            }
+            None => {
+                self.uses_gc = true;
+                let has_ptr = self.structs[sid].fields.iter().any(|f| matches!(f.ty, Ty::Struct(_)));
+                let mask = if has_ptr {
+                    self.masked.insert(sid);
+                    let m = self.fresh();
+                    self.inst(&format!("{m} = call i64 @ubel_mask.{sname}()"));
+                    m
+                } else {
+                    "0".to_string()
+                };
+                self.inst(&format!("{p} = call ptr @ubel_gc_alloc(i64 {size}, i64 {mask}) ; HIGH: GC allocation of {sname}"));
+            }
+        }
+        for (i, v) in vals.into_iter().enumerate() {
+            let v = v.expect("checked above");
+            let g = self.fresh();
+            self.inst(&format!("{g} = getelementptr inbounds %struct.{sname}, ptr {p}, i32 0, i32 {i}"));
+            self.inst(&format!("store {} {}, ptr {g}", v.ty.ir(), v.v));
+        }
+        Ok(Val { v: p, ty: Ty::Struct(sid) })
     }
 
     fn short_circuit(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> R<Val> {
@@ -945,6 +1310,9 @@ impl<'a> Emitter<'a> {
     fn binop(&mut self, op: BinOp, l: &Val, r: &Val, span: Span) -> R<Val> {
         if l.ty != r.ty || l.ty == Ty::Void {
             return Err(CompileError::at(span, "the operands of this operator have different types"));
+        }
+        if let Ty::Struct(_) = l.ty {
+            return unsupported(span, "operators on struct values (compare the fields instead)");
         }
         let ty = l.ty;
         let t = self.fresh();
@@ -1116,6 +1484,7 @@ impl<'a> Emitter<'a> {
                         self.inst(&format!("call void @ubel_print_bool(i32 {z})"));
                     }
                     Ty::Void => unreachable!("void values are rejected when collected"),
+                    Ty::Struct(_) => unreachable!("struct values are rejected when collected"),
                 },
             }
         }
@@ -1135,7 +1504,7 @@ impl<'a> Emitter<'a> {
                         InterpolationPart::Text(t) => out.push(PItem::Text(t.to_string())),
                         InterpolationPart::Expr { expr, spec: None } => {
                             let v = self.expr(expr)?;
-                            self.need_value(&v, expr.span)?;
+                            self.need_printable(&v, expr.span)?;
                             out.push(PItem::Val(v));
                         }
                         InterpolationPart::Expr { expr, spec: Some(_) } => {
@@ -1147,7 +1516,7 @@ impl<'a> Emitter<'a> {
             }
             _ => {
                 let v = self.expr(e)?;
-                self.need_value(&v, e.span)?;
+                self.need_printable(&v, e.span)?;
                 out.push(PItem::Val(v));
                 Ok(())
             }

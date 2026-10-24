@@ -290,7 +290,16 @@ static void scan_object(uintptr_t addr) { /* grey -> black */
     }
 }
 
-static void __attribute__((noinline)) scan_stack_region(void) {
+/* The conservative scan reads every word of the stack, including words an address sanitizer
+ * has poisoned as redzones or as the shadow of dead locals. That is what a stack scan does,
+ * not a bug, so the two functions that read the stack are exempt from instrumentation. */
+#if defined(__clang__) || defined(__GNUC__)
+#define UBEL_NO_ASAN __attribute__((no_sanitize("address")))
+#else
+#define UBEL_NO_ASAN
+#endif
+
+static void __attribute__((noinline)) UBEL_NO_ASAN scan_stack_region(void) {
     volatile uintptr_t here = 0;
     uintptr_t lo = (uintptr_t)&here & ~(uintptr_t)(sizeof(uintptr_t) - 1);
     const uintptr_t *p  = (const uintptr_t *)lo;
@@ -298,7 +307,7 @@ static void __attribute__((noinline)) scan_stack_region(void) {
     for (; p < hi; ++p) mark_ptr(*p);
 }
 
-static void __attribute__((noinline)) scan_roots(void) {
+static void __attribute__((noinline)) UBEL_NO_ASAN scan_roots(void) {
     jmp_buf jb;
     setjmp(jb); /* spills callee-saved registers into this frame */
 #if defined(__GNUC__) || defined(__clang__)

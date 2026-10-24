@@ -1,0 +1,76 @@
+// Structs in HIGH: literals, field reads and writes, nested structs, passing and
+// returning them. A struct value is a reference, as in the interpreter: `let b = a`
+// makes b an alias of a, and a callee that writes a field changes the caller's struct.
+struct Point {
+    x: int
+    y: int
+}
+
+struct Segment {
+    a: Point
+    b: Point
+    tag: int
+    live: bool
+}
+
+fn make_point(x: int, y: int) Point {
+    return Point { x = x, y = y }
+}
+
+fn move_by(p: Point, dx: int, dy: int) {
+    p.x += dx
+    p.y += dy
+}
+
+fn abs(n: int) int {
+    if n < 0 {
+        return 0 - n
+    }
+    return n
+}
+
+fn manhattan(s: Segment) int {
+    return abs(s.b.x - s.a.x) + abs(s.b.y - s.a.y)
+}
+
+fn pick(c: bool) Point {
+    return if c { make_point(1, 2) } else { make_point(30, 40) }
+}
+
+fn main() void {
+    // aliasing
+    let a = make_point(1, 2)
+    let b = a
+    b.x = 50
+    println($"a.x = {a.x}, b.x = {b.x}")
+
+    // a callee that writes a field
+    move_by(a, 100, 200)
+    println($"after move_by: {a.x} {a.y}")
+
+    // nested structs, field fields, and aliasing through a nested field
+    let s = Segment { a = make_point(0, 0), b = make_point(3, -4), tag = 7, live = true }
+    println("manhattan:", manhattan(s))
+    let inner = s.a
+    inner.x = 99
+    println($"s.a.x = {s.a.x}")
+    s.b.y = s.b.y * 2
+    s.tag += 1
+    s.live = !s.live
+    println(s.b.x, s.b.y, s.tag, s.live)
+
+    // a struct stored into a field of an older struct
+    s.a = make_point(5, 6)
+    println(s.a.x + s.a.y, inner.x)
+
+    // structs from if expressions and in a loop
+    let p = pick(true)
+    let q = pick(false)
+    println(p.x, p.y, q.x, q.y)
+    let mut total = 0
+    for i in 1 ..= 20 {
+        let t = make_point(i, i * i)
+        total += t.x + t.y
+    }
+    println("total:", total)
+}

@@ -1,0 +1,16 @@
+// Not supported yet: a struct literal in a MID function outside `with arena`. Where it
+// allocates is an open language question, so the emitter must refuse, not guess.
+// expect-refusal: outside `with arena`
+struct P {
+    x: int
+}
+
+@tier(mid)
+fn make(a: int) int {
+    let p = P { x = a }
+    return p.x
+}
+
+fn main() void {
+    println(make(1))
+}

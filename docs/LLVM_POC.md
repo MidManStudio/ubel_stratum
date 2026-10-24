@@ -1,6 +1,6 @@
 # LLVM proof of concept
 
-Status: **Stage 0 and Stage 1A measured on CI (four runs). Stage 1B (emit IR from Ubel source) has a first slice that matches the interpreter on a small subset, verified on CI on x86_64 and aarch64. A browser-playground feasibility check is recorded below.**
+Status: **Stage 0 and Stage 1A measured on CI (four runs). Stage 1B (emit IR from Ubel source) has a first slice verified on CI on x86_64 and aarch64, and a second slice (plain structs, per-tier allocation) verified locally only so far. A browser-playground feasibility check is recorded below.**
 
 > **Everything in this document is provisional.** This is a proof of concept. The
 > numbers come from a hand-written runtime on two shared CI runners, the designs
@@ -26,7 +26,7 @@ lowered to IR that behaves like the interpreter.
 |---|---|---|
 | 0 | the three tiers in isolation, hand-written IR | measured on CI (runs #1, #3, #4) |
 | 1A | how the tiers talk to each other, hand-written IR | measured on CI (runs #3, #4) |
-| 1B | emit IR from Ubel source, compare with the interpreter | first slice verified on CI (15 of 15 on both runners) |
+| 1B | emit IR from Ubel source, compare with the interpreter | slice 1 verified on CI (15 of 15 on both runners); slice 2, structs, 21 of 21 locally, not yet run on CI |
 
 ## Stage 0: the three tiers in isolation
 
@@ -349,9 +349,16 @@ logical operators; `if` / `elif` / `else` as statements and as expressions; `whi
 calls between functions; `println` and `print` of ints, bools, string literals and
 interpolated strings; and `with arena(size) { ... }`.
 
+**Structs (slice 2).** Plain structs whose fields are `int`, `bool` or another struct:
+literals, field reads, field assignment (plain and compound, nested too), and passing and
+returning them. A struct value is a pointer, matching the interpreter, where structs have
+reference semantics: `let b = a` makes an alias, and a callee that writes a field changes
+the caller's struct (probed, not assumed; see the front-end findings below). At most 32
+fields per struct, so every object fits the runtime's size limit on 32-bit targets.
+
 Everything else is **refused with a located "not supported yet" error** instead of being
-guessed at: structs, enums, strings as values, collections, closures, generics, `match`,
-sized integers and floats. The test suite checks that each refusal names the right
+guessed at: enums, strings as values, collections, closures, generics, struct methods,
+`edge struct`, `match`, sized integers and floats; also printing or comparing a struct value. The test suite checks that each refusal names the right
 feature, so unsupported code cannot be silently miscompiled.
 
 ### Tier lowering so far
@@ -367,8 +374,27 @@ chunk size, and the PoC arena grows; whether the size should be a hard limit is 
 decision still to make. Locals are `alloca` slots and there are no phi nodes; `mem2reg`
 turns them into SSA at -O1 and above.
 
+**Struct allocation follows the tier the literal is written in:**
+
+| where the literal is | lowering |
+|---|---|
+| inside `with arena` (MID) | bump allocation from the innermost open arena, fast path inlined (`@ubel_arena_bump`), `ubel_arena_grow` on a full chunk |
+| in a HIGH function | `ubel_gc_alloc(size, ptrmask)`; size and mask come from the target's data layout (`getelementptr null` constants), so one `.ll` is right for 32- and 64-bit |
+| in a MID function outside `with arena` | **refused**: the language does not say where that allocates (MEMORY_MODEL.md, open decision 3) |
+| in a LOW function | **refused**: how LOW allocates is undecided, and `Unique.new` cannot serve as a reference because the interpreter panics on a field read through it |
+
+Field expressions are evaluated first, in source order, then the object is allocated and
+filled. For a field assignment the object expression is evaluated before the right-hand
+side; the interpreter's order for that case was not probed, and the tests do not depend on it.
+
+An arena struct that holds a pointer to a GC struct is only safe while something else keeps
+that GC object alive. Today that is always the case: in this emitter a MID function cannot
+build GC objects (its literals outside an arena are refused), so the only GC pointers it can
+store came in as parameters, and the caller's frame still holds them. This stops being true once closures or callbacks can return GC objects
+into MID code (the Stage 1A hidden-root hazard); arenas are plain here, not scannable.
+
 ```
-define i64 @ubel_early(i64 %p.0) {          ; from examples/09_arena_exits.ubl
+define i64 @ubel_early(i64 %.arg0) {        ; from examples/09_arena_exits.ubl
   %arena.2 = call ptr @ubel_arena_create(i64 1024)
   ...
 then2:
@@ -394,7 +420,7 @@ output before the failure.
 x86_64 and the aarch64 runner, with clang 18.1.3 and cargo 1.99.0, and the whole job took
 50 seconds. That also confirms the pinned lockfile builds on a current cargo.
 
-Local results (x86_64 sandbox, clang 18, Rust 1.75): all 15 pass, for
+Local results for slice 1 (x86_64 sandbox, clang 18, Rust 1.75): all 15 pass, for
 64-bit and `-m32` builds. Nine programs are identical to the interpreter on every platform tried (arithmetic,
 loops, recursion, short-circuit order, scopes, `if` expressions, interpolation, calls
 across all three tiers, and arena cleanup on every exit path), one fails identically
@@ -403,6 +429,22 @@ across all three tiers, and arena cleanup on every exit path), one fails identic
 To check that the leak check can fail, the emitter was deliberately broken twice: with
 cleanup skipped on `return` the suite went red (1070 arenas left alive), and with
 cleanup skipped on `break` and `continue` it went red again (753).
+
+**Slice 2, structs (local only, not yet on CI).** 21 programs: twelve runnable (three new),
+one failing, eight refusals. All 21 pass on x86_64 64-bit, and all 21 pass as 32-bit i386
+binaries (`EXTRA_FLAGS=-m32`; the output is a 32-bit ELF), with the same `.ll` file.
+`examples/10_struct_basic` covers aliasing, field writes through a callee, nested structs
+and structs from `if` expressions. `examples/11_struct_gc` replaces a three-level chain
+over and over while garbage forces collections, so each new object is reachable only through
+a field of an older one, and checks a second chain that must survive. `examples/12_struct_arena`
+covers arena allocation including chunk growth, early exits after allocating, nested arenas,
+and a HIGH struct written through by MID code and read by LOW code. To check that
+`11_struct_gc` can fail, the pointer mask was deliberately forced to zero: the program
+crashed with a segmentation fault, with and without a lowered collection trigger. The
+refusals each name the right feature (struct methods, MID literal outside an arena, LOW
+literal, printing a struct).
+The wasm demo skips the three allocating examples instead of failing them (10 passed,
+3 skipped), because the wasm runtime has no GC and no arena memory.
 
 ### Known differences from the interpreter
 
@@ -429,6 +471,32 @@ Found while writing the test programs; none is fixed here.
   cannot rely on `expr_types` alone for concrete types. The emitter derives types from its
   own lowering and uses `int_literal_types` to catch sized integer literals. A real backend
   probably needs sema to publish resolved types; this is a point to plan around.
+
+Found while building the struct slice, same status (found, not fixed):
+
+- Structs have **reference semantics** in the interpreter: `let b = a`, passing to a
+  function, and `let c = o.i` for a nested struct all alias. `examples/arena_demo/ast_builder.ubl`
+  calls `Span` a "plain value type, copy freely", which is not what the interpreter does.
+- **`examples/arena_demo/ast_builder.ubl` does not parse today.** `arena` is a reserved word
+  (so `arena: Arena` fails), `arena.alloc`, `alloc_str` and `alloc_slice` do not exist in the
+  Ubel front end (only in Rust test code), lambda return-type annotations are rejected, and
+  the `from a in args select ...` form was removed. It is a design sketch, not a runnable
+  program. Renaming `arena` alone is not enough.
+- `mid` (and presumably `low`, `high`) cannot be used as a field name.
+- Inside `with arena`, sema leaves some expression types `Unknown` (field access on an arena
+  struct and every operator built on it, and assignments). The emitter derives those types
+  itself and lets `Unknown` through only for the expression kinds it lowers.
+- A plain struct cannot hold an arena struct, even from the same arena: sema reports it as
+  escaping the block. `edge struct` with a lifetime and `&a` fields passes sema and the
+  interpreter, so that is the intended way for arena values to point at each other; the
+  emitter does not support it yet. This is the central pattern of `ast_builder.ubl`.
+- A GC struct can be stored into an arena struct field. An arena struct passed as a call
+  argument, or stored into a GC struct's field, is rejected by sema (probed with a helper
+  that returns its argument and with a store into a parameter). MEMORY_MODEL.md still says
+  argument passing is unenforced; either that text is stale or these rejections have another
+  cause. Not investigated.
+- `Unique.new(P { ... })` passes sema but the interpreter panics on `u.x`
+  (`cannot access field 'x' on Unique`), so LOW construction has no interpreter oracle yet.
 
 ### Toolchain notes
 
@@ -502,6 +570,10 @@ None of this has been started, and the plan is open to change.
 - A plain arena that holds the only reference to a GC object is a bug, not a supported
   mode. `xit_arena_plain` exists only to demonstrate it.
 - Globals are not GC roots, and nothing here is thread-safe.
+- Emitted struct objects are limited to 32 fields so they fit a GC object on 32-bit targets.
+- ASan's fake stack (`detect_stack_use_after_return`) can move locals off the real stack,
+  where a conservative scan cannot see them. The struct programs pass with it on and off at
+  -O0 and -O1, but nothing guarantees that, so treat sanitizer runs of GC programs with care.
 
 ## Bugs found while building this
 
@@ -513,6 +585,13 @@ None of this has been started, and the plan is open to change.
 - The tree workload's depth and repetition arguments were swapped in the harness wrapper.
   Checksums still matched, because all three tiers got the same wrong inputs, which is why
   the allocation counts are also worth checking.
+- Emitter: a parameter's register was named `%p.<index>` and a local's stack slot
+  `%<name>.<n>`, so a local called `p` could collide with parameter 1. No earlier example
+  used a variable `p`, so it stayed hidden until the struct examples. Parameter registers are
+  now `%.arg<index>`, a name no identifier can produce.
+- Runtime: the conservative stack scan reads poisoned stack words, so a sanitizer build of
+  any program that collects reported a stack-buffer-overflow inside the collector. The two
+  functions that read the stack are now exempt from ASan instrumentation.
 - A delivery bug: a nested `README.md` in a replacements archive was captured by the
   standing manifest's filename-based override for `README.md` and overwrote the repo's
   root README. The same hazard applies to any nested `Cargo.toml`; the manifest needs an
@@ -520,13 +599,26 @@ None of this has been started, and the plan is open to change.
 
 ## Next stages
 
-To be planned together once Stage 1B's first slice has been reviewed. Open candidates:
-grow the emitter toward `ast_builder.ubl` (structs, strings, closures, enums, `match`),
-publish resolved types from sema, tier-aware allocation lowering for MID and LOW, the
-cross-language baselines, the small Ubel application, and the GC research agenda.
+Structs are in (slice 2). `ast_builder.ubl` cannot be a target as written (see the
+front-end findings), so the route to it is a runnable stand-in written in today's syntax,
+then the real file once the language settles what it is missing. What the stand-in needs, in
+a sensible order: `edge struct` with lifetimes and `&a` fields (arena nodes pointing at each
+other), enums with payloads and `match`, strings as values, closures (the callback ABI
+proposal), and a decision on where MID helpers outside `with arena` allocate. The real file
+additionally needs front-end changes: `arena` as a usable name or a different spelling,
+an allocation spelling that exists, lambda return types, and the removed `from ... select`.
+
+Other open candidates: publish resolved types from sema, LOW allocation, the cross-language
+baselines, the small Ubel application, and the GC research agenda (root and stress tests
+first, see `docs/GC_RESEARCH.md`).
 
 ## Log
 
+- 2026-10-23: Stage 1B slice 2: plain structs (GC allocation in HIGH, arena bump allocation
+  inside `with arena`; MID-outside-arena and LOW literals refused). 21 of 21 locally at
+  64-bit and 32-bit, not yet on CI. Fixed a parameter-name collision in the emitter and made
+  the runtime's stack scan ASan-exempt. Wasm demo now skips allocating programs. Front-end
+  findings recorded, including that `ast_builder.ubl` does not parse.
 - 2026-10-22: Stage 1B verified on CI (15 of 15 on x86_64 and aarch64, cargo 1.99.0).
   Benchmark run #4 recorded; three x86 runs show the runner pool is not uniform, so the
   report now prints the host CPU model. Browser-playground feasibility checked: emitted IR

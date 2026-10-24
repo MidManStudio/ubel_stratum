@@ -9,7 +9,8 @@
 # This proves the RUN side only. It uses clang on the host to turn IR into wasm; a browser
 # would need an in-browser LLVM for that step, which exists but is large (see docs/LLVM_POC.md).
 # The runtime is wasm/wasm_rt.c: freestanding, no libc, printing and traps imported from JS.
-# Only the Stage 1B subset is covered, and that subset never allocates from the GC heap.
+# Programs that allocate (structs from the GC heap or from an arena) are SKIPPED, not failed:
+# the wasm runtime has no GC and no arena memory. Everything else in the Stage 1B subset runs.
 #
 # Needs: clang with the wasm32 target, wasm-ld, node, cargo.
 # Environment: CLANG (default clang), WASM_LD (default wasm-ld), OUT_DIR (default
@@ -36,11 +37,14 @@ bin="$CARGO_TARGET_DIR/release/ubel-llvm"
 
 "$CLANG" --target=wasm32 -O2 -ffreestanding -nostdlib -c "$here/wasm/wasm_rt.c" -o "$out/rt.o" || exit 1
 
-pass=0; fail=0
+pass=0; fail=0; skip=0
 for src in "$here"/examples/[0-9]*.ubl "$here"/examples/fail_*.ubl; do
   name="$(basename "$src" .ubl)"
   "$bin" interp "$src" >"$out/$name.expected" 2>/dev/null
   "$bin" emit "$src" -o "$out/$name.ll" 2>"$out/$name.err" || { echo "  FAIL  $name: emit failed"; fail=$((fail + 1)); continue; }
+  if grep -qE '@ubel_gc_alloc|@ubel_arena_grow' "$out/$name.ll"; then
+    echo "  SKIP  $name: allocates from the GC heap or an arena, which the wasm runtime does not implement"; skip=$((skip + 1)); continue
+  fi
   "$CLANG" --target=wasm32 -O2 -Wno-override-module -c "$out/$name.ll" -o "$out/$name.o" 2>"$out/$name.cerr" \
     || { echo "  FAIL  $name: IR to wasm32 failed: $(head -n 2 "$out/$name.cerr" | tr '\n' ' ')"; fail=$((fail + 1)); continue; }
   "$WASM_LD" --no-entry --export=ubel_main --export=ubel_arena_live_count --allow-undefined \
@@ -58,5 +62,5 @@ for src in "$here"/examples/[0-9]*.ubl "$here"/examples/fail_*.ubl; do
   esac
 done
 echo
-echo "wasm demo: $pass passed, $fail failed"
+echo "wasm demo: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
