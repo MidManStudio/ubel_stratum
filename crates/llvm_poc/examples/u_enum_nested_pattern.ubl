@@ -1,0 +1,17 @@
+// Not supported yet: a pattern inside a payload pattern.
+// expect-refusal: nested patterns
+enum Expr {
+    Num(int),
+    Neg(Expr),
+}
+
+fn simplify(e: Expr) int {
+    match e {
+        Expr.Neg(Expr.Num(n)) => return 0 - n,
+        _ => return 0,
+    }
+}
+
+fn main() void {
+    println(simplify(Expr.Neg(Expr.Num(3))))
+}

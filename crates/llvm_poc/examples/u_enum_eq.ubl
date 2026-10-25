@@ -1,0 +1,12 @@
+// Not supported yet: `==` on enum values (the interpreter compares them by variant).
+// expect-refusal: operators on struct or enum values
+enum C {
+    Red,
+    Green,
+}
+
+fn main() void {
+    let a = C.Red
+    let b = C.Green
+    println(a == b)
+}

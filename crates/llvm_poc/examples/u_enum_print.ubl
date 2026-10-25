@@ -1,0 +1,11 @@
+// Not supported yet: printing an enum value. Match on it and print the payload.
+// expect-refusal: printing an enum value
+enum C {
+    Red,
+    Green,
+}
+
+fn main() void {
+    let a = C.Red
+    println(a)
+}

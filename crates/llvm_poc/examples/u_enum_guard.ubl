@@ -1,0 +1,18 @@
+// Not supported yet: `where` guards on a match arm.
+// expect-refusal: `where` guards
+enum Shape {
+    Circle(int),
+    Dot,
+}
+
+fn size(s: Shape) int {
+    match s {
+        Shape.Circle(r) where r > 3 => return r,
+        Shape.Circle(r) => return 0,
+        Shape.Dot => return 0,
+    }
+}
+
+fn main() void {
+    println(size(Shape.Circle(5)))
+}

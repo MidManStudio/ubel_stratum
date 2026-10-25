@@ -46,9 +46,11 @@ use std::fmt::Write as _;
 
 use ubel_stratum::ast::{
     AllocatorKind, Arg, ArgKind, AssignOp, BinOp, BindingTarget, Block, Expr, ExprKind,
-    FieldInit, FunctionDecl, IfBranchBody, IfExpr, InterpolationPart, Item, Literal, ParamKind, Program,
+    EnumDecl, EnumVariantPayload, FieldInit, FunctionDecl, IfBranchBody, IfExpr, InterpolationPart, Item, Literal, ParamKind, Program,
     SizeExpr, Span, Stmt, StmtKind, StructDecl, StructMember, TierAnnotation, TypeKind, UnaryOp,
 };
+use ubel_stratum::ast::expressions::{MatchArm, MatchArmBody};
+use ubel_stratum::ast::patterns::{EnumPatternPayload, PatternKind};
 use ubel_stratum::sema::{SemaContext, SemaType};
 
 // ── errors ───────────────────────────────────────────────────────
@@ -105,6 +107,9 @@ enum Ty {
     Void,
     /// A struct value: a pointer to an object, `usize` indexes `Emitter::structs`.
     Struct(usize),
+    /// An enum value: a pointer to an object (tag word, then payload slots), `usize` indexes
+    /// `Emitter::enums`. Every enum value is an object, payload-free variants included.
+    Enum(usize),
 }
 
 impl Ty {
@@ -113,10 +118,33 @@ impl Ty {
             Ty::I64 => "i64",
             Ty::I1 => "i1",
             Ty::Void => "void",
-            Ty::Struct(_) => "ptr",
+            Ty::Struct(_) | Ty::Enum(_) => "ptr",
         }
     }
+
+    /// Values that are pointers to objects, and so need a collector mask bit.
+    fn is_ptr(self) -> bool {
+        matches!(self, Ty::Struct(_) | Ty::Enum(_))
+    }
 }
+
+#[derive(Clone)]
+struct VariantInfo {
+    name: String,
+    fields: Vec<Ty>,
+}
+
+#[derive(Clone)]
+struct EnumInfo {
+    name: String,
+    variants: Vec<VariantInfo>,
+    /// Payload slots every value of this enum carries: the arity of its widest variant.
+    slots: usize,
+}
+
+/// Payload fields per variant. One slot is 8 bytes, a GC object is at most 64 pointer-words
+/// (256 bytes on a 32-bit target) and the tag takes one slot, so 31 always fits.
+const MAX_VARIANT_FIELDS: usize = 31;
 
 #[derive(Clone)]
 struct FieldInfo {
@@ -237,6 +265,10 @@ struct Emitter<'a> {
     sigs: HashMap<String, Sig>,
     structs: Vec<StructInfo>,
     struct_ids: HashMap<String, usize>,
+    enums: Vec<EnumInfo>,
+    enum_ids: HashMap<String, usize>,
+    esized: BTreeSet<usize>,
+    emasked: BTreeSet<(usize, usize)>,
     /// Which structs are allocated somewhere, so only their helper functions are emitted.
     sized: BTreeSet<usize>,
     masked: BTreeSet<usize>,
@@ -275,7 +307,7 @@ pub(crate) fn emit_program(program: &Program, ctx: &SemaContext) -> R<String> {
                 let sig = e.signature(f)?;
                 e.sigs.insert(f.name.to_string(), sig);
             }
-            Item::Struct(_) => {} // registered by collect_structs
+            Item::Struct(_) | Item::Enum(_) => {} // registered by collect_structs
             other => {
                 return unsupported(other.span(), format!("{} declarations", other.kind_name()));
             }
@@ -302,6 +334,10 @@ impl<'a> Emitter<'a> {
             sigs: HashMap::new(),
             structs: Vec::new(),
             struct_ids: HashMap::new(),
+            enums: Vec::new(),
+            enum_ids: HashMap::new(),
+            esized: BTreeSet::new(),
+            emasked: BTreeSet::new(),
             sized: BTreeSet::new(),
             masked: BTreeSet::new(),
             uses_gc: false,
@@ -366,10 +402,17 @@ impl<'a> Emitter<'a> {
             let fields: Vec<&str> = s.fields.iter().map(|f| f.ty.ir()).collect();
             let _ = writeln!(out, "%struct.{} = type {{ {} }}", s.name, fields.join(", "));
         }
+        for en in &self.enums {
+            if en.slots == 0 {
+                let _ = writeln!(out, "%enum.{} = type {{ i64 }}", en.name);
+            } else {
+                let _ = writeln!(out, "%enum.{} = type {{ i64, [{} x i64] }}", en.name, en.slots);
+            }
+        }
         if self.uses_bump {
             out.push_str("%ubel_arena = type { ptr, ptr, ptr, i64 }\n");
         }
-        if !self.structs.is_empty() {
+        if !self.structs.is_empty() || !self.enums.is_empty() {
             out.push('\n');
         }
         for &sid in &self.sized {
@@ -386,7 +429,7 @@ impl<'a> Emitter<'a> {
                 .fields
                 .iter()
                 .enumerate()
-                .filter(|(_, f)| matches!(f.ty, Ty::Struct(_)))
+                .filter(|(_, f)| f.ty.is_ptr())
                 .map(|(i, _)| i)
                 .collect();
             let mut body = String::from("  %psz = ptrtoint ptr getelementptr (ptr, ptr null, i32 1) to i64\n");
@@ -402,6 +445,40 @@ impl<'a> Emitter<'a> {
                 out,
                 "define internal i64 @ubel_mask.{}() alwaysinline nounwind readnone {{\nentry:\n{body}  ret i64 {acc}\n}}",
                 s.name
+            );
+        }
+        // Enum helpers. Every value of an enum has the size of its widest variant; the mask
+        // depends on the variant, because only some payload slots hold pointers. A payload
+        // slot is 8 bytes whatever it holds, a pointer sits at the start of its slot.
+        for &eid in &self.esized {
+            let en = &self.enums[eid];
+            let _ = writeln!(
+                out,
+                "define internal i64 @ubel_esz.{n}() alwaysinline nounwind readnone {{\nentry:\n  ret i64 ptrtoint (ptr getelementptr (%enum.{n}, ptr null, i32 1) to i64)\n}}",
+                n = en.name
+            );
+        }
+        for &(eid, vi) in &self.emasked {
+            let en = &self.enums[eid];
+            let v = &en.variants[vi];
+            let mut body = String::from("  %psz = ptrtoint ptr getelementptr (ptr, ptr null, i32 1) to i64\n");
+            let mut acc = String::from("0");
+            let mut k = 0usize;
+            for (slot, f) in v.fields.iter().enumerate() {
+                if !f.is_ptr() {
+                    continue;
+                }
+                let _ = writeln!(body, "  %off{k} = ptrtoint ptr getelementptr (%enum.{}, ptr null, i32 0, i32 1, i64 {slot}) to i64", en.name);
+                let _ = writeln!(body, "  %idx{k} = udiv i64 %off{k}, %psz");
+                let _ = writeln!(body, "  %bit{k} = shl i64 1, %idx{k}");
+                let _ = writeln!(body, "  %m{k} = or i64 {acc}, %bit{k}");
+                acc = format!("%m{k}");
+                k += 1;
+            }
+            let _ = writeln!(
+                out,
+                "define internal i64 @ubel_emask.{}.{}() alwaysinline nounwind readnone {{\nentry:\n{body}  ret i64 {acc}\n}}",
+                en.name, v.name
             );
         }
         if self.uses_bump {
@@ -512,8 +589,10 @@ impl<'a> Emitter<'a> {
 
     fn need_printable(&self, got: &Val, span: Span) -> R<()> {
         self.need_value(got, span)?;
-        if let Ty::Struct(_) = got.ty {
-            return unsupported(span, "printing a struct value (print its fields)");
+        match got.ty {
+            Ty::Struct(_) => return unsupported(span, "printing a struct value (print its fields)"),
+            Ty::Enum(_) => return unsupported(span, "printing an enum value (match on it and print the payload)"),
+            _ => {}
         }
         Ok(())
     }
@@ -547,14 +626,15 @@ impl<'a> Emitter<'a> {
                     return unsupported(t.span, "generic types");
                 }
                 match path {
-                    [name] => match self.struct_ids.get(*name) {
-                        Some(&sid) => Ok(Ty::Struct(sid)),
-                        None => unsupported(t.span, format!("the type `{name}` (only int, bool, void and plain structs so far)")),
+                    [name] => match (self.struct_ids.get(*name), self.enum_ids.get(*name)) {
+                        (Some(&sid), _) => Ok(Ty::Struct(sid)),
+                        (None, Some(&eid)) => Ok(Ty::Enum(eid)),
+                        (None, None) => unsupported(t.span, format!("the type `{name}` (only int, bool, void, plain structs and enums so far)")),
                     },
                     _ => unsupported(t.span, "qualified type names"),
                 }
             }
-            _ => unsupported(t.span, "this type (only `int`, `bool`, `void` and plain structs so far)"),
+            _ => unsupported(t.span, "this type (only `int`, `bool`, `void`, plain structs and enums so far)"),
         }
     }
 
@@ -583,6 +663,30 @@ impl<'a> Emitter<'a> {
                 decls.push(s);
             }
         }
+        // Enums: names first (they can refer to structs, structs to them, and an enum to itself).
+        let mut edecls: Vec<&EnumDecl> = Vec::new();
+        for item in program.items {
+            if item.span().is_prelude() {
+                continue;
+            }
+            if let Item::Enum(en) = item {
+                if !en.generic_params.is_empty() {
+                    return unsupported(en.span, "generic enums");
+                }
+                if !en.attributes.is_empty() {
+                    return unsupported(en.span, "attributes on enums");
+                }
+                if self.enum_ids.contains_key(en.name) || self.struct_ids.contains_key(en.name) {
+                    return Err(CompileError::at(en.span, format!("the name `{}` is declared twice", en.name)));
+                }
+                if en.variants.is_empty() {
+                    return unsupported(en.span, "enums with no variants");
+                }
+                self.enum_ids.insert(en.name.to_string(), self.enums.len());
+                self.enums.push(EnumInfo { name: en.name.to_string(), variants: Vec::new(), slots: 0 });
+                edecls.push(en);
+            }
+        }
         for (sid, s) in decls.iter().enumerate() {
             let mut fields = Vec::new();
             for m in s.members {
@@ -605,6 +709,35 @@ impl<'a> Emitter<'a> {
                 return unsupported(s.span, format!("structs with more than {MAX_STRUCT_FIELDS} fields (runtime object size limit)"));
             }
             self.structs[sid].fields = fields;
+        }
+        for (eid, en) in edecls.iter().enumerate() {
+            let mut variants = Vec::new();
+            for v in en.variants {
+                let fields = match v.payload {
+                    // A written discriminant is validated by sema and never read back (no
+                    // `as int` exists yet), so such a variant behaves like a payload-free one.
+                    EnumVariantPayload::None | EnumVariantPayload::Discriminant(_) => Vec::new(),
+                    EnumVariantPayload::Tuple(types) => {
+                        let mut fs = Vec::new();
+                        for t in types {
+                            let ty = self.ty_of_type(t)?;
+                            if ty == Ty::Void {
+                                return unsupported(t.span, "`void` payloads");
+                            }
+                            fs.push(ty);
+                        }
+                        fs
+                    }
+                    EnumVariantPayload::Struct(_) => return unsupported(v.span, "struct-style enum variants (`V { a, b }`)"),
+                };
+                if fields.len() > MAX_VARIANT_FIELDS {
+                    return unsupported(v.span, format!("variants with more than {MAX_VARIANT_FIELDS} payload fields (runtime object size limit)"));
+                }
+                variants.push(VariantInfo { name: v.name.to_string(), fields });
+            }
+            let slots = variants.iter().map(|v| v.fields.len()).max().unwrap_or(0);
+            self.enums[eid].variants = variants;
+            self.enums[eid].slots = slots;
         }
         Ok(())
     }
@@ -649,6 +782,7 @@ impl<'a> Emitter<'a> {
                     | ExprKind::If(_)
                     | ExprKind::ShortDecl { .. }
                     | ExprKind::Borrow { .. }
+                    | ExprKind::Match(_)
             );
             let mut id = start;
             loop {
@@ -660,13 +794,15 @@ impl<'a> Emitter<'a> {
                     SemaType::OwnedRef { mutable: false, inner } => id = *inner,
                     SemaType::Reference { mutable: false, inner, .. } => id = *inner,
                     SemaType::Named { def, args }
-                        if args.is_empty() && self.struct_ids.contains_key(&self.ctx.symbols.lookup(*def).name) =>
+                        if args.is_empty()
+                            && (self.struct_ids.contains_key(&self.ctx.symbols.lookup(*def).name)
+                                || self.enum_ids.contains_key(&self.ctx.symbols.lookup(*def).name)) =>
                     {
                         return Ok(())
                     }
                     _ => {
                         let shown = self.ctx.types.get(start).display(&self.ctx.types, &self.ctx.symbols);
-                        return unsupported(e.span, format!("values of type `{shown}` (only int, bool, void and plain structs so far)"));
+                        return unsupported(e.span, format!("values of type `{shown}` (only int, bool, void, plain structs and enums so far)"));
                     }
                 }
             }
@@ -737,6 +873,13 @@ impl<'a> Emitter<'a> {
             if i + 1 == n && self.ret != Ty::Void {
                 // The last expression of a non-void function is its result.
                 if let StmtKind::Expr(e) = s.kind {
+                    if let ExprKind::Match(m) = e.kind {
+                        let v = self.match_lower(m.scrutinee, m.arms, e.span, true)?;
+                        if v.ty == self.ret {
+                            self.do_return(Some(v), s.span)?;
+                        }
+                        continue;
+                    }
                     let v = self.expr(e)?;
                     if v.ty == self.ret {
                         self.do_return(Some(v), s.span)?;
@@ -810,7 +953,15 @@ impl<'a> Emitter<'a> {
                 Ok(())
             }
             StmtKind::Expr(e) => {
+                if let ExprKind::Match(m) = e.kind {
+                    self.match_lower(m.scrutinee, m.arms, e.span, false)?;
+                    return Ok(());
+                }
                 self.expr(e)?;
+                Ok(())
+            }
+            StmtKind::Match { scrutinee, arms } => {
+                self.match_lower(scrutinee, arms, s.span, false)?;
                 Ok(())
             }
             StmtKind::Return(opt) => {
@@ -1200,7 +1351,17 @@ impl<'a> Emitter<'a> {
             ExprKind::Deref(_) => {
                 unsupported(e.span, "explicit `*` dereference (field access already goes through a reference)")
             }
+            ExprKind::Match(m) => self.match_lower(m.scrutinee, m.arms, e.span, true),
             ExprKind::Field { target, field } => {
+                // `Enum.Variant` with no payload.
+                if let ExprKind::Ident(en) = target.kind {
+                    if self.lookup(en).is_none() {
+                        if let Some(&eid) = self.enum_ids.get(en) {
+                            let vi = self.variant_index(eid, field, e.span)?;
+                            return self.enum_ctor(e, eid, vi, &[]);
+                        }
+                    }
+                }
                 let (addr, ty) = self.field_addr(target, field, e.span)?;
                 let t = self.fresh();
                 self.inst(&format!("{t} = load {}, ptr {addr}", ty.ir()));
@@ -1241,21 +1402,7 @@ impl<'a> Emitter<'a> {
             Some(&i) => i,
             None => return unsupported(e.span, format!("struct literals of `{name}` (only plain structs declared in this file)")),
         };
-        let arena = self.arenas.last().cloned();
-        if arena.is_none() {
-            match self.cur_tier {
-                TierAnnotation::High => {}
-                TierAnnotation::Mid => {
-                    return unsupported(
-                        e.span,
-                        "a struct literal in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)",
-                    )
-                }
-                TierAnnotation::Low => {
-                    return unsupported(e.span, "struct literals in `@tier(low)` (how LOW allocates is not decided yet)")
-                }
-            }
-        }
+        let arena = self.alloc_site(e.span, "a struct literal")?;
 
         let n = self.structs[sid].fields.len();
         let mut vals: Vec<Option<Val>> = vec![None; n];
@@ -1279,6 +1426,44 @@ impl<'a> Emitter<'a> {
         self.sized.insert(sid);
         let size = self.fresh();
         self.inst(&format!("{size} = call i64 @ubel_sz.{sname}()"));
+        let mask = if arena.is_none() && self.structs[sid].fields.iter().any(|f| f.ty.is_ptr()) {
+            self.masked.insert(sid);
+            let m = self.fresh();
+            self.inst(&format!("{m} = call i64 @ubel_mask.{sname}()"));
+            m
+        } else {
+            "0".to_string()
+        };
+        let p = self.alloc_obj(arena, &size, &mask, &sname);
+        for (i, v) in vals.into_iter().enumerate() {
+            let v = v.expect("checked above");
+            let g = self.fresh();
+            self.inst(&format!("{g} = getelementptr inbounds %struct.{sname}, ptr {p}, i32 0, i32 {i}"));
+            self.inst(&format!("store {} {}, ptr {g}", v.ty.ir(), v.v));
+        }
+        Ok(Val { v: p, ty: Ty::Struct(sid) })
+    }
+
+    /// Where an object written here is allocated: `Some(arena)` inside `with arena`, `None`
+    /// (the GC heap) in a HIGH function, and refused elsewhere, because the language does not
+    /// say yet where a MID function outside `with arena`, or LOW code, allocates.
+    fn alloc_site(&self, span: Span, what: &str) -> R<Option<String>> {
+        if let Some(a) = self.arenas.last() {
+            return Ok(Some(a.clone()));
+        }
+        match self.cur_tier {
+            TierAnnotation::High => Ok(None),
+            TierAnnotation::Mid => unsupported(
+                span,
+                format!("{what} in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"),
+            ),
+            TierAnnotation::Low => unsupported(span, format!("{what} in `@tier(low)` (how LOW allocates is not decided yet)")),
+        }
+    }
+
+    /// Allocate `size` bytes: bump allocation from `arena`, or the GC heap with `mask` (bit i set
+    /// when the pointer-sized word at byte offset i * sizeof(ptr) holds a pointer).
+    fn alloc_obj(&mut self, arena: Option<String>, size: &str, mask: &str, label: &str) -> String {
         let p = self.fresh();
         match arena {
             Some(a) => {
@@ -1287,29 +1472,285 @@ impl<'a> Emitter<'a> {
                 self.inst(&format!("{up} = add i64 {size}, 15"));
                 let rounded = self.fresh();
                 self.inst(&format!("{rounded} = and i64 {up}, -16"));
-                self.inst(&format!("{p} = call ptr @ubel_arena_bump(ptr {a}, i64 {rounded}) ; MID: bump allocation of {sname}"));
+                self.inst(&format!("{p} = call ptr @ubel_arena_bump(ptr {a}, i64 {rounded}) ; MID: bump allocation of {label}"));
             }
             None => {
                 self.uses_gc = true;
-                let has_ptr = self.structs[sid].fields.iter().any(|f| matches!(f.ty, Ty::Struct(_)));
-                let mask = if has_ptr {
-                    self.masked.insert(sid);
-                    let m = self.fresh();
-                    self.inst(&format!("{m} = call i64 @ubel_mask.{sname}()"));
-                    m
-                } else {
-                    "0".to_string()
-                };
-                self.inst(&format!("{p} = call ptr @ubel_gc_alloc(i64 {size}, i64 {mask}) ; HIGH: GC allocation of {sname}"));
+                self.inst(&format!("{p} = call ptr @ubel_gc_alloc(i64 {size}, i64 {mask}) ; HIGH: GC allocation of {label}"));
             }
         }
-        for (i, v) in vals.into_iter().enumerate() {
-            let v = v.expect("checked above");
-            let g = self.fresh();
-            self.inst(&format!("{g} = getelementptr inbounds %struct.{sname}, ptr {p}, i32 0, i32 {i}"));
+        p
+    }
+
+    fn variant_index(&self, eid: usize, name: &str, span: Span) -> R<usize> {
+        let en = &self.enums[eid];
+        en.variants
+            .iter()
+            .position(|v| v.name == name)
+            .ok_or_else(|| CompileError::at(span, format!("the enum `{}` has no variant `{name}`", en.name)))
+    }
+
+    /// Address of payload slot `slot` of the enum object `obj`.
+    fn enum_slot(&mut self, eid: usize, obj: &str, slot: usize) -> String {
+        let g = self.fresh();
+        let name = self.enums[eid].name.clone();
+        self.inst(&format!("{g} = getelementptr inbounds %enum.{name}, ptr {obj}, i32 0, i32 1, i64 {slot}"));
+        g
+    }
+
+    /// `Enum.Variant(a, b)` and the payload-free `Enum.Variant`. Arguments are evaluated first,
+    /// in order; then the object is allocated (same site rules as a struct literal), the tag
+    /// stored, and the payload stored slot by slot.
+    fn enum_ctor(&mut self, e: &Expr, eid: usize, vi: usize, args: &[Arg]) -> R<Val> {
+        let fields = self.enums[eid].variants[vi].fields.clone();
+        if args.len() != fields.len() {
+            let v = &self.enums[eid].variants[vi].name;
+            return Err(CompileError::at(
+                e.span,
+                format!("the variant `{v}` takes {} value(s), found {}", fields.len(), args.len()),
+            ));
+        }
+        let arena = self.alloc_site(e.span, "an enum value")?;
+        let mut vals = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            let ae = match a.kind {
+                ArgKind::Positional(x) => x,
+                ArgKind::Named { .. } => return unsupported(a.span, "named arguments"),
+            };
+            let v = self.expr(ae)?;
+            self.need(fields[i], &v, ae.span)?;
+            vals.push(v);
+        }
+        let ename = self.enums[eid].name.clone();
+        let vname = self.enums[eid].variants[vi].name.clone();
+        self.esized.insert(eid);
+        let size = self.fresh();
+        self.inst(&format!("{size} = call i64 @ubel_esz.{ename}()"));
+        let mask = if arena.is_none() && fields.iter().any(|f| f.is_ptr()) {
+            self.emasked.insert((eid, vi));
+            let m = self.fresh();
+            self.inst(&format!("{m} = call i64 @ubel_emask.{ename}.{vname}()"));
+            m
+        } else {
+            "0".to_string()
+        };
+        let label = format!("{ename}.{vname}");
+        let p = self.alloc_obj(arena, &size, &mask, &label);
+        let tagp = self.fresh();
+        self.inst(&format!("{tagp} = getelementptr inbounds %enum.{ename}, ptr {p}, i32 0, i32 0"));
+        self.inst(&format!("store i64 {vi}, ptr {tagp}"));
+        for (slot, v) in vals.into_iter().enumerate() {
+            let g = self.enum_slot(eid, &p, slot);
             self.inst(&format!("store {} {}, ptr {g}", v.ty.ir(), v.v));
         }
-        Ok(Val { v: p, ty: Ty::Struct(sid) })
+        Ok(Val { v: p, ty: Ty::Enum(eid) })
+    }
+
+    /// `match scrutinee { arms }` on an enum value, as a statement or (`want_value`) as an
+    /// expression. Lowered to a `switch` on the tag. Patterns supported: `Enum.Variant(a, _)`,
+    /// a bare payload-free variant name, `_`, and a plain name that binds the whole value;
+    /// everything else is refused, including guards and nested patterns. Exhaustiveness is
+    /// sema's job; a tag no arm covers traps instead of being undefined behaviour.
+    fn match_lower(&mut self, scrutinee: &Expr, arms: &[MatchArm], span: Span, want_value: bool) -> R<Val> {
+        let sv = self.expr(scrutinee)?;
+        let eid = match sv.ty {
+            Ty::Enum(i) => i,
+            _ => return unsupported(scrutinee.span, "`match` on anything but an enum value"),
+        };
+        let en = self.enums[eid].clone();
+
+        // Resolve every pattern before emitting any IR, so refusals come first. Each entry:
+        // (variant or None for the catch-all, payload bindings, whole-value binding, arm index).
+        type Lowered = (Option<usize>, Vec<Option<String>>, Option<String>, usize);
+        let mut lowered: Vec<Lowered> = Vec::new();
+        let mut seen = vec![false; en.variants.len()];
+        let mut has_default = false;
+        for (ai, arm) in arms.iter().enumerate() {
+            if has_default {
+                break; // nothing after a catch-all can run
+            }
+            if arm.guard.is_some() {
+                return unsupported(arm.span, "`where` guards in `match` arms");
+            }
+            match arm.pattern.kind {
+                PatternKind::Wildcard => {
+                    lowered.push((None, Vec::new(), None, ai));
+                    has_default = true;
+                }
+                PatternKind::Ident { name, mutable } => {
+                    if mutable {
+                        return unsupported(arm.pattern.span, "`mut` bindings in patterns");
+                    }
+                    match en.variants.iter().position(|v| v.name == name && v.fields.is_empty()) {
+                        Some(vi) => {
+                            if !seen[vi] {
+                                seen[vi] = true;
+                                lowered.push((Some(vi), Vec::new(), None, ai));
+                            }
+                        }
+                        None => {
+                            lowered.push((None, Vec::new(), Some(name.to_string()), ai));
+                            has_default = true;
+                        }
+                    }
+                }
+                PatternKind::Enum { path, payload } => {
+                    let vname = match path {
+                        [v] => *v,
+                        [en_name, v] if *en_name == en.name => *v,
+                        _ => return unsupported(arm.pattern.span, "a pattern naming a different enum than the one matched"),
+                    };
+                    let vi = self.variant_index(eid, vname, arm.pattern.span)?;
+                    let fields = &en.variants[vi].fields;
+                    let binds: Vec<Option<String>> = match payload {
+                        EnumPatternPayload::None => {
+                            if !fields.is_empty() {
+                                return Err(CompileError::at(arm.pattern.span, format!("the variant `{vname}` has a payload, the pattern has none")));
+                            }
+                            Vec::new()
+                        }
+                        EnumPatternPayload::Tuple(pats) => {
+                            if pats.len() != fields.len() {
+                                return Err(CompileError::at(arm.pattern.span, format!("the variant `{vname}` has {} payload value(s), the pattern has {}", fields.len(), pats.len())));
+                            }
+                            let mut out = Vec::new();
+                            for (k, sp) in pats.iter().enumerate() {
+                                match sp.kind {
+                                    PatternKind::Wildcard => out.push(None),
+                                    PatternKind::Ident { name, mutable: false } => {
+                                        // A name that is a payload-free variant of the payload's own
+                                        // enum would be a nested pattern, not a binding.
+                                        if let Ty::Enum(inner) = fields[k] {
+                                            if self.enums[inner].variants.iter().any(|v| v.name == name && v.fields.is_empty()) {
+                                                return unsupported(sp.span, "nested patterns (a variant name inside a payload)");
+                                            }
+                                        }
+                                        out.push(Some(name.to_string()));
+                                    }
+                                    _ => return unsupported(sp.span, "nested patterns (only names and `_` inside a payload so far)"),
+                                }
+                            }
+                            out
+                        }
+                        EnumPatternPayload::Struct(_) => return unsupported(arm.pattern.span, "struct-style enum patterns"),
+                    };
+                    if !seen[vi] {
+                        seen[vi] = true;
+                        lowered.push((Some(vi), binds, None, ai));
+                    }
+                }
+                _ => {
+                    return unsupported(
+                        arm.pattern.span,
+                        "this kind of pattern in a `match` (only enum variants, `_` and names so far)",
+                    )
+                }
+            }
+        }
+
+        let ename = en.name.clone();
+        let tagp = self.fresh();
+        self.inst(&format!("{tagp} = getelementptr inbounds %enum.{ename}, ptr {}, i32 0, i32 0", sv.v));
+        let tag = self.fresh();
+        self.inst(&format!("{tag} = load i64, ptr {tagp}"));
+        let end = self.label("match.end");
+        let default_l = self.label("match.default");
+        let mut arm_labels: Vec<String> = Vec::new();
+        let mut cases = Vec::new();
+        for (variant, _, _, _) in &lowered {
+            let l = match variant {
+                Some(_) => self.label("match.arm"),
+                None => default_l.clone(),
+            };
+            if let Some(vi) = variant {
+                cases.push(format!("i64 {vi}, label %{l}"));
+            }
+            arm_labels.push(l);
+        }
+        self.term(&format!("switch i64 {tag}, label %{default_l} [ {} ]", cases.join(" ")));
+
+        let mut slot: Option<(String, Ty)> = None;
+        for (idx, (variant, binds, whole, ai)) in lowered.iter().enumerate() {
+            self.begin(&arm_labels[idx]);
+            self.scopes.push(HashMap::new());
+            if let Some(vi) = variant {
+                for (k, b) in binds.iter().enumerate() {
+                    if let Some(name) = b {
+                        let fty = en.variants[*vi].fields[k];
+                        let g = self.enum_slot(eid, &sv.v, k);
+                        let t = self.fresh();
+                        self.inst(&format!("{t} = load {}, ptr {g}", fty.ir()));
+                        let local = self.declare(name, fty);
+                        self.inst(&format!("store {} {t}, ptr {local}", fty.ir()));
+                    }
+                }
+            }
+            if let Some(name) = whole {
+                let local = self.declare(name, Ty::Enum(eid));
+                self.inst(&format!("store ptr {}, ptr {local}", sv.v));
+            }
+            let produced = self.match_arm_body(arms[*ai].body, want_value, &mut slot, arms[*ai].span)?;
+            self.scopes.pop();
+            if !self.terminated {
+                if want_value && !produced {
+                    return Err(CompileError::at(arms[*ai].span, "this `match` arm has no value, but the `match` is used as one"));
+                }
+                self.term(&format!("br label %{end}"));
+            }
+        }
+        if !has_default {
+            self.begin(&default_l);
+            self.inst("call void @ubel_trap_no_return()");
+            self.term("unreachable");
+        }
+        self.begin(&end);
+        match slot {
+            Some((slot, ty)) if want_value => {
+                let out = self.fresh();
+                self.inst(&format!("{out} = load {}, ptr {slot}", ty.ir()));
+                Ok(Val { v: out, ty })
+            }
+            // Every arm left the function or the loop (or this is a statement): no value.
+            _ => {
+                let _ = span;
+                Ok(Val::void())
+            }
+        }
+    }
+
+    /// Lower one arm body. Returns whether it stored a value for the `match` expression.
+    fn match_arm_body(&mut self, body: MatchArmBody, want_value: bool, slot: &mut Option<(String, Ty)>, span: Span) -> R<bool> {
+        match body {
+            MatchArmBody::Expr(e) => {
+                let v = self.expr(e)?;
+                if want_value && !self.terminated {
+                    self.store_branch_value(v, slot, e.span)?;
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            MatchArmBody::Block(b) => {
+                self.scopes.push(HashMap::new());
+                let n = b.stmts.len();
+                let mut produced = false;
+                for (i, st) in b.stmts.iter().enumerate() {
+                    if want_value && i + 1 == n {
+                        if let StmtKind::Expr(e) = st.kind {
+                            let v = self.expr(e)?;
+                            if !self.terminated {
+                                self.store_branch_value(v, slot, e.span)?;
+                                produced = true;
+                            }
+                            continue;
+                        }
+                    }
+                    self.stmt(st)?;
+                }
+                self.scopes.pop();
+                let _ = span;
+                Ok(produced)
+            }
+        }
     }
 
     fn short_circuit(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> R<Val> {
@@ -1339,8 +1780,8 @@ impl<'a> Emitter<'a> {
         if l.ty != r.ty || l.ty == Ty::Void {
             return Err(CompileError::at(span, "the operands of this operator have different types"));
         }
-        if let Ty::Struct(_) = l.ty {
-            return unsupported(span, "operators on struct values (compare the fields instead)");
+        if l.ty.is_ptr() {
+            return unsupported(span, "operators on struct or enum values (compare fields, or `match`, instead)");
         }
         let ty = l.ty;
         let t = self.fresh();
@@ -1414,6 +1855,17 @@ impl<'a> Emitter<'a> {
     // ── calls and printing ───────────────────────────────────────
 
     fn call(&mut self, e: &Expr, callee: &Expr, args: &[Arg]) -> R<Val> {
+        // `Enum.Variant(..)` builds an enum value.
+        if let ExprKind::Field { target, field } = callee.kind {
+            if let ExprKind::Ident(en) = target.kind {
+                if self.lookup(en).is_none() {
+                    if let Some(&eid) = self.enum_ids.get(en) {
+                        let vi = self.variant_index(eid, field, callee.span)?;
+                        return self.enum_ctor(e, eid, vi, args);
+                    }
+                }
+            }
+        }
         let name = match callee.kind {
             ExprKind::Ident(n) => n,
             _ => return unsupported(callee.span, "calling anything but a named function"),
@@ -1512,7 +1964,7 @@ impl<'a> Emitter<'a> {
                         self.inst(&format!("call void @ubel_print_bool(i32 {z})"));
                     }
                     Ty::Void => unreachable!("void values are rejected when collected"),
-                    Ty::Struct(_) => unreachable!("struct values are rejected when collected"),
+                    Ty::Struct(_) | Ty::Enum(_) => unreachable!("struct and enum values are rejected when collected"),
                 },
             }
         }

@@ -1,0 +1,10 @@
+// Not supported yet: struct-style variants (`Move { x, y }`); tuple payloads are supported.
+// expect-refusal: struct-style enum variants
+enum Cmd {
+    Move { x: int, y: int },
+    Stop,
+}
+
+fn main() void {
+    println(1)
+}

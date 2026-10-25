@@ -1,6 +1,6 @@
 # LLVM proof of concept
 
-Status: **Stage 0 and Stage 1A measured on CI (five runs). Stage 1B (emit IR from Ubel source): slices 1 and 2 (scalars, plain structs with per-tier allocation) verified on CI on x86_64 and aarch64; slice 3 (edge structs and references) verified locally only so far. A browser-playground feasibility check is recorded below.**
+Status: **Stage 0 and Stage 1A measured on CI (five runs). Stage 1B (emit IR from Ubel source): slices 1 and 2 (scalars, plain structs with per-tier allocation) verified on CI on x86_64 and aarch64; slice 3 (edge structs and references) is on master and slice 4 (enums and `match`) is in this change, both verified locally only so far. The plan from here is in `docs/LLVM_ROADMAP.md`. A browser-playground feasibility check is recorded below.**
 
 > **Everything in this document is provisional.** This is a proof of concept. The
 > numbers come from a hand-written runtime on two shared CI runners, the designs
@@ -26,7 +26,7 @@ lowered to IR that behaves like the interpreter.
 |---|---|---|
 | 0 | the three tiers in isolation, hand-written IR | measured on CI (runs #1, #3, #4) |
 | 1A | how the tiers talk to each other, hand-written IR | measured on CI (runs #3, #4) |
-| 1B | emit IR from Ubel source, compare with the interpreter | slices 1 and 2 verified on CI (15, then 21, then 22 of 22 on both runners); slice 3, edge structs, 27 of 27 locally, not yet run on CI |
+| 1B | emit IR from Ubel source, compare with the interpreter | slices 1 and 2 verified on CI (15, then 21, then 22 of 22 on both runners); slice 3, edge structs, 27 of 27 locally, not yet run on CI; slice 4, enums and `match`, 36 of 36 locally, not yet run on CI |
 
 ## Stage 0: the three tiers in isolation
 
@@ -398,8 +398,27 @@ field counts as a pointer field for the collector's mask. Field chains through r
 explicit `*` dereference, a reference to anything but a struct (`&L int`), optional
 references (`&L T?`).
 
+**Enums (slice 4).** Enums with payload-free and tuple-payload variants, constructors
+(`Expr.Add(a, b)`, `Color.Red`), and `match` as a statement or an expression. **Provisional
+layout:** every enum value is an object, payload-free variants included: an 8-byte tag (the
+variant's position in the declaration), then as many 8-byte payload slots as the widest variant has,
+so all values of one enum have one size. A pointer payload sits at the start of its slot. The
+collector mask depends on the variant (only some slots hold pointers), so it is computed per
+variant from the target's layout, like a struct's. Allocation sites follow the struct rule: inside
+`with arena` bump allocation, in HIGH the GC heap, elsewhere refused. A variant that carries
+a discriminant is treated as payload-free (sema validates the value and nothing reads it back).
+`match` lowers to a `switch` on the tag; a tag no arm covers traps, so a hole in sema's
+exhaustiveness check cannot become undefined behaviour. Patterns supported: `Enum.Variant(a, _)`,
+bare payload-free variant names, `_`, and a plain name that binds the whole value. Refused by
+name: struct-style variants and patterns, `where` guards, nested patterns, `mut` bindings,
+generic enums, string payloads (until strings exist), printing an enum value and `==` on enums
+(the interpreter prints `C.Red` and compares by variant; the emitter does neither yet). At most 31
+payload fields per variant. An arm such as `=> return n,` is parsed as a one-statement block (the
+parser treats `return`, `break`, `continue` and `fail` as statements), so arm bodies are lowered as
+blocks or expressions, and a `match` used as a value skips the arms that leave the function or loop.
+
 Everything else is **refused with a located "not supported yet" error** instead of being
-guessed at: enums, strings as values, collections, closures, generics, struct methods,
+guessed at: strings as values, collections, closures, generics, struct methods,
 `edge struct`, `match`, sized integers and floats; also printing or comparing a struct value. The test suite checks that each refusal names the right
 feature, so unsupported code cannot be silently miscompiled.
 
@@ -505,6 +524,21 @@ nothing (an earlier attempt at this check had a path error and proved nothing; i
 The wasm demo now skips five programs (10 passed). The target program's first refusal moved
 from `edge struct` to `enum declarations`.
 
+**Slice 4, enums and `match` (local only, not yet on CI).** 36 checks: seventeen runnable
+programs (three new), one failing, seventeen refusals (six new), and the target-program guard.
+All 36 pass at 64-bit and as 32-bit binaries; the wasm demo skips eight programs (10 passed).
+`examples/15_enum_basic` covers payload-free and payload variants, `match` as a statement and as
+an expression (one arm a block), bare variant names, `_`, a name binding the whole value, an
+enum in a struct field, a struct in a payload, and a recursive enum evaluated by recursion.
+`examples/16_enum_gc` builds a fresh recursive tree every round and stores it in a field of an
+older struct under heavy garbage, so the newest tree is reachable only through that field and
+through the pointers in its own payloads. `examples/17_enum_arena` builds enums inside `with arena`
+and leaves the arena from inside `match` arms with `return`, `break` and `continue`. To check
+that `16_enum_gc` can fail, the per-variant pointer masks were forced to zero: the first line of
+output still matched, but the surviving tree evaluated to 246 instead of 7 (freed and reused
+memory, no crash), so the test catches silent corruption as well as crashes. The target
+program's first refusal is now its `string` payload (`Var(string)`).
+
 ### Known differences from the interpreter
 
 `int` is 64-bit and arithmetic wraps natively on overflow; the interpreter's overflow
@@ -530,6 +564,28 @@ Found while writing the test programs; none is fixed here.
   cannot rely on `expr_types` alone for concrete types. The emitter derives types from its
   own lowering and uses `int_literal_types` to catch sized integer literals. A real backend
   probably needs sema to publish resolved types; this is a point to plan around.
+
+Found while building the enum slice and probing for the roadmap, same status (found, not fixed):
+
+- **Closures are an unchecked channel across tiers.** A `@tier(low)` function can call a
+  function-typed parameter, and sema accepts a closure that allocates GC structs being passed into
+  it (probed, including the allocating case). The call-tier check covers named calls only. This
+  breaks the Stage 1A premise that LOW code never starts a collection, which is what makes a LOW
+  boundary cost 0 to 0.4 ns and raw pointers into the GC heap safe. A function type needs a tier.
+- **Which tiers may call which** (probed, every pair): HIGH may call HIGH, MID and LOW; MID may
+  call MID and LOW; LOW may call only LOW. Calling a higher tier is a sema error.
+- **No arena value can cross any call:** not to a named function (even with a `[lifetime L]`
+  reference parameter), not to a closure, not returned out of its block. Only ints, strings and
+  GC values cross. The Stage 1A callback pattern (MID hands a pointer into its arena to a HIGH
+  closure) cannot be written in the language as it stands.
+- A closure that captures an int or a GC value can be passed to a MID function and called there;
+  a MID function can return a GC struct it received as a parameter; a LOW function can return a
+  struct (sema accepts it).
+- Arena enums with scalar payloads are fine; an arena enum that holds another arena enum is
+  rejected by sema, like the struct case.
+- The interpreter prints an enum value as `Type.Variant` and compares enums by variant.
+- The prelude is `Ordering`, `Hasher` and the core traits (there is no `Option`), so an optional
+  arena reference cannot be built from a library type either.
 
 Found while building the struct slice, same status (found, not fixed):
 
@@ -688,8 +744,8 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    (slice 3, see above): a struct value is already a pointer, so `&x` is the same pointer
    and a `&L T` field is a `ptr` field. `checksum` and `build_and_eval` minus the callback
    compile and match the interpreter.
-2. **Enums with payloads and `match`** (tag plus payload words, pointer masks for payload
-   pointers, bindings in arms, recursion). Needs a layout decision per enum.
+2. ~~Enums with payloads and `match`.~~ Done (slice 4, see above), with the provisional
+   uniform-object layout.
 3. **Strings as values** (interpolation that builds one, `==`, printing one). Needs a string
    representation decision, and **large-object support in the collector first**: a string
    can exceed the 512-byte small-object limit and the runtime aborts on that today.
@@ -707,8 +763,34 @@ anyway), how LOW allocates, and the recursive-arena-tree gap above. Other open c
 publish resolved types from sema, the cross-language baselines, and the benchmark
 methodology work.
 
+**The full plan, including the design phase (collector, arenas and allocation types, LOW, the
+cross-tier communication matrix and the proof), is in `docs/LLVM_ROADMAP.md`.**
+
+### CI job summaries
+
+Both workflows build their job summary with scripts in `crates/llvm_poc/scripts/`, so the report
+can grow without editing a workflow file (the workflow yml cannot be delivered through the
+replacements flow and is committed by hand, once). `ci_info.sh` prints a run-info table: commit,
+workflow run, who started it, machine, CPU, OS and runner image, compiler, Rust, and the
+workflow inputs. For the Stage 1B workflow, `run_equiv.sh` now also writes `results.tsv` (every
+check) and `metrics.tsv` (per compiled program: IR size, functions, allocation sites, one timed
+interpreter run and one timed -O2 run, and the collector's statistics, which the runtime prints
+to stderr at exit when `UBEL_STATS` is set), and `ci_report_emit.sh` turns them into the summary:
+verdict and counts per kind of check, a feature table whose status follows the results of the
+examples that prove each row, a table of compiled programs, collector activity, every refusal
+with its reason, the target program's status and first blocker, any failures, and the raw log.
+The benchmark summary now starts with the same run-info table and ends with the GC self-test
+log. The timings in the Stage 1B report are single wall-clock runs on a shared runner and are for
+orientation, not measurement.
+
 ## Log
 
+- 2026-10-25: Stage 1B slice 4: enums with tuple payloads and `match` (uniform heap object per
+  value, per-variant pointer masks, `switch` on the tag), 36 of 36 locally at 64-bit and 32-bit,
+  not yet on CI. CI summaries moved into scripts and expanded (run info, feature table,
+  per-program metrics, collector activity, refusals, target status). New `docs/LLVM_ROADMAP.md`
+  with the draft cross-tier matrix. Probing for it found that closures bypass the tier call
+  lattice, and that no arena value can cross a call.
 - 2026-10-24: Stage 1B slice 3: edge structs and struct references (`&x`, `&L T` fields,
   `[lifetime L]` on functions), 27 of 27 locally at 64-bit and 32-bit, not yet on CI. CI
   confirmed slices 1 and 2 (run #2: 21 of 21; run #3: 22 of 22, both runners). Benchmark

@@ -1,0 +1,74 @@
+// Enums in MID. A value built inside `with arena` is bump-allocated from that arena and dies
+// with it; `match` on it works the same as on a GC value, and leaving the arena from inside
+// an arm (`return`, `continue`, `break`) still destroys it. Sema does not let an arena enum
+// hold another arena enum, so the payloads here are plain ints.
+enum Shape {
+    Circle(int),
+    Rect(int, int),
+    Dot,
+}
+
+@tier(mid)
+fn area(n: int) int {
+    with arena(1KB) {
+        let s = Shape.Rect(n, 4)
+        let a = match s {
+            Shape.Circle(r) => r * 3,
+            Shape.Rect(w, h) => w * h,
+            Shape.Dot => 0,
+        }
+        return a
+    }
+}
+
+// Many arenas, a different variant in each; early exits from inside arms.
+@tier(mid)
+fn sweep(n: int) int {
+    let mut total = 0
+    for i in 0 .. n {
+        with arena(256) {
+            let s = if i % 3 == 0 { Shape.Circle(i) } else { Shape.Rect(i, 2) }
+            match s {
+                Shape.Circle(r) => {
+                    if r > 40 {
+                        break
+                    }
+                    total += r
+                }
+                Shape.Rect(w, h) => {
+                    if w % 2 == 1 {
+                        continue
+                    }
+                    total += w * h
+                }
+                Shape.Dot => return 0 - 1,
+            }
+        }
+    }
+    return total
+}
+
+@tier(mid)
+fn first_big(limit: int) int {
+    let mut i = 0
+    loop {
+        with arena(128) {
+            let s = Shape.Circle(i * 5)
+            match s {
+                Shape.Circle(r) => {
+                    if r > limit {
+                        return i
+                    }
+                }
+                _ => return 0 - 1,
+            }
+        }
+        i += 1
+    }
+}
+
+fn main() void {
+    println("area:", area(5))
+    println("sweep:", sweep(100))
+    println("first_big:", first_big(37))
+}

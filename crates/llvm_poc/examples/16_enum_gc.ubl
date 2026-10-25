@@ -1,0 +1,55 @@
+// Enums under garbage collection. A recursive tree is built fresh on every round and stored
+// in a field of an older struct, while garbage trees force collections, so the newest tree
+// is reachable only through that field and through the pointers in its own payloads (`Add`
+// and `Mul` hold two enum pointers, `Neg` one). If the collector did not trace payload
+// pointers by variant, the tree would be freed and reused and the checks below would fail.
+// A second tree is built once and must survive all of it.
+enum Expr {
+    Num(int),
+    Add(Expr, Expr),
+    Mul(Expr, Expr),
+    Neg(Expr),
+}
+
+struct Holder {
+    tree: Expr
+    n:    int
+}
+
+fn eval(e: Expr) int {
+    match e {
+        Expr.Num(n) => return n,
+        Expr.Add(a, b) => return eval(a) + eval(b),
+        Expr.Mul(a, b) => return eval(a) * eval(b),
+        Expr.Neg(a) => return 0 - eval(a),
+    }
+}
+
+// Always evaluates to k: k * 2 + (0 - k) + (0 - ... ) arranged as (k * 2) + Neg(k).
+fn build(k: int) Expr {
+    return Expr.Add(Expr.Mul(Expr.Num(k), Expr.Num(2)), Expr.Neg(Expr.Num(k)))
+}
+
+fn churn(rounds: int) int {
+    let mut sum = 0
+    let mut i = 0
+    while i < rounds {
+        sum += eval(build(i)) - i
+        i += 1
+    }
+    return sum
+}
+
+fn main() void {
+    let keep = Holder { tree = build(7), n = 1 }
+    let holder = Holder { tree = build(0), n = 0 }
+    let mut check = 0
+    for k in 1 ..= 200 {
+        holder.tree = build(k)
+        let z = churn(300)
+        check += eval(holder.tree) + z
+        holder.n += 1
+    }
+    println(check, holder.n, eval(holder.tree))
+    println(eval(keep.tree), keep.n)
+}

@@ -1,0 +1,128 @@
+// Enums in HIGH. Every enum value is a heap object: a tag, then the payload. Covered here:
+// payload-free and payload variants, `match` as a statement (arms that return) and as an
+// expression (arms that give a value, with block arms), bare variant names, `_`, a name
+// that binds the whole value, an enum in a struct field, a struct in a payload, and a
+// recursive enum evaluated by recursion.
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+enum Shape {
+    Circle(int),
+    Rect(int, int),
+    Dot,
+}
+
+struct Pixel {
+    color: Color
+    x:     int
+}
+
+enum Cmd {
+    Move(Pixel),
+    Stop,
+}
+
+enum Expr {
+    Num(int),
+    Add(Expr, Expr),
+    Mul(Expr, Expr),
+    Neg(Expr),
+}
+
+fn name_len(c: Color) int {
+    match c {
+        Color.Red => return 3,
+        Color.Green => return 5,
+        Color.Blue => return 4,
+    }
+}
+
+// Bare variant names and a wildcard.
+fn is_red(c: Color) bool {
+    match c {
+        Red => return true,
+        _ => return false,
+    }
+}
+
+fn area(s: Shape) int {
+    match s {
+        Shape.Circle(r) => return 3 * r * r,
+        Shape.Rect(w, h) => return w * h,
+        Shape.Dot => return 0,
+    }
+}
+
+// `match` as an expression, one arm a block.
+fn describe(s: Shape) int {
+    let d = match s {
+        Shape.Circle(r) => r * 2,
+        Shape.Rect(w, _) => {
+            let t = w * 10
+            t + 1
+        }
+        Shape.Dot => 0 - 1,
+    }
+    return d + 100
+}
+
+fn color_code(c: Color) int {
+    return match c {
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
+    }
+}
+
+// A name that binds the whole value.
+fn num_or_zero(e: Expr) int {
+    match e {
+        Expr.Num(n) => return n,
+        other => return 0,
+    }
+}
+
+fn pixel_score(p: Pixel) int {
+    return p.x * 10 + color_code(p.color)
+}
+
+fn run(cmd: Cmd) int {
+    match cmd {
+        Cmd.Move(px) => return pixel_score(px),
+        Cmd.Stop => return 0 - 1,
+    }
+}
+
+fn eval(e: Expr) int {
+    match e {
+        Expr.Num(n) => return n,
+        Expr.Add(a, b) => return eval(a) + eval(b),
+        Expr.Mul(a, b) => return eval(a) * eval(b),
+        Expr.Neg(a) => return 0 - eval(a),
+    }
+}
+
+fn main() void {
+    println(name_len(Color.Red), name_len(Color.Green), name_len(Color.Blue))
+    println(is_red(Color.Red), is_red(Color.Blue))
+    println(area(Shape.Circle(5)), area(Shape.Rect(3, 4)), area(Shape.Dot))
+    println(describe(Shape.Circle(7)), describe(Shape.Rect(2, 9)), describe(Shape.Dot))
+
+    let px = Pixel { color = Color.Blue, x = 4 }
+    println(run(Cmd.Move(px)), run(Cmd.Stop))
+    px.color = Color.Green
+    println(pixel_score(px))
+
+    println(num_or_zero(Expr.Num(8)), num_or_zero(Expr.Neg(Expr.Num(8))))
+
+    let tree = Expr.Add(Expr.Mul(Expr.Num(6), Expr.Num(7)), Expr.Neg(Expr.Add(Expr.Num(1), Expr.Num(2))))
+    println(eval(tree))
+    let mut total = 0
+    for i in 1 ..= 50 {
+        total += eval(Expr.Mul(Expr.Num(i), Expr.Add(Expr.Num(i), Expr.Num(1))))
+    }
+    println("total:", total)
+}

@@ -1,0 +1,10 @@
+// Not supported yet: a string payload (strings are not values yet).
+// expect-refusal: this type
+enum Tok {
+    Word(string),
+    End,
+}
+
+fn main() void {
+    println(1)
+}

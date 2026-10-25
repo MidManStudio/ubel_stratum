@@ -14,6 +14,11 @@
 #   u_name.ubl    the emitter must REFUSE it with a "not supported yet" error. This guards the
 #                 subset boundary: unsupported code is never silently miscompiled.
 #
+# Besides the console output it writes, into OUT_DIR, two files the CI report is built from
+# (scripts/ci_report_emit.sh): results.tsv (status, name, kind, detail per check, plus a few
+# META rows) and metrics.tsv (per compiled program: IR size, allocation sites, timings, and the
+# collector's statistics from a run with UBEL_STATS=1).
+#
 # Environment: CLANG (default clang, needs LLVM 15+), EXTRA_FLAGS (e.g. -m32),
 #              OUT_DIR (default ${TMPDIR:-/tmp}/ubel_llvm_equiv), CARGO (default cargo).
 # Exit status is non-zero if any example fails.
@@ -46,8 +51,72 @@ build_native() {
 }
 
 pass=0; fail=0; skipped_san=0
-ok()  { printf '  PASS  %-22s %s\n' "$1" "$2"; pass=$((pass + 1)); }
-bad() { printf '  FAIL  %-22s %s\n' "$1" "$2"; fail=$((fail + 1)); }
+: > "$out/results.tsv"
+: > "$out/metrics.tsv"
+
+# Milliseconds since the epoch. `date +%s%N` is GNU-only (macOS prints a literal N), so fall
+# back to perl, then to whole seconds.
+now_ms() {
+  local t
+  t="$(date +%s%N 2>/dev/null)"
+  case "$t" in
+    ""|*[!0-9]*)
+      if command -v perl >/dev/null 2>&1; then
+        perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000'
+      else
+        echo $(( $(date +%s) * 1000 ))
+      fi ;;
+    *) echo $(( t / 1000000 )) ;;
+  esac
+}
+
+kind_of() {
+  case "$1" in
+    u_*) echo refusal ;;
+    fail_*) echo failing ;;
+    "ast_builder (target)") echo target ;;
+    *) echo runnable ;;
+  esac
+}
+record_result() { # status name detail
+  local d="${3//$'\t'/ }"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(kind_of "$2")" "$d" >> "$out/results.tsv"
+}
+ok()  { printf '  PASS  %-22s %s\n' "$1" "$2"; pass=$((pass + 1)); record_result PASS "$1" "$2"; }
+bad() { printf '  FAIL  %-22s %s\n' "$1" "$2"; fail=$((fail + 1)); record_result FAIL "$1" "$2"; }
+
+# Per-program numbers for the report: static facts from the IR, one timed -O2 run, and the
+# collector's statistics (UBEL_STATS=1 makes the runtime print them to stderr at exit).
+record_metrics() { # name ll interp_ms
+  local name="$1" ll="$2" interp_ms="$3" exe="$out/$1.O2"
+  local lines funcs gc bump arenas t0 t1 native_ms line
+  lines="$(wc -l < "$ll" | tr -d ' ')"
+  funcs="$(grep '^define ' "$ll" | grep -vc ' internal ' || true)"
+  gc="$(grep -c 'call ptr @ubel_gc_alloc' "$ll" || true)"
+  bump="$(grep -c 'call ptr @ubel_arena_bump' "$ll" || true)"
+  arenas="$(grep -c 'call ptr @ubel_arena_create' "$ll" || true)"
+  t0="$(now_ms)"
+  UBEL_STATS=1 run_timeout "$exe" >/dev/null 2>"$out/$name.stats"
+  t1="$(now_ms)"
+  native_ms=$(( t1 - t0 ))
+  line="$(grep -m1 '^ubel_stats:' "$out/$name.stats" || true)"
+  local c=0 n=0 b=0 m=0 sw=0 mp=0 ph=0 lv=0 kv
+  for kv in $line; do
+    case "$kv" in
+      collections=*) c="${kv#*=}" ;;
+      alloc_count=*) n="${kv#*=}" ;;
+      alloc_bytes=*) b="${kv#*=}" ;;
+      mark_ns=*) m="${kv#*=}" ;;
+      sweep_ns=*) sw="${kv#*=}" ;;
+      max_pause_ns=*) mp="${kv#*=}" ;;
+      peak_heap_bytes=*) ph="${kv#*=}" ;;
+      live_bytes_last=*) lv="${kv#*=}" ;;
+    esac
+  done
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$name" "$interp_ms" "$native_ms" "$lines" "$funcs" "$gc" "$bump" "$arenas" \
+    "$c" "$n" "$b" "$m" "$sw" "$mp" "$ph" "$lv" >> "$out/metrics.tsv"
+}
 
 # Is ASan + UBSan usable here?
 san_flags=(-fsanitize=address,undefined -fno-sanitize-recover=undefined)
@@ -58,6 +127,8 @@ else
   have_san=0
   echo "note: sanitizers unavailable with this toolchain, skipping the ASan/UBSan runs" >&2
 fi
+printf 'META\thave_san\t-\t%s\n' "$have_san" >> "$out/results.tsv"
+printf 'META\textra_flags\t-\t%s\n' "${EXTRA_FLAGS:-}" >> "$out/results.tsv"
 
 for src in "$here"/examples/*.ubl; do
   name="$(basename "$src" .ubl)"
@@ -81,7 +152,9 @@ for src in "$here"/examples/*.ubl; do
       ;;
   esac
 
+  t_interp0="$(now_ms)"
   "$bin" interp "$src" >"$out/$name.expected" 2>"$out/$name.interp.err"; interp_status=$?
+  interp_ms=$(( $(now_ms) - t_interp0 ))
   if ! "$bin" emit "$src" -o "$ll" 2>"$out/$name.err"; then
     bad "$name" "emit failed: $(head -n 3 "$out/$name.err" | tr '\n' ' ')"
     continue
@@ -124,6 +197,7 @@ for src in "$here"/examples/*.ubl; do
   done
   if [ "$all_ok" -eq 1 ]; then
     ok "$name" "identical to the interpreter at -O0, -O2$([ "$have_san" -eq 1 ] && echo ', ASan+UBSan'), no arena left alive"
+    record_metrics "$name" "$ll" "$interp_ms"
   else
     bad "$name" "$detail"
   fi
@@ -144,8 +218,10 @@ if [ -f "$target" ] && [ -f "$golden" ]; then
   fi
   if "$bin" emit "$target" -o "$out/ast_builder.ll" >/dev/null 2>"$out/ast_builder.emit.err"; then
     echo "  note  ast_builder: the emitter COMPILES it now. Move it into the equivalence suite."
+    printf 'NOTE\ttarget_emit\ttarget\tcompiles\n' >> "$out/results.tsv"
   else
     echo "  note  ast_builder: not compilable yet:$(sed -n 2p "$out/ast_builder.emit.err")"
+    printf 'NOTE\ttarget_emit\ttarget\t%s\n' "$(sed -n 2p "$out/ast_builder.emit.err" | sed 's/^ *//')" >> "$out/results.tsv"
   fi
 fi
 
