@@ -45,18 +45,15 @@ jobs:
         shell: bash
         run: bash crates/llvm_poc/scripts/run_equiv.sh 2>&1 | tee equiv.log
 
+      # The report is built by a script in the repo, so it can grow without touching this file.
       - name: Job summary
         if: always()
+        shell: bash
+        env:
+          CI_INPUTS: clang=${{ inputs.clang }}
         run: |
-          {
-            echo "## Ubel LLVM PoC, Stage 1B: emitter against the interpreter (${{ matrix.arch }})"
-            echo
-            echo "Runner \`$(uname -m)\`, $("$CLANG" --version | head -n 1), $(cargo --version)"
-            echo
-            echo '```'
-            cat equiv.log 2>/dev/null || echo "No log was produced."
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          bash crates/llvm_poc/scripts/ci_report_emit.sh "$OUT_DIR" equiv.log "${{ matrix.arch }}" \
+            | tee equiv-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload emitted IR and expected outputs
         if: always()
@@ -65,6 +62,9 @@ jobs:
           name: llvm-poc-emit-${{ matrix.arch }}
           path: |
             equiv.log
+            equiv-report.md
+            equiv-out/results.tsv
+            equiv-out/metrics.tsv
             equiv-out/*.ll
             equiv-out/*.expected
           if-no-files-found: warn

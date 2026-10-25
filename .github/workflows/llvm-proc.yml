@@ -45,7 +45,8 @@ jobs:
           "$CLANG" --version
 
       - name: Self-test (GC stress, every tier must agree)
-        run: bash crates/llvm_poc/scripts/run_bench.sh --selftest
+        shell: bash
+        run: bash crates/llvm_poc/scripts/run_bench.sh --selftest 2>&1 | tee selftest.log
 
       - name: Benchmark
         shell: bash
@@ -53,13 +54,22 @@ jobs:
 
       - name: Job summary
         if: always()
+        shell: bash
         run: |
           {
             echo "## Ubel LLVM PoC, tier benchmarks, Stages 0 and 1A (${{ matrix.arch }})"
             echo
-            echo "Runner \`$(uname -m)\`, $("$CLANG" --version | head -n 1)"
+            bash crates/llvm_poc/scripts/ci_info.sh clang="$CLANG" iters="$ITERS"
             echo
             cat bench-report.md 2>/dev/null || echo "No report was produced."
+            echo
+            echo "<details><summary>GC self-test log</summary>"
+            echo
+            echo '```'
+            cat selftest.log 2>/dev/null || echo "No self-test log was produced."
+            echo '```'
+            echo
+            echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report and optimized IR
@@ -69,6 +79,7 @@ jobs:
           name: llvm-poc-${{ matrix.arch }}
           path: |
             bench-report.md
+            selftest.log
             /tmp/ubel_llvm_poc/tiers.opt.ll
           if-no-files-found: warn
           retention-days: 30
