@@ -2,7 +2,7 @@
 // What impls and `extend` blocks for built-in types can get wrong. Two types
 // that are one kind of value at run time (`int` and `long`) cannot both
 // implement a trait; a prelude trait the type already has natively cannot be
-// implemented again; `impl` and `extend` for a collection are not supported
+// implemented again; `impl` and `extend` for a `Set` are not supported
 // yet; a type without the impl fails a bound; a method that does not exist
 // on a primitive, or a function without `self`, is not a method call; an impl
 // that misses a method or has the wrong signature is reported as for a
@@ -24,8 +24,8 @@ impl Show for int { fn show(self) string { return "int" } }
 impl Show for long { fn show(self) string { return "long" } }
 impl Eq for string { }
 
-impl Show for List<int> { fn show(self) string { return "list" } }
-extend List<int> { fn first2(self) int { return 1 } }
+impl Show for Set<int> { fn show(self) string { return "list" } }
+extend Set<int> { fn first2(self) int { return 1 } }
 
 impl Area for bool { }
 impl Area for char { fn area(self) string { return "no" } }

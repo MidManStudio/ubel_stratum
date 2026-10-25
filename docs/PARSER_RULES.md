@@ -779,6 +779,24 @@ identifier-led type is only taken as an annotation when the token after
 `{` is not `}` and is not `Ident =`.
 
 
+### 5.10 `impl<T>` and `extend<T>`: parameters before the target
+
+`impl` and `extend` take an optional generic parameter list directly after the
+keyword, with the bounds a parameter can carry anywhere else:
+
+```ubel
+impl<T: Show> Show for Box<T> { ... }
+impl<K: Hash, V> Size for Dictionary<K, V> { ... }
+extend<T> List<T> { ... }
+```
+
+`parse_decl.rs` calls `parse_generic_params` right after consuming the keyword.
+That needs no lookahead: the next token is `<` or the start of a trait path or
+a target type, and neither starts with `<`. The list lands in
+`ImplBlock.generic_params` and `ExtendDecl.generic_params` (an empty slice when
+absent). The parser does not check that every parameter is used or that a
+bound names a trait; that is the sema pass in `impl_patterns.rs`.
+
 ## 6. LINQ Query Parsing — Removed
 
 There used to be a dedicated LINQ sub-parser here (`from x in expr where

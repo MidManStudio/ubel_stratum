@@ -3,8 +3,9 @@
 **Status:** Implemented for structs, enums, and free functions. Since the
 traits slices (S1b to S3c) a method's *own* extra generic params and trait
 bounds are implemented too (see `docs/TRAITS_DESIGN.md`, "What S3c settled").
-Not yet implemented: `impl`/`extend` blocks that bind the target's parameter
-names.
+`impl`/`extend` blocks bind their own parameters too (`impl<T: Show> Show for Box<T>`,
+`extend<T> List<T>`; slice S3e, "What S3e settled" in the same file). Not yet
+implemented: blanket impls and impl targets that nest or repeat a parameter.
 
 ---
 
@@ -139,10 +140,12 @@ access (`p.first`) substitutes using the *receiver's own* `Named { args,
   after the enclosing declaration's, `MethodShape` carries them as
   `MethodGenerics`, and every call allocates fresh `Var`s for them
   (`instantiate_method`).
-- **`impl`/`extend` blocks on a generic struct** aren't wired to that
-  struct's own generic scope — `current_generic_params` is only pushed
-  around a struct's *inline* members. No current fixture uses `impl`/
-  `extend` at all (checked: zero hits in `tests/fixtures/*.ubl`).
+- **`impl`/`extend` blocks on a generic struct** were not wired to that
+  struct's own generic scope when this note was written (`current_generic_params`
+  was only pushed around a struct's *inline* members). S3e gives a block its own
+  parameters: each is numbered by the argument of the head it occupies, and a block
+  without parameters (`extend Box { .. }`) keeps the old meaning, with the struct's
+  parameters in force but not named.
 - **Trait bounds** (`GenericParam.bounds`, parsed, stored, never
   validated) are still completely unenforced — same as before this round.
 - **A diagnostic-duplication wart, now fixed**: a genuinely unknown

@@ -229,6 +229,40 @@ interpreter where a test needs runtime values.
   in `instantiate_trait_shape`, whose argument list always has the trait's arity
   (now a debug assertion). All 42 that remain are caught.
 
+### `tests/generic_impls.rs`
+
+**What it does:** Integration tests for impls and `extend` blocks for generic types,
+slice S3e (82 tests), plus the extended unit test in `interpreter/value.rs` that pins
+`Value::impl_key` against `ast::types::builtin_impl_key` for the five generic
+collections. Programs go through `check_source` for stage, codes, messages,
+suggestions and positions and through the interpreter for run-time values.
+
+**Decisions:**
+- Parameters and scope: a parameter bound in the bodies, numbered by the place it
+  occupies (`Pair<Y, X>`), an enum head, an inherent `impl<T>`, `extend<T>`, a
+  method's own parameters inside a generic block, an associated function, `Self`.
+- Conditions: a conditional impl through a bound, a qualified call and a method
+  call; the argument that lacks the bound named at the call; a struct's own bound
+  restated, checked on a concrete argument and in force in the body; a bound with
+  arguments naming another parameter; a dictionary key needing `Hash`.
+- Supertraits and prelude traits on a generic impl, including a conditional
+  `PartialEq` and `PartialOrd` driving the operators and not there for an argument
+  that lacks them, and a derive that overlaps a hand-written impl.
+- Concrete positions: an impl and an `extend` for one instance apply to that
+  instance only (`TYPE-104` for another, `TYPE-126` through a bound), also mixed with
+  a parameter.
+- The five built-in heads each through a direct call, the generic ones through a
+  bound and a qualified call; an alias of a collection; a native method winning;
+  bare `extend List` and `extend Box` keeping their meaning.
+- Overlap and duplicates: one impl per head whatever the arguments, an array and a
+  `List`, one inherent definition per name for a generic head and for a run-time kind
+  (`int` and `long`).
+- Every unsupported target, with its exact text and position, and the count
+  mistakes (`TYPE-108`).
+
+**Mutation pass:** 74 mutations over `sema/type_infer/impl_patterns.rs`,
+`sema/type_infer.rs`, `ast/types.rs` and `interpreter/value.rs`, 70 caught. Three survivors are equivalent mutants (the run-time key text sema gives `Dictionary`, which is only compared with itself, and the undecided answer of an impl guard, which every consumer treats like a satisfied one because an obligation fails only on a definite no); one more showed an arity entry for a built-in head's definition that no reader reaches, and was removed as dead code. Every other mutant was caught, after tests were added for the first survivors.
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in

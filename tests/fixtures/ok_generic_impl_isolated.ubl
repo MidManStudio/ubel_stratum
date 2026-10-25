@@ -1,0 +1,66 @@
+// tests/fixtures/ok_generic_impl_isolated.ubl
+// Impls and `extend` blocks for generic types. An impl parameter is bound in
+// the block's bodies and numbered by the place it occupies in the target
+// (`Pair<Y, X>` puts `X` second); a bound on it makes the impl conditional; an
+// impl written for one instance (`Box<int>`) covers that instance only.
+// `List`, `Dictionary`, `Queue` and `Stack` take impls the same way.
+// Expected: sema OK, interpret OK.
+
+trait Show {
+    fn show(self) string
+}
+
+struct Box<T> { v: T }
+struct Pair<A, B> { a: A, b: B }
+
+impl Show for int { fn show(self) string { return "int" } }
+impl Show for string { fn show(self) string { return "str" } }
+
+impl<T: Show> Show for Box<T> {
+    fn show(self) string { return "Box(" + self.v.show() + ")" }
+}
+
+impl<X: Show, Y: Show> Show for Pair<Y, X> {
+    fn show(self) string { return self.a.show() + "," + self.b.show() }
+}
+
+extend<T> Box<T> {
+    fn get(self) T { return self.v }
+    fn wrap(v: T) Box<T> { return Box { v = v } }
+}
+
+extend Box<int> {
+    fn double(self) int { return self.v * 2 }
+}
+
+impl<T: Show> Show for List<T> {
+    fn show(self) string { return "List" }
+}
+
+impl<K: Hash, V> Show for Dictionary<K, V> {
+    fn show(self) string { return "Dictionary" }
+}
+
+impl Show for Queue<int> { fn show(self) string { return "Queue" } }
+impl<T> Show for Stack<T> { fn show(self) string { return "Stack" } }
+
+fn via<X: Show>(x: X) string { return x.show() }
+
+fn main() void {
+    assert(Box { v = 1 }.show() == "Box(int)", "a conditional impl")
+    assert(via(Box { v = Box { v = "s" } }) == "Box(Box(str))", "a nested instance through a bound")
+    assert(Pair { a = 1, b = "x" }.show() == "int,str", "parameters numbered by place")
+    assert(Box.wrap(8).get() == 8, "an associated function and a method")
+    assert(Box { v = 4 }.double() == 8, "an extend for one instance")
+    assert([1, 2].show() == "List", "a list")
+    let mut d = Dictionary.new()
+    d.set("k", 1)
+    assert(d.show() == "Dictionary", "a dictionary")
+    let q = Queue.new()
+    q.enqueue(1)
+    assert(q.show() == "Queue", "a queue")
+    let s = Stack.new()
+    s.push("a")
+    assert(s.show() == "Stack", "a stack")
+    println("ok")
+}

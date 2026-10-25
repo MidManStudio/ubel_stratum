@@ -206,6 +206,9 @@ pub struct ImplBlock<'ast> {
     /// Tier applied to all methods in this block unless individually overridden.
     /// `None` = methods default to `High` unless they carry `@tier` themselves.
     pub tier:        Option<TierAnnotation>,
+    /// The type parameters the block declares: `T` in `impl<T: Show> Show
+    /// for Box<T>`. Empty for an impl of a type without parameters.
+    pub generic_params: &'ast [GenericParam<'ast>],
     /// `None` = inherent impl; `Some` = trait impl (`impl Trait for Type`).
     pub trait_path:  Option<&'ast [&'ast str]>,
     /// The type arguments written after the trait in `impl Convert<int> for
@@ -222,6 +225,8 @@ pub struct ImplBlock<'ast> {
 pub struct ExtendDecl<'ast> {
     /// `@cfg(...)` and other pre-extend attributes.
     pub attributes:  &'ast [Attribute<'ast>],
+    /// The type parameters the block declares: `T` in `extend<T> Box<T>`.
+    pub generic_params: &'ast [GenericParam<'ast>],
     pub target_type: &'ast Type<'ast>,
     pub methods:     &'ast [MethodDecl<'ast>],
     pub span:        Span,

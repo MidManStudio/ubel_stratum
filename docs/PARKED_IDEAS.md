@@ -1002,7 +1002,35 @@ Known gaps of S3d, recorded rather than hidden:
   arity, `int` and `long`) are `TYPE-128` because a call cannot tell them apart.
   Telling them apart needs the exact type at run time.
 
-**Traits, slices S3e to S6.** Decided 2026-10-03, built one delivery at a
+**Traits, slice S3e (built).** Impls and `extend` blocks for generic types and the
+generic built-in collections. See `docs/TRAITS_DESIGN.md`, "What S3e settled".
+
+Known gaps of S3e, recorded rather than hidden:
+
+- Impls for `Pool<T>` and `Handle<T>` are reported. A written `Pool<T>` or
+  `Handle<T>` converts to the unknown type in sema (a `Pool` value is only made by
+  `with pool<T>`), so an impl has nothing to be checked against. They were agreed
+  as targets before this was known. Making a written `Pool<T>` a real type touches
+  the tier and arena-escape checks and is its own piece of work.
+- A prelude trait cannot be written by hand for a collection. The run time compares,
+  hashes and clones a collection by identity and the operators do not consult user
+  impls for one, so an impl would not drive `==`. Giving collections user-defined
+  comparison is a language question.
+- An unsatisfied conditional impl is worded as a missing impl: `Box<Plain>` is
+  reported as not implementing `Show` with the suggestion to add `impl Show for
+  Box<Plain>`, although an impl for `Box<T>` exists and the missing piece is
+  `Show for Plain`. The call-site error for a method call names `Plain` instead.
+- The ambiguity message (`TYPE-127`) writes a type with an undecided integer
+  literal inside it with the literal's variable (`Box<?T12>`); the messages that
+  go through the reported-type path write it as `Box<int>`.
+- Two traits that both give a generic head a method of one name are reported as
+  ambiguous at an unqualified call even when their impls are for disjoint
+  instances (`Box<int>` and `Box<string>`); a call cannot tell the instances
+  apart at run time.
+- Associated types, blanket impls and nested impl patterns (`Box<List<T>>`) stay
+  deferred.
+
+**Traits, slices S4 to S6.** Decided 2026-10-03, built one delivery at a
 time: D1 nominal traits; D2 static and dynamic dispatch; D3 the recommended
 v1 coherence rules with the orphan rule, blanket impls and explicit
 implementation deferred; D4 all four levels of trait contents; D5 the six

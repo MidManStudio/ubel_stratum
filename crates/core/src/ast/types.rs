@@ -110,7 +110,9 @@ pub struct FunctionType<'ast> {
 /// are `"u32"`, `ulong`, `u64` and `usize` are `"u64"`, `float` and `f32` are
 /// `"float"`, `double` and `f64` are `"double"`. A tuple is keyed by its
 /// arity (`"tuple2"`) and an array by `"List"`, the kind of value it shares
-/// with `List<T>`. `None` for every other type.
+/// with `List<T>`. `List`, `Dictionary`, `Queue`, `Stack` and `InlineList` are
+/// keyed by their own name whatever their type arguments, since generics are
+/// erased at run time. `None` for every other type.
 pub fn builtin_impl_key(kind: &TypeKind<'_>) -> Option<String> {
     let key: &str = match kind {
         TypeKind::Int | TypeKind::Long | TypeKind::I64 | TypeKind::Isize | TypeKind::Short => "int",
@@ -127,7 +129,12 @@ pub fn builtin_impl_key(kind: &TypeKind<'_>) -> Option<String> {
         TypeKind::Char => "char",
         TypeKind::Str => "string",
         TypeKind::Tuple(elems) => return Some(format!("tuple{}", elems.len())),
-        TypeKind::Array { .. } => "List",
+        // An array and a `List<T>` are one kind of value at run time.
+        TypeKind::Array { .. } | TypeKind::List(_) => "List",
+        TypeKind::Dictionary(_) => "Dictionary",
+        TypeKind::Queue(_) => "Queue",
+        TypeKind::Stack(_) => "Stack",
+        TypeKind::InlineList(_) => "InlineList",
         _ => return None,
     };
     Some(key.to_string())

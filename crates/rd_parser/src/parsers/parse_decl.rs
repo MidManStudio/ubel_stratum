@@ -804,6 +804,9 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         self.cursor.advance(); // consume `impl`
 
+        // The block's own type parameters: `impl<T: Show> Show for Box<T>`.
+        let generic_params = self.parse_generic_params();
+
         // Block-level tier: `@tier(low) impl Foo { ... }` — all methods inherit
         let tier = extract_tier_from_attrs(attrs);
 
@@ -877,6 +880,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         Some(ImplBlock {
             attributes: attrs,
             tier: if tier == TierAnnotation::High { None } else { Some(tier) },
+            generic_params,
             trait_path,
             trait_args,
             target_type,
@@ -895,6 +899,8 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         let lo   = self.span();
 
         self.cursor.advance(); // consume `extend`
+        // The block's own type parameters: `extend<T> Box<T> { .. }`.
+        let generic_params = self.parse_generic_params();
         let target_type = self.parse_type_expr()?;
 
         // Body is optional per EBNF: `("{" ExtendItem* "}")?`
@@ -929,7 +935,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         let span = lo.merge(&self.span());
         self.leave(prev);
-        Some(ExtendDecl { attributes: attrs, target_type, methods, span })
+        Some(ExtendDecl { attributes: attrs, generic_params, target_type, methods, span })
     }
 
     // ── Const declaration ─────────────────────────────────────────────────────

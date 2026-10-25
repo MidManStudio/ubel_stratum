@@ -366,10 +366,11 @@ fn a_default_may_call_the_traits_other_methods_on_self() {
 // ── Features that are not built yet are reported (TYPE-129) ──────
 
 #[test]
-fn an_impl_for_a_collection_is_reported_not_ignored() {
-    // A primitive, a tuple and an array take impls (tests/builtin_impls.rs);
-    // a collection does not yet.
-    let src = "trait Shape { fn area(self) int }\nimpl Shape for List<int> { fn area(self) int { return 1 } }\nfn main() void { }\n";
+fn an_impl_for_a_set_is_reported_not_ignored() {
+    // A primitive, a tuple, an array and List, Dictionary, Queue, Stack and
+    // InlineList take impls (tests/builtin_impls.rs, tests/generic_impls.rs);
+    // a Set does not, since it has no value of its own at run time.
+    let src = "trait Shape { fn area(self) int }\nimpl Shape for Set<int> { fn area(self) int { return 1 } }\nfn main() void { }\n";
     assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
 }
 
@@ -387,8 +388,10 @@ fn an_associated_type_is_reported_not_ignored() {
 }
 
 #[test]
-fn an_impl_for_a_generic_struct_is_reported_not_ignored() {
-    let src = "trait Shape { fn area(self) int }\nstruct Box<T> { v: T }\n\
-               impl Shape for Box { fn area(self) int { return 1 } }\nfn main() void { }\n";
+fn a_blanket_impl_is_reported_not_ignored() {
+    // Impls for generic types arrived in S3e (tests/generic_impls.rs); an
+    // impl for a bare type parameter does not exist yet.
+    let src = "trait Shape { fn area(self) int }\n\
+               impl<T> Shape for T { fn area(self) int { return 1 } }\nfn main() void { }\n";
     assert_eq!(codes(src), (Stage::Sema, vec!["TYPE-129"]));
 }

@@ -1,0 +1,52 @@
+// tests/fixtures/err_generic_impl_combined.ubl
+// What a generic impl asks of the arguments, together with earlier features.
+// A struct's own bound must be restated on the impl parameter, and a
+// dictionary key must be `Hash`; a method of an impl for one instance is not a
+// method of another; a conditional impl does not give a type its trait when an
+// argument lacks the bound; a supertrait impl that asks more than the impl
+// does is missing; a trait has one impl per head and a method name one
+// inherent definition per head; a prelude trait is not written by hand for a
+// collection.
+// Expected: sema FAIL (UnsatisfiedBound TYPE-126 three times, NoSuchMethod
+// TYPE-104 once, MissingSupertraitImpl TYPE-132 once, OverlappingImpl
+// TYPE-128 once, UnsupportedTraitFeature TYPE-129 twice).
+
+trait Show {
+    fn show(self) string
+}
+
+trait Loud: Show {
+    fn loud(self) string
+}
+
+trait Size {
+    fn size(self) int
+}
+
+struct Box<T> { v: T }
+struct Need<T: Show> { v: T }
+struct Plain { n: int }
+struct Other<T> { v: T }
+
+impl Show for int { fn show(self) string { return "int" } }
+
+impl<U> Show for Need<U> { fn show(self) string { return "restate" } }
+impl<K, V> Size for Dictionary<K, V> { fn size(self) int { return 1 } }
+
+impl<T: Show> Show for Box<T> { fn show(self) string { return "Box" } }
+impl<T> Loud for Box<T> { fn loud(self) string { return "loud" } }
+
+impl Show for Other<int> { fn show(self) string { return "int instance" } }
+impl Show for Other<string> { fn show(self) string { return "string instance" } }
+
+extend<T> Box<T> { fn f(self) int { return 1 } }
+extend Box<int> { fn f(self) int { return 2 } }
+
+impl PartialEq for List<int> { fn eq(self, o: List<int>) bool { return true } }
+
+fn via<X: Show>(x: X) string { return x.show() }
+
+fn main() void {
+    println(via(Box { v = Plain { n = 1 } }))
+    println(Other { v = "s" }.show())
+}

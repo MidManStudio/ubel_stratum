@@ -401,7 +401,8 @@ impl Value {
             Value::Bool(_) | Value::Int(_) | Value::I8(_) | Value::I16(_) | Value::I32(_)
             | Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::UInt(_)
             | Value::Float(_) | Value::Double(_) | Value::Char(_) | Value::Str(_)
-            | Value::List(_) => Some(Cow::Borrowed(self.type_name())),
+            | Value::List(_) | Value::Dict(_) | Value::Queue(_) | Value::Stack(_)
+            | Value::InlineList(_) => Some(Cow::Borrowed(self.type_name())),
             Value::Tuple(elems) => Some(Cow::Owned(format!("tuple{}", elems.len()))),
             _ => None,
         }
@@ -1091,6 +1092,18 @@ mod tests {
             (vec![TypeKind::Str], Value::str_from("s")),
             (vec![TypeKind::Array { len: 3, elem: &int_ty }], Value::List(Rc::new(RefCell::new(Vec::new())))),
             (vec![TypeKind::Tuple(&[])], Value::Tuple(Vec::new())),
+            // The generic collections take their own name whatever their
+            // type arguments (generics are erased at run time); a `List<T>`
+            // shares its key with an array.
+            (vec![TypeKind::List(Some(&int_ty)), TypeKind::List(None)], Value::List(Rc::new(RefCell::new(Vec::new())))),
+            (vec![TypeKind::Dictionary(Some((&int_ty, &int_ty))), TypeKind::Dictionary(None)],
+                Value::Dict(Rc::new(RefCell::new(Vec::new())))),
+            (vec![TypeKind::Queue(Some(&int_ty)), TypeKind::Queue(None)],
+                Value::Queue(Rc::new(RefCell::new(VecDeque::new())))),
+            (vec![TypeKind::Stack(Some(&int_ty)), TypeKind::Stack(None)],
+                Value::Stack(Rc::new(RefCell::new(Vec::new())))),
+            (vec![TypeKind::InlineList(Some(&int_ty)), TypeKind::InlineList(None)],
+                Value::InlineList(Rc::new(RefCell::new(InlineListData { items: Vec::new(), capacity: 1 })))),
         ];
         for (kinds, value) in cases {
             let key = value.impl_key().map(|k| k.into_owned());

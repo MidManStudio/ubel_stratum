@@ -124,6 +124,10 @@ use crate::ast::common::Visibility;
 use crate::sema::symbol_table::{DefId, DefKind};
 use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
 
+mod impl_patterns;
+use self::impl_patterns::{ImplGuard, ImplPattern};
+use std::rc::Rc;
+
 // ── Integer literal suffix ranges ───────────────────────────────────
 
 /// Whether `raw` -- a literal's non-negative magnitude exactly as
@@ -290,6 +294,10 @@ struct MethodShape {
     is_fallible: bool,
     /// The method's own generic parameters (`fn pick<U: Show>(self, x: U)`).
     generics:    MethodGenerics,
+    /// What the `impl` or `extend` block that supplied the method asks of the
+    /// receiver's type arguments (`impl<T: Show> Show for Box<T>`, `extend
+    /// Box<int>`). `None` for a method with nothing to ask.
+    guard:       Option<Rc<ImplGuard>>,
 }
 
 /// One generic parameter a method declares itself, with the bounds written
@@ -573,6 +581,20 @@ struct InferCtx<'a> {
     /// The definition for the target of each `extend` or `impl` block, by the
     /// target type's span, so the target is converted once.
     builtin_targets:   HashMap<Span, (DefId, TypeId)>,
+    /// The analysis of each `impl` or `extend` block for a generic head or
+    /// with parameters of its own, by the block's span (docs/TRAITS_DESIGN.md,
+    /// slice S3e). Blocks for anything else do not have one.
+    impl_patterns:     HashMap<Span, Rc<ImplPattern>>,
+    /// Blocks whose target was reported as unusable. Their methods keep
+    /// signatures but are not registered, implemented or read.
+    impl_failed:       HashSet<Span>,
+    /// What each trait impl asks of the type arguments of its head, for the
+    /// impls that ask anything (`impl<T: Show> Show for Box<T>`).
+    trait_impl_guards: HashMap<(DefId, DefId), Rc<ImplGuard>>,
+    /// `(run-time key, method name)` -> the built-in definition that already
+    /// gave that name to a type of that kind, so `extend int` and `extend
+    /// long` cannot both define `tag`.
+    inherent_key_methods: HashMap<(String, String), DefId>,
     /// `(run-time key, trait)` -> the definition that implements the trait
     /// for that key. Types that are one kind of value at run time (`int`,
     /// `long`, `i64`, `isize`) cannot be told apart by a call, so each trait
@@ -665,6 +687,10 @@ impl<'a> InferCtx<'a> {
             builtin_def_types: HashMap::new(),
             builtin_targets:   HashMap::new(),
             builtin_key_impls: HashMap::new(),
+            impl_patterns:     HashMap::new(),
+            impl_failed:       HashSet::new(),
+            trait_impl_guards: HashMap::new(),
+            inherent_key_methods: HashMap::new(),
             struct_derives:   HashMap::new(),
             generic_arity:    HashMap::new(),
             current_tier:     TierAnnotation::High,
@@ -1436,9 +1462,17 @@ impl<'a> InferCtx<'a> {
         impls.sort_by_key(|(_, _, s)| s.start);
         for (trait_def, target, span) in impls {
             let own_args = self.trait_impl_args.get(&(trait_def, target)).cloned().unwrap_or_default();
-            let ty = match self.builtin_def_types.get(&target) {
-                Some(t) => *t,
-                None    => self.ctx.types.insert(SemaType::Named { def: target, args: Vec::new() }),
+            // An impl for a generic head is read in its own scope, with the
+            // bounds it wrote in force: `impl<T: Show> Loud for Box<T>` has
+            // `Show for Box<T>` when that impl asks no more than `T: Show`.
+            let pattern = self.impl_patterns.get(&span).cloned();
+            let scope = pattern.as_ref().map(|p| self.enter_impl_scope(p));
+            let ty = match &pattern {
+                Some(p) => p.self_ty,
+                None => match self.builtin_def_types.get(&target) {
+                    Some(t) => *t,
+                    None    => self.ctx.types.insert(SemaType::Named { def: target, args: Vec::new() }),
+                },
             };
             // The impl's own trait comes first in the closure, then what it
             // builds on, with the impl's arguments carried through
@@ -1456,11 +1490,15 @@ impl<'a> InferCtx<'a> {
                     break;
                 }
             }
-            let Some(b) = missing else { continue; };
+            let supertrait = missing.as_ref().map(|b| self.trait_ref_text(b.trait_def, &b.args));
+            let type_name = match &pattern {
+                Some(p) => self.display_type(p.self_ty),
+                None    => self.ctx.symbols.lookup(target).name.clone(),
+            };
+            if let Some(scope) = scope { self.leave_impl_scope(scope); }
+            let (Some(b), Some(supertrait)) = (missing, supertrait) else { continue; };
             let trait_name = self.trait_display_name(trait_def);
-            let supertrait = self.trait_ref_text(b.trait_def, &b.args);
             let derivable = self.prelude_traits.contains_key(&b.trait_def);
-            let type_name = self.ctx.symbols.lookup(target).name.clone();
             self.errors.add_type_error(TypeError::MissingSupertraitImpl {
                 trait_name, supertrait, derivable, type_name, span,
             });
@@ -2013,17 +2051,22 @@ impl<'a> InferCtx<'a> {
                 all
             }
             SemaType::Optional(inner) => if eq_like { self.prelude_status(name, inner) } else { Some(false) },
-            SemaType::Named { def, .. } => {
+            SemaType::Named { def, args } => {
                 let kind = &self.ctx.symbols.lookup(def).kind;
                 let by_default = match kind {
                     DefKind::Struct { .. } => self.struct_derives.get(&def).is_some_and(|d| d.contains(name)),
                     DefKind::Enum          => matches!(name, "PartialEq" | "Eq" | "Hash"),
                     _                      => return Some(false),
                 };
-                // A hand-written impl is the other way to have the trait.
-                let written = self.prelude_defs.get(name)
-                    .is_some_and(|t| self.trait_impls.contains_key(&(*t, def)));
-                if by_default || written { Some(true) }
+                // A hand-written impl is the other way to have the trait; an
+                // impl for a generic type may ask something of the arguments
+                // (`impl<T: PartialEq> PartialEq for Box<T>`).
+                let written = match self.prelude_defs.get(name).copied() {
+                    Some(t) if self.trait_impls.contains_key(&(t, def)) => self.impl_status(t, def, &args),
+                    _ => Some(false),
+                };
+                if by_default || written == Some(true) { Some(true) }
+                else if written.is_none() { None }
                 else if self.impls_registered { Some(false) }
                 else { None }
             }
@@ -2052,14 +2095,24 @@ impl<'a> InferCtx<'a> {
             SemaType::Param(_) => Some(self.current_bounds.get(&ty)
                 .is_some_and(|bs| bs.iter().any(|b| b.trait_def == trait_def))),
             _ if self.runtime_impl_key(ty).is_some() => {
-                // A primitive, a tuple or an array has the trait when an
-                // `impl` says so, which may not be registered yet.
-                if self.builtin_implements(ty, trait_def) { Some(true) }
+                // A primitive, a tuple, an array or a collection has the trait
+                // when an `impl` says so, which may not be registered yet.
+                if self.builtin_implements(ty, trait_def) {
+                    match self.builtin_def_of(ty) {
+                        Some(def) => {
+                            let args = self.builtin_head_args(ty);
+                            self.impl_status(trait_def, def, &args)
+                        }
+                        None => Some(true),
+                    }
+                }
                 else if self.impls_registered { Some(false) }
                 else { None }
             }
-            SemaType::Named { def, .. } => {
-                if self.trait_impls.contains_key(&(trait_def, def)) { Some(true) }
+            SemaType::Named { def, args } => {
+                if self.trait_impls.contains_key(&(trait_def, def)) {
+                    self.impl_status(trait_def, def, &args)
+                }
                 else if self.impls_registered { Some(false) }
                 else { None }
             }
@@ -2125,8 +2178,10 @@ impl<'a> InferCtx<'a> {
         if args.is_empty() { return Some(true); }
         let ty = self.peel_wrappers(ty);
         let have: Vec<TypeId> = match self.ctx.types.get(ty).clone() {
-            SemaType::Named { def, .. } => match self.trait_impl_args.get(&(trait_def, def)) {
-                Some(a) => a.clone(),
+            // An impl for a generic head writes its trait arguments in the
+            // head's numbering, so the receiver's own arguments go in.
+            SemaType::Named { def, args: recv } => match self.trait_impl_args.get(&(trait_def, def)).cloned() {
+                Some(a) => a.iter().map(|t| self.substitute(*t, &recv)).collect(),
                 None    => return Some(true),
             },
             SemaType::Param(_) => match self.current_bounds.get(&ty)
@@ -2134,10 +2189,13 @@ impl<'a> InferCtx<'a> {
                 Some(b) => b.args.clone(),
                 None    => return Some(true),
             },
-            _ => match self.builtin_def_of(ty).and_then(|d| self.trait_impl_args.get(&(trait_def, d))) {
-                Some(a) => a.clone(),
-                None    => return Some(true),
-            },
+            _ => {
+                let recv = self.builtin_head_args(ty);
+                match self.builtin_def_of(ty).and_then(|d| self.trait_impl_args.get(&(trait_def, d)).cloned()) {
+                    Some(a) => a.iter().map(|t| self.substitute(*t, &recv)).collect(),
+                    None    => return Some(true),
+                }
+            }
         };
         if have.len() != args.len() { return Some(true); }
         let mut agree = true;
@@ -2164,12 +2222,17 @@ impl<'a> InferCtx<'a> {
         if !self.reported_obligations.insert((span, trait_def)) { return; }
         let ty = self.peel_wrappers(ty);
         if dict_key && !self.reported_dict_keys.insert((span.line, ty)) { return; }
-        let applied: Vec<TypeId> = args.iter().map(|a| self.apply(*a)).collect();
+        let applied: Vec<TypeId> = args.iter().map(|a| self.deep_apply(*a)).collect();
         let trait_name = self.trait_ref_text(trait_def, &applied);
         let is_param = matches!(self.ctx.types.get(ty), SemaType::Param(_));
-        let type_name = if is_param { self.param_display_name(ty) } else { self.display_type(ty) };
+        let type_name = if is_param {
+            self.param_display_name(ty)
+        } else {
+            let shown = self.deep_apply(ty);
+            self.display_type(shown)
+        };
         self.errors.add_type_error(TypeError::UnsatisfiedBound {
-            type_name, trait_name, span,
+            type_name, trait_name, is_param, span,
         });
     }
 
@@ -2208,7 +2271,7 @@ impl<'a> InferCtx<'a> {
     fn method_shape_of_fn_type(&self, has_self: bool, fn_ty: TypeId, generics: MethodGenerics) -> Option<MethodShape> {
         match self.ctx.types.get(fn_ty).clone() {
             SemaType::Function { params, return_type, is_fallible, .. } =>
-                Some(MethodShape { has_self, params, return_type, is_fallible, generics }),
+                Some(MethodShape { has_self, params, return_type, is_fallible, generics, guard: None }),
             _ => None,
         }
     }
@@ -2236,7 +2299,7 @@ impl<'a> InferCtx<'a> {
         let (return_type, is_fallible) = self.return_type_to_sema(sig.return_type.as_ref());
         let generics = self.method_generics_of(sig.generic_params, base);
         self.pop_own_generic_scope(scope);
-        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible, generics }
+        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible, generics, guard: None }
     }
 
     /// Collect a trait: its required signatures and its default methods,
@@ -2346,6 +2409,7 @@ impl<'a> InferCtx<'a> {
         MethodShape {
             has_self: shape.has_self, params, return_type, is_fallible: shape.is_fallible,
             generics: MethodGenerics { base: 0, own },
+            guard: None,
         }
     }
 
@@ -2441,152 +2505,194 @@ impl<'a> InferCtx<'a> {
     fn register_trait_impls<'ast>(&mut self, program: &Program<'ast>) {
         for item in program.items {
             let Item::Impl(i) = item else { continue; };
-            let Some(path) = i.trait_path else { continue; };
-            let trait_name = path.last().copied().unwrap_or("");
+            if i.trait_path.is_none() || self.impl_failed.contains(&i.span) { continue; }
+            // A block for a generic head or with parameters of its own is
+            // checked in its own scope: its parameters, bounds and `Self`.
+            let pattern = self.impl_patterns.get(&i.span).cloned();
+            let scope = pattern.as_ref().map(|p| self.enter_impl_scope(p));
+            self.register_one_trait_impl(i, pattern.as_deref());
+            if let Some(scope) = scope { self.leave_impl_scope(scope); }
+        }
+    }
 
-            let trait_def = match self.resolve_trait_name(trait_name) {
-                Ok(id) => id,
-                Err(found) => {
-                    self.errors.add_type_error(TypeError::NotATrait {
-                        name: trait_name.to_string(), found, span: i.span,
+    /// One `impl Trait for Type` block: checked against its trait, and its
+    /// methods (with the trait's defaults it does not override) put in the
+    /// type's dispatch table. `pattern` is the analysis of a block for a
+    /// generic head, whose scope is already in force.
+    fn register_one_trait_impl<'ast>(&mut self, i: &ImplBlock<'ast>, pattern: Option<&ImplPattern>) {
+        let Some(path) = i.trait_path else { return; };
+        let trait_name = path.last().copied().unwrap_or("");
+
+        let trait_def = match self.resolve_trait_name(trait_name) {
+            Ok(id) => id,
+            Err(found) => {
+                self.errors.add_type_error(TypeError::NotATrait {
+                    name: trait_name.to_string(), found, span: i.span,
+                });
+                return;
+            }
+        };
+        // `@derive(X)` and `impl X for T` are two sources of the same impl.
+        if let Some(pname) = self.prelude_traits.get(&trait_def).copied() {
+            if let Some(td) = self.target_type_def_id(i.target_type) {
+                if self.struct_derives.get(&td).is_some_and(|d| d.contains(pname)) {
+                    let type_name = match pattern {
+                        Some(p) => self.display_type(p.self_ty),
+                        None    => self.ctx.symbols.lookup(td).name.clone(),
+                    };
+                    self.errors.add_type_error(TypeError::OverlappingImpl {
+                        trait_name: pname.to_string(), type_name, note: None, span: i.span,
                     });
-                    continue;
-                }
-            };
-            // `@derive(X)` and `impl X for T` are two sources of the same impl.
-            if let Some(pname) = self.prelude_traits.get(&trait_def).copied() {
-                if let Some(td) = self.target_type_def_id(i.target_type) {
-                    if self.struct_derives.get(&td).is_some_and(|d| d.contains(pname)) {
-                        let type_name = self.ctx.symbols.lookup(td).name.clone();
-                        self.errors.add_type_error(TypeError::OverlappingImpl {
-                            trait_name: pname.to_string(), type_name, note: None, span: i.span,
-                        });
-                        continue;
-                    }
+                    return;
                 }
             }
-            let builtin = self.builtin_target(i.target_type);
-            let target_def = match builtin {
-                Some((def, _)) => Some(def),
-                None => self.target_type_def_id(i.target_type).filter(|d|
-                    matches!(self.ctx.symbols.lookup(*d).kind, DefKind::Struct { .. } | DefKind::Enum)),
-            };
-            let Some(target_def) = target_def else {
-                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                    feature: "implementing a trait for a type that is not a struct, an enum, a primitive, a tuple or an array",
-                    span:    i.span,
-                });
-                continue;
-            };
-            if self.generic_arity.get(&target_def).copied().unwrap_or(0) > 0 {
-                self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                    feature: "implementing a trait for a generic type",
-                    span:    i.span,
-                });
-                continue;
-            }
-            let Some(info) = self.traits.get(&trait_def).cloned() else { continue; };
-            let type_name = self.ctx.symbols.lookup(target_def).name.clone();
-            let written = TraitBound { name: trait_name, args: i.trait_args, span: i.span };
-            self.check_trait_arg_count(&written, info.arity);
-            let impl_args = self.trait_arg_types(i.trait_args, info.arity);
+        }
+        // A collection is compared, hashed and cloned by identity at run
+        // time, so a hand-written prelude impl for one would say something
+        // the operators do not do.
+        if pattern.is_some_and(|p| p.builtin) && self.prelude_traits.contains_key(&trait_def) {
+            self.report_unsupported(impl_patterns::PRELUDE_ON_COLLECTION, i.span);
+            return;
+        }
+        let builtin = match pattern {
+            Some(p) if p.builtin => Some((p.head, p.self_ty)),
+            Some(_)              => None,
+            None                 => self.builtin_target(i.target_type),
+        };
+        let target_def = match (pattern, builtin) {
+            (Some(p), _)       => Some(p.head),
+            (None, Some((d, _))) => Some(d),
+            (None, None) => self.target_type_def_id(i.target_type).filter(|d|
+                matches!(self.ctx.symbols.lookup(*d).kind, DefKind::Struct { .. } | DefKind::Enum)),
+        };
+        let Some(target_def) = target_def else {
+            self.report_unsupported(impl_patterns::TARGET_FOR_TRAIT, i.span);
+            return;
+        };
+        let Some(info) = self.traits.get(&trait_def).cloned() else { return; };
+        // The target as a diagnostic writes it: `Box<T>`, `List<int>`.
+        let type_name = match pattern {
+            Some(p) => self.display_type(p.self_ty),
+            None    => self.ctx.symbols.lookup(target_def).name.clone(),
+        };
+        let written = TraitBound { name: trait_name, args: i.trait_args, span: i.span };
+        self.check_trait_arg_count(&written, info.arity);
+        let impl_args = self.trait_arg_types(i.trait_args, info.arity);
 
-            if self.trait_impls.contains_key(&(trait_def, target_def)) {
-                self.errors.add_type_error(TypeError::OverlappingImpl {
-                    trait_name: info.name.clone(), type_name, note: None, span: i.span,
-                });
-                continue;
-            }
-            if let Some((_, builtin_ty)) = builtin {
-                // A prelude trait the type already has natively cannot be
-                // implemented again; one it lacks (`Hash` for `double`) can.
-                if let Some(pname) = self.prelude_traits.get(&trait_def).copied() {
-                    if self.prelude_status_native(pname, builtin_ty) == Some(true) {
-                        self.errors.add_type_error(TypeError::OverlappingImpl {
-                            trait_name: info.name.clone(),
-                            type_name,
-                            note: Some("the built-in type already implements it".to_string()),
-                            span: i.span,
-                        });
-                        continue;
-                    }
+        if self.trait_impls.contains_key(&(trait_def, target_def)) {
+            // Generics are erased at run time, so one impl covers every
+            // `Box<..>`, and a second one is the same mistake as ever.
+            let note = pattern.map(|_| "generics are erased at run time, so one impl covers every instance of the type".to_string());
+            self.errors.add_type_error(TypeError::OverlappingImpl {
+                trait_name: info.name.clone(), type_name, note, span: i.span,
+            });
+            return;
+        }
+        if let Some((_, builtin_ty)) = builtin.filter(|_| pattern.is_none()) {
+            // A prelude trait the type already has natively cannot be
+            // implemented again; one it lacks (`Hash` for `double`) can.
+            if let Some(pname) = self.prelude_traits.get(&trait_def).copied() {
+                if self.prelude_status_native(pname, builtin_ty) == Some(true) {
+                    self.errors.add_type_error(TypeError::OverlappingImpl {
+                        trait_name: info.name.clone(),
+                        type_name,
+                        note: Some("the built-in type already implements it".to_string()),
+                        span: i.span,
+                    });
+                    return;
                 }
-                // Types that are one kind of value at run time cannot be told
-                // apart by a call, so a trait has one impl for all of them.
-                if let Some(key) = self.runtime_impl_key(builtin_ty) {
-                    if let Some(first) = self.builtin_key_impls.get(&(key.clone(), trait_def)).copied() {
-                        let first_name = self.ctx.symbols.lookup(first).name.clone();
-                        let kind = if key.starts_with("tuple") {
-                            "tuples with the same number of elements"
-                        } else if key == "List" {
+            }
+        }
+        // Types that are one kind of value at run time cannot be told apart
+        // by a call, so a trait has one impl for all of them.
+        if let Some((_, builtin_ty)) = builtin {
+            if let Some(key) = self.runtime_impl_key(builtin_ty) {
+                if let Some(first) = self.builtin_key_impls.get(&(key.clone(), trait_def)).copied() {
+                    let first_name = self.ctx.symbols.lookup(first).name.clone();
+                    let kind = if key.starts_with("tuple") {
+                        "tuples with the same number of elements"
+                    } else if key == "List" {
+                        let arrays = [first, target_def].iter().all(|d|
+                            self.builtin_def_types.get(d).is_some_and(|t|
+                                matches!(self.ctx.types.get(*t), SemaType::Array { .. })));
+                        if arrays {
                             "arrays of every length and element type"
                         } else {
-                            "types of the same kind"
-                        };
-                        self.errors.add_type_error(TypeError::OverlappingImpl {
-                            trait_name: info.name.clone(),
-                            type_name,
-                            note: Some(format!(
-                                "`{}` and `{}` are one kind of value at run time, and a call cannot tell {} apart",
-                                first_name, self.ctx.symbols.lookup(target_def).name, kind)),
-                            span: i.span,
-                        });
-                        continue;
-                    }
-                    self.builtin_key_impls.insert((key, trait_def), target_def);
-                }
-            }
-            self.trait_impls.insert((trait_def, target_def), i.span);
-            self.trait_impl_args.insert((trait_def, target_def), impl_args.clone());
-            self.require_def_bounds(trait_def, &impl_args, i.span);
-            let self_ty = match builtin {
-                Some((_, t)) => t,
-                None => self.ctx.types.insert(SemaType::Named { def: target_def, args: Vec::new() }),
-            };
-
-            for tm in &info.methods {
-                let impl_m = i.methods.iter().find(|m| m.name == tm.name.as_str());
-                let expected = self.instantiate_trait_shape(&tm.shape, self_ty, &impl_args);
-                match impl_m {
-                    Some(m) => {
-                        let fn_ty = self.ctx.resolutions.get(m.span)
-                            .and_then(|d| self.ctx.def_type(d));
-                        let found = fn_ty.and_then(|t|
-                            self.method_shape_of_fn_type(has_self_param(m.params), t, self.generics_at(m.span)));
-                        if let Some(found) = found {
-                            if !self.shapes_match(&expected, &found) {
-                                self.errors.add_type_error(TypeError::TraitMethodSignatureMismatch {
-                                    trait_name: info.name.clone(),
-                                    method:     tm.name.clone(),
-                                    expected:   self.shape_text(&expected),
-                                    found:      self.shape_text(&found),
-                                    span:       m.span,
-                                });
-                            }
+                            "arrays and lists of every length and element type"
                         }
-                        self.add_trait_method(target_def, trait_def, &tm.name, expected);
-                    }
-                    None if tm.has_default => {
-                        self.add_trait_method(target_def, trait_def, &tm.name, expected);
-                    }
-                    None => {
-                        self.errors.add_type_error(TypeError::TraitMethodMissing {
-                            trait_name: info.name.clone(),
-                            method:     tm.name.clone(),
-                            type_name:  type_name.clone(),
-                            span:       i.span,
-                        });
-                    }
-                }
-            }
-            for m in i.methods {
-                if !info.methods.iter().any(|tm| tm.name == m.name) {
-                    self.errors.add_type_error(TypeError::UnknownTraitMethod {
+                    } else {
+                        "types of the same kind"
+                    };
+                    self.errors.add_type_error(TypeError::OverlappingImpl {
                         trait_name: info.name.clone(),
-                        method:     m.name.to_string(),
-                        span:       m.span,
+                        type_name: type_name.clone(),
+                        note: Some(format!(
+                            "`{}` and `{}` are one kind of value at run time, and a call cannot tell {} apart",
+                            first_name, self.ctx.symbols.lookup(target_def).name, kind)),
+                        span: i.span,
+                    });
+                    return;
+                }
+                self.builtin_key_impls.insert((key, trait_def), target_def);
+            }
+        }
+        self.trait_impls.insert((trait_def, target_def), i.span);
+        self.trait_impl_args.insert((trait_def, target_def), impl_args.clone());
+        if let Some(g) = pattern.and_then(|p| p.guard.clone()) {
+            self.trait_impl_guards.insert((trait_def, target_def), g);
+        }
+        self.require_def_bounds(trait_def, &impl_args, i.span);
+        let self_ty = match (pattern, builtin) {
+            (Some(p), _)        => p.self_ty,
+            (None, Some((_, t))) => t,
+            (None, None) => self.ctx.types.insert(SemaType::Named { def: target_def, args: Vec::new() }),
+        };
+        let guard = pattern.and_then(|p| p.guard.clone());
+
+        for tm in &info.methods {
+            let impl_m = i.methods.iter().find(|m| m.name == tm.name.as_str());
+            let mut expected = self.instantiate_trait_shape(&tm.shape, self_ty, &impl_args);
+            match impl_m {
+                Some(m) => {
+                    let fn_ty = self.ctx.resolutions.get(m.span)
+                        .and_then(|d| self.ctx.def_type(d));
+                    let found = fn_ty.and_then(|t|
+                        self.method_shape_of_fn_type(has_self_param(m.params), t, self.generics_at(m.span)));
+                    if let Some(found) = found {
+                        if !self.shapes_match(&expected, &found) {
+                            self.errors.add_type_error(TypeError::TraitMethodSignatureMismatch {
+                                trait_name: info.name.clone(),
+                                method:     tm.name.clone(),
+                                expected:   self.shape_text(&expected),
+                                found:      self.shape_text(&found),
+                                span:       m.span,
+                            });
+                        }
+                    }
+                    expected.guard = guard.clone();
+                    self.add_trait_method(target_def, trait_def, &tm.name, expected);
+                }
+                None if tm.has_default => {
+                    expected.guard = guard.clone();
+                    self.add_trait_method(target_def, trait_def, &tm.name, expected);
+                }
+                None => {
+                    self.errors.add_type_error(TypeError::TraitMethodMissing {
+                        trait_name: info.name.clone(),
+                        method:     tm.name.clone(),
+                        type_name:  type_name.clone(),
+                        span:       i.span,
                     });
                 }
+            }
+        }
+        for m in i.methods {
+            if !info.methods.iter().any(|tm| tm.name == m.name) {
+                self.errors.add_type_error(TypeError::UnknownTraitMethod {
+                    trait_name: info.name.clone(),
+                    method:     m.name.to_string(),
+                    span:       m.span,
+                });
             }
         }
     }
@@ -2753,9 +2859,11 @@ impl<'a> InferCtx<'a> {
             return self.unknown();
         };
         if !self.type_implements(recv_ty, trait_def) {
+            let shown = self.deep_apply(recv_ty);
             self.errors.add_type_error(TypeError::UnsatisfiedBound {
-                type_name:  self.display_type(recv_ty),
+                type_name:  self.display_type(shown),
                 trait_name: info.name.clone(),
+                is_param:   matches!(self.ctx.types.get(recv_ty), SemaType::Param(_)),
                 span:       first_span,
             });
             return self.unknown();
@@ -2776,12 +2884,17 @@ impl<'a> InferCtx<'a> {
         if arity == 0 { return Vec::new(); }
         let ty = self.peel_wrappers(ty);
         let known: Option<Vec<TypeId>> = match self.ctx.types.get(ty).clone() {
-            SemaType::Named { def, .. } => self.trait_impl_args.get(&(trait_def, def)).cloned(),
+            SemaType::Named { def, args: recv } => self.trait_impl_args.get(&(trait_def, def)).cloned()
+                .map(|a| a.iter().map(|t| self.substitute(*t, &recv)).collect()),
             SemaType::Param(_) => self.current_bounds.get(&ty)
                 .and_then(|bs| bs.iter().find(|b| b.trait_def == trait_def))
                 .map(|b| b.args.clone()),
-            _ => self.builtin_def_of(ty)
-                .and_then(|d| self.trait_impl_args.get(&(trait_def, d)).cloned()),
+            _ => {
+                let recv = self.builtin_head_args(ty);
+                self.builtin_def_of(ty)
+                    .and_then(|d| self.trait_impl_args.get(&(trait_def, d)).cloned())
+                    .map(|a| a.iter().map(|t| self.substitute(*t, &recv)).collect())
+            }
         };
         match known {
             Some(a) if a.len() == arity => a,
@@ -2798,12 +2911,19 @@ impl<'a> InferCtx<'a> {
         if let Some(name) = self.prelude_traits.get(&trait_def).copied() {
             return self.prelude_status(name, ty).unwrap_or(true);
         }
-        match self.ctx.types.get(ty) {
-            SemaType::Named { def, .. } => self.trait_impls.contains_key(&(trait_def, *def)),
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Named { def, args } => self.trait_impls.contains_key(&(trait_def, def))
+                && self.impl_status(trait_def, def, &args) != Some(false),
             SemaType::Param(_) => self.current_bounds.get(&ty)
                 .is_some_and(|bs| bs.iter().any(|b| b.trait_def == trait_def)),
             SemaType::Unknown | SemaType::Var(_) => true,
-            _ => self.builtin_implements(ty, trait_def),
+            _ => match self.builtin_def_of(ty) {
+                Some(def) if self.builtin_implements(ty, trait_def) => {
+                    let args = self.builtin_head_args(ty);
+                    self.impl_status(trait_def, def, &args) != Some(false)
+                }
+                _ => false,
+            },
         }
     }
 
@@ -2970,20 +3090,12 @@ impl<'a> InferCtx<'a> {
                 // already exists to append onto, regardless of whether the
                 // `extend`/`impl` block appears before or after the
                 // `struct` it targets in the source file.
-                Item::Impl(i)     => {
-                    let prev = self.self_type;
-                    self.self_type = self.self_type_for_target(i.target_type);
-                    let base = self.target_arity(i.target_type);
-                    for m in i.methods { self.collect_method_sig(m, base); }
-                    self.self_type = prev;
-                }
-                Item::Extend(x) => {
-                    let prev = self.self_type;
-                    self.self_type = self.self_type_for_target(x.target_type);
-                    let base = self.target_arity(x.target_type);
-                    for m in x.methods { self.collect_method_sig(m, base); }
-                    self.self_type = prev;
-                }
+                Item::Impl(i)     => self.collect_block_sigs(
+                    i.generic_params, i.target_type, i.methods, i.span, i.span, i.trait_path.is_some(),
+                ),
+                Item::Extend(x) => self.collect_block_sigs(
+                    x.generic_params, x.target_type, x.methods, x.span, x.target_type.span, false,
+                ),
                 Item::Trait(t) => self.collect_trait_info(t),
                 Item::TypeAlias(_) => {} // expanded up front by `collect_alias_sigs`
             }
@@ -3044,7 +3156,12 @@ impl<'a> InferCtx<'a> {
             SemaType::Char => "char",
             SemaType::Str  => "string",
             SemaType::Tuple(elems) => return Some(format!("tuple{}", elems.len())),
-            SemaType::Array { .. } => "List",
+            // An array shares the kind with `List`: one value at run time.
+            SemaType::Array { .. } | SemaType::List(_) => "List",
+            SemaType::Dictionary(..) => "Dictionary",
+            SemaType::Queue(_)       => "Queue",
+            SemaType::Stack(_)       => "Stack",
+            SemaType::InlineList(_)  => "InlineList",
             _ => return None,
         };
         Some(key.to_string())
@@ -3080,6 +3197,10 @@ impl<'a> InferCtx<'a> {
     fn builtin_def_of(&self, ty: TypeId) -> Option<DefId> {
         if self.builtin_defs.is_empty() { return None; }
         self.runtime_impl_key(ty)?;
+        // A generic head has one definition whatever its arguments.
+        if let Some(head) = self.builtin_head_name(ty) {
+            return self.builtin_defs.get(head).copied();
+        }
         self.builtin_defs.get(&self.builtin_text(ty)).copied()
     }
 
@@ -3141,7 +3262,12 @@ impl<'a> InferCtx<'a> {
             .iter()
             .find(|(n, m)| n == field && m.has_self)
             .map(|(_, m)| m.clone())?;
-        let inst = self.instantiate_method(&m, &[]);
+        // A collection's own type arguments are the head's (`List<int>` is the
+        // head `List` applied to `int`); other built-in types have none.
+        let recv_args = self.builtin_head_args(bare);
+        // A method an impl for `List<int>` gave is not a method of `List<string>`.
+        if !self.apply_impl_guard(&m.guard, &recv_args, callee_span) { return None; }
+        let inst = self.instantiate_method(&m, &recv_args);
         self.check_method_args(&inst.params, args, call_span);
         self.require_method_bounds(&m, &inst, args, call_span);
         Some(self.maybe_arena_ref(inst.return_type))
@@ -3187,33 +3313,43 @@ impl<'a> InferCtx<'a> {
     /// actually asked to fix is unaffected.
     fn register_extend_impl_methods<'ast>(&mut self, program: &Program<'ast>) {
         for item in program.items {
-            let (target_type, methods) = match item {
-                Item::Extend(x) => (x.target_type, x.methods),
-                Item::Impl(i) if i.trait_path.is_none() => (i.target_type, i.methods),
+            let (target_type, methods, key) = match item {
+                Item::Extend(x) => (x.target_type, x.methods, x.span),
+                Item::Impl(i) if i.trait_path.is_none() => (i.target_type, i.methods, i.span),
                 _ => continue,
             };
-            let def_id = match self.target_type_def_id(target_type) {
-                Some(d) => d,
-                None => match self.builtin_target(target_type) {
-                    Some((d, _)) => d,
-                    None => {
-                        // A collection, an optional and the rest have no
-                        // definition to hang methods on. Saying so beats a
-                        // call that panics at run time.
-                        if matches!(target_type.kind,
-                            TypeKind::List(..) | TypeKind::Dictionary(..) | TypeKind::Set(..)
-                            | TypeKind::Queue(..) | TypeKind::Stack(..) | TypeKind::Optional(..)
-                            | TypeKind::Slice(..) | TypeKind::Function(..))
-                        {
-                            self.errors.add_type_error(TypeError::UnsupportedTraitFeature {
-                                feature: "extending a type that is not a struct, an enum, a primitive, a tuple or an array",
-                                span:    target_type.span,
-                            });
+            if self.impl_failed.contains(&key) { continue; }
+            let pattern = self.impl_patterns.get(&key).cloned();
+            let def_id = match &pattern {
+                Some(p) => p.head,
+                None => match self.target_type_def_id(target_type) {
+                    Some(d) => d,
+                    None => match self.builtin_target(target_type) {
+                        Some((d, _)) => d,
+                        None => {
+                            // Anything else has no definition to hang methods
+                            // on. Saying so beats a call that panics at run
+                            // time.
+                            if matches!(target_type.kind,
+                                TypeKind::List(..) | TypeKind::Dictionary(..) | TypeKind::Set(..)
+                                | TypeKind::Queue(..) | TypeKind::Stack(..) | TypeKind::Optional(..)
+                                | TypeKind::Slice(..) | TypeKind::Function(..))
+                            {
+                                self.report_unsupported(impl_patterns::TARGET_FOR_EXTEND, target_type.span);
+                            }
+                            continue;
                         }
-                        continue;
-                    }
+                    },
                 },
             };
+            let guard = pattern.as_ref().and_then(|p| p.guard.clone());
+            // The run-time kind a built-in type's methods are called under.
+            // Two definitions of one kind (`int` and `long`, an array and a
+            // `List<T>`) share a method table at run time.
+            let kind_key = self.builtin_def_types.get(&def_id).copied()
+                .and_then(|t| self.runtime_impl_key(t));
+            let generic_head = pattern.is_some()
+                || self.generic_arity.get(&def_id).copied().unwrap_or(0) > 0;
             for m in methods {
                 let Some(fn_ty) = self.ctx.def_type(
                     self.ctx.resolutions.get(m.span).unwrap_or(DefId::INVALID)
@@ -3223,13 +3359,29 @@ impl<'a> InferCtx<'a> {
                         ParamKind::SelfVal | ParamKind::SelfMut
                         | ParamKind::SelfRef | ParamKind::SelfRefMut))
                     .unwrap_or(false);
+                // One inherent method of a name per generic head, and one per
+                // built-in kind: a call cannot tell the instances apart.
+                let taken_here = generic_head && self.struct_methods.get(&def_id)
+                    .is_some_and(|ms| ms.iter().any(|(n, _)| n == m.name)
+                        && !self.trait_entries.contains(&(def_id, m.name.to_string())));
+                let taken_by_kind = kind_key.as_ref().is_some_and(|k|
+                    self.inherent_key_methods
+                        .get(&(k.clone(), m.name.to_string()))
+                        .is_some_and(|other| *other != def_id));
+                if taken_here || taken_by_kind {
+                    self.report_unsupported(impl_patterns::DUPLICATE_METHOD, m.span);
+                    continue;
+                }
+                if let Some(k) = &kind_key {
+                    self.inherent_key_methods.insert((k.clone(), m.name.to_string()), def_id);
+                }
                 if let SemaType::Function { params, return_type, is_fallible, .. } =
                     self.ctx.types.get(fn_ty).clone()
                 {
                     let generics = self.generics_at(m.span);
                     self.struct_methods.entry(def_id).or_default().push((
                         m.name.to_string(),
-                        MethodShape { has_self, params, return_type, is_fallible, generics },
+                        MethodShape { has_self, params, return_type, is_fallible, generics, guard: guard.clone() },
                     ));
                 }
             }
@@ -3346,7 +3498,7 @@ impl<'a> InferCtx<'a> {
                         self.ctx.types.get(fn_ty).clone()
                     {
                         methods.push((m.name.to_string(), MethodShape {
-                            has_self, params, return_type, is_fallible, generics,
+                            has_self, params, return_type, is_fallible, generics, guard: None,
                         }));
                     }
                 }
@@ -3861,8 +4013,8 @@ impl<'a> InferCtx<'a> {
                 Item::Struct(s)   => self.infer_struct_bodies(s),
                 Item::Const(c)    => self.infer_const_body(c),
                 Item::Static(s)   => self.infer_static_body(s),
-                Item::Impl(i) => self.infer_extend_impl_bodies(i.target_type, i.methods),
-                Item::Extend(x) => self.infer_extend_impl_bodies(x.target_type, x.methods),
+                Item::Impl(i) => self.infer_block_bodies(i.span, i.target_type, i.methods),
+                Item::Extend(x) => self.infer_block_bodies(x.span, x.target_type, x.methods),
                 Item::Trait(t) => self.infer_trait_default_bodies(t),
                 Item::Enum(_) | Item::TypeAlias(_) => {}
             }
@@ -3963,6 +4115,25 @@ impl<'a> InferCtx<'a> {
         self.self_type = prev_self_type;
         self.current_struct_type = prev_self;
         self.pop_generic_scope(prev_generics);
+    }
+
+    /// The bodies of one `impl` or `extend` block. A block for a generic head
+    /// or with parameters of its own is read in its own scope (its parameters,
+    /// their bounds, `Self`); a block whose target was reported is not read.
+    fn infer_block_bodies<'ast>(
+        &mut self,
+        key:         Span,
+        target_type: &'ast Type<'ast>,
+        methods:     &'ast [MethodDecl<'ast>],
+    ) {
+        if self.impl_failed.contains(&key) { return; }
+        if let Some(p) = self.impl_patterns.get(&key).cloned() {
+            let scope = self.enter_impl_scope(&p);
+            for m in methods { self.infer_method_body(m, p.arity); }
+            self.leave_impl_scope(scope);
+            return;
+        }
+        self.infer_extend_impl_bodies(target_type, methods);
     }
 
     /// The `extend`/`impl` twin of `infer_struct_bodies` just above: sets
@@ -4693,6 +4864,9 @@ impl<'a> InferCtx<'a> {
                                     let fresh_args: Vec<TypeId> = (0..arity).map(|_| self.fresh_var()).collect();
                                     self.require_def_bounds(def_id, &fresh_args, expr.span);
                                     let inst = self.instantiate_method(&m, &fresh_args);
+                                    // What the block that gave the function asks of the
+                                    // type's arguments (`extend Box<int> { fn make() .. }`).
+                                    self.apply_impl_guard(&m.guard, &fresh_args, expr.span);
                                     self.check_method_args(&inst.params, args, expr.span);
                                     self.require_method_bounds(&m, &inst, args, expr.span);
                                     return self.maybe_arena_ref(inst.return_type);
@@ -4982,6 +5156,18 @@ impl<'a> InferCtx<'a> {
                                 if !calls_a_field { return match found_method {
                                     Some((_, m)) => {
                                         let m = m.clone();
+                                        // A method an impl for `Box<int>` gave is not a method of
+                                        // `Box<string>`.
+                                        if !self.apply_impl_guard(&m.guard, &recv_args, callee.span) {
+                                            let shown = self.deep_apply(receiver_ty);
+                                            let on_type = self.display_type(shown);
+                                            self.errors.add_type_error(TypeError::NoSuchMethod {
+                                                method: field.to_string(),
+                                                on_type,
+                                                span:   callee.span,
+                                            });
+                                            return self.unknown();
+                                        }
                                         let inst = self.instantiate_method(&m, &recv_args);
                                         self.check_method_args(&inst.params, args, expr.span);
                                         self.require_method_bounds(&m, &inst, args, expr.span);
@@ -5819,6 +6005,22 @@ impl<'a> InferCtx<'a> {
                     return self.bool_ty();
                 }
                 let resolved = self.apply(lhs);
+                // A hand-written `PartialOrd` or `Ord` for a user type; for a
+                // generic one it may ask something of the arguments.
+                let named_written = match self.ctx.types.get(resolved).clone() {
+                    SemaType::Named { def, args } => {
+                        let mut any = false;
+                        for name in ["PartialOrd", "Ord"] {
+                            let Some(t) = self.prelude_defs.get(name).copied() else { continue; };
+                            if self.trait_impls.contains_key(&(t, def))
+                                && self.impl_status(t, def, &args) != Some(false) {
+                                any = true;
+                            }
+                        }
+                        any
+                    }
+                    _ => false,
+                };
                 let orderable = match self.ctx.types.get(resolved) {
                     SemaType::Int | SemaType::Float | SemaType::Double | SemaType::Str => true,
                     // The sized integers and `f32`/`f64` were missing from
@@ -5843,11 +6045,9 @@ impl<'a> InferCtx<'a> {
                     // Derived, or hand-written (`impl PartialOrd`, or `impl Ord`
                     // which needs it).
                     SemaType::Named { def, .. } => {
-                        let written = |name: &str| self.prelude_defs.get(name)
-                            .is_some_and(|t| self.trait_impls.contains_key(&(*t, *def)));
                         self.struct_derives.get(def)
                             .is_some_and(|d| d.contains("PartialOrd") || d.contains("Ord"))
-                            || written("PartialOrd") || written("Ord")
+                            || named_written
                     }
                     // Genuinely unresolved (e.g. a Linqerizer lambda
                     // parameter's type, still pending unification with

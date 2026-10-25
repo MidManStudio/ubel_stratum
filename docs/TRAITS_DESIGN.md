@@ -42,7 +42,8 @@
 | **S3b** | **Built** | Generic traits (`trait Convert<T>`, `impl Convert<int> for X`), bounds with arguments (`T: Convert<int>`, `T: Convert<U>`) and generic supertraits (`trait Wide<T>: Convert<T>`), with one impl of a trait per type. See "What S3b settled" below. |
 | **S3c** | **Built** | A method's own generic parameters with bounds (including generic methods in traits) and bounds on a type alias parameter. See "What S3c settled" below. |
 | **S3d** | **Built** | Impls and `extend` blocks for primitives, tuples and arrays, and hand-written prelude traits where a built-in type lacks them. See "What S3d settled" below. |
-| S3e to S6 | Planned | As in section 4. |
+| **S3e** | **Built** | Impls and `extend` blocks for generic types: a generic struct or enum, and `List`, `Dictionary`, `Queue`, `Stack` and `InlineList`. Impl parameters, conditional impls, impls for one instance (`Box<int>`). See "What S3e settled" below. |
+| S4 to S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -521,6 +522,89 @@ What reading the code established before this was decided:
   (there is no path syntax for `int`). The generic built-ins wait for impls of
   generic types.
 
+### What S3e settled
+
+- **Scope.** `impl<T: Show> Show for Box<T>`, `impl Show for Box<int>`,
+  `impl<K: Hash, V> Size for Dictionary<K, V>`, an inherent `impl<T> Box<T> { .. }`
+  and `extend<T> Box<T> { .. }`. The targets are a generic struct or enum and the
+  generic built-ins `List`, `Dictionary`, `Queue`, `Stack` and `InlineList`; an alias
+  of one of them is that head. The parser reads the parameters after `impl` and
+  `extend` (`ImplBlock.generic_params`, `ExtendDecl.generic_params`, empty when
+  absent).
+- **A pattern per block.** A block with parameters, or for a generic head with
+  arguments written, is analysed once in `collect_signatures`
+  (`sema/type_infer/impl_patterns.rs`, `ImplPattern`, stored by the block's span).
+  Blocks for anything else (a primitive, a tuple, an array, a struct or enum
+  without parameters, `extend Box { .. }` on a generic struct) keep the older paths
+  untouched.
+- **Numbering by place.** Each impl parameter must occupy exactly one top-level
+  argument of the head and is numbered by that position: in `impl<X, Y> Tr for
+  Pair<Y, X>` the parameter `X` is the second parameter of `Pair`. Every method
+  shape then stays in the head's own numbering, so a call substitutes the
+  receiver's arguments exactly as for a method written inside the struct, and the
+  tables keyed by a definition (`struct_methods`, `trait_impls`, `trait_impl_args`,
+  the ambiguity tables) serve generic types without a second implementation. A
+  built-in head gets one synthetic definition per head (`DefKind::BuiltinType`,
+  keyed by the head's name).
+- **What the impl says about the arguments is a guard.** `ImplGuard` holds the
+  concrete argument written at a position (`Box<int>`) and the bounds written on a
+  parameter. It is attached to every method the block supplies and to the
+  `(trait, head)` pair, and only when there is something to check. A call of a
+  method whose concrete position disagrees with the receiver is `TYPE-104` (the
+  receiver has no such method), a bound the receiver's argument lacks is
+  `TYPE-126` at the call, and `bound_status`, `bound_args_status`, `trait_args_of`,
+  `type_implements` and the prelude status all consult the guard, so a conditional
+  impl is also a conditional answer to a bound (`Box<Plain>: Show` fails when
+  `Plain` has no `Show`). An argument that is still an inference variable is bound
+  by a concrete position: the only impl decides it.
+- **Bounds on impl parameters.** `impl<T: Show> Show for Box<T>` makes the impl
+  conditional and puts `T: Show` in force in the bodies. A bound the head itself
+  declares (`struct Need<T: Show>`) must be restated on the parameter (`TYPE-126`
+  naming the parameter, suggesting a bound), is checked on a concrete argument, and
+  holds inside the block. A `Dictionary` key position needs `Hash`.
+- **What is not accepted (`TYPE-129`).** A parameter repeated (`Pair<T, T>`) or
+  nested (`Box<List<T>>`), a parameter the target does not use, a blanket impl
+  (`impl<T> Tr for T`), an optional, a fallible or a task (a method call on `T?`
+  resolves on the payload and the value is the inner value at run time, so these
+  are transparent wrappers), a `Set`, a slice, a function type, and `Pool` and
+  `Handle`. A generic head written without arguments in a trait impl is `TYPE-108`;
+  in `extend` and an inherent `impl` it keeps its earlier meaning (every instance,
+  the head's own parameters, not named).
+- **Pool and Handle are not targets yet.** A written `Pool<T>` or `Handle<T>`
+  is not a type sema understands (it converts to the unknown type; a `Pool` value
+  is only made by `with pool<T>`), so there is nothing for an impl to be checked
+  against. They were agreed as targets while the design was open; this fact was
+  found while building and they are reported until written Pool and Handle types
+  exist.
+- **Generics are erased at run time.** A trait has one impl per head whatever the
+  arguments, so `impl Show for Box<int>` together with `impl Show for Box<string>`
+  is `TYPE-128` with a note, as are a generic and a concrete impl of one trait. A
+  method name has one inherent definition per head (`TYPE-129`), because a call
+  cannot tell `Box<int>` from `Box<string>`; the same rule now covers built-in
+  types that are one kind of value at run time (`extend int` and `extend long` both
+  defining `tag` used to pass sema and call whichever block registered last).
+- **Run time.** An impl for a user struct or enum needed no change: it is
+  registered under the type's name. The five built-in heads are keyed by their
+  names (`List` shared with arrays and slices, `Dictionary`, `Queue`, `Stack`,
+  `InlineList`) in `ast::types::builtin_impl_key` and `Value::impl_key`, and the
+  unit test that pins the two covers them. An array impl and a `List<T>` impl of one
+  trait overlap (`TYPE-128`). A native method still wins over a block's method of
+  the same name.
+- **Prelude traits on collections.** A hand-written `PartialEq`, `Eq`,
+  `PartialOrd`, `Ord`, `Hash` or `Clone` for a `List`, `Dictionary`, `Queue`,
+  `Stack` or `InlineList` is `TYPE-129`: the run time compares, hashes and clones a
+  collection by identity, and the operators do not consult user impls for one, so
+  an impl would say something `==` does not do. A prelude impl for a user generic
+  struct is accepted and drives the operators.
+- **Diagnostics.** A type in a message is written as the block writes it
+  (`Box<T>`, `List<int>`), and an unsatisfied bound on a type parameter now
+  suggests declaring the bound instead of adding an impl (`UnsatisfiedBound`
+  carries `is_param`). An inference variable inside a reported type is replaced by
+  what it was solved to (`Box<Plain>`, not `Box<?T9>`).
+- **Not built.** Associated types and blanket impls (deferred as decided), nested
+  impl patterns, impls for the transparent wrappers, for `Set`, slices, function
+  types, `Pool` and `Handle`, and prelude traits for collections.
+
 ### D7: what has to be specified before S4
 
 Two facts found while building S1a bear on the tier design.
@@ -729,7 +813,8 @@ exact-count tests, and the docs updated in the same bundle.
 | **S3b** | Generic traits, bounds with arguments and generic supertraits (built). | D4 ii |
 | **S3c** | A method's own generic parameters with bounds, generic methods in traits, and bounds on a type alias parameter (built). | D4 ii |
 | **S3d** | Impls and `extend` blocks for primitives, tuples and arrays (built). | D4 ii |
-| S3e onward | Impls for generic types (which brings `List`, `Dictionary`, `Option` and the other generic built-ins) and associated types. The order is chosen with the project owner. | D4 ii |
+| **S3e** | Impls and `extend` blocks for generic types and the generic built-in collections (built). | D4 ii |
+| Later | Associated types, blanket impls, impls for `Option`-like wrappers and for `Pool` and `Handle`. The order is chosen with the project owner. | D4 ii |
 | **S4** | Tier on trait method signatures. | D7 a |
 | **S5** | Language-item traits, one decision and one delivery each: `Display`/`Debug`, `Iterable<T>`, operators. | D5 C |
 | **S6** | `dyn Trait` in `HIGH`. | D2 B |

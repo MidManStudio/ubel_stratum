@@ -128,9 +128,11 @@ verified safe.
   can declare generic methods that an impl repeats; a bound on a type alias's
   parameter holds at every use of the alias. A primitive, a tuple or an array
   can implement a trait and take `extend` methods, and a prelude trait can be
-  written by hand where the type lacks it (`Hash` for `double`). Next: impls
-  for generic types (which brings `List` and `Dictionary`), associated types,
-  tiers on trait methods, language-item traits, and `dyn Trait`
+  written by hand where the type lacks it (`Hash` for `double`). Impls and `extend`
+  blocks also work for generic types (`impl<T: Show> Show for Box<T>`, `impl Show
+  for Box<int>`, `extend<T> List<T>`), for `List`, `Dictionary`, `Queue`, `Stack`
+  and `InlineList`, and an impl can be conditional on a bound of its parameter. Next:
+  associated types, tiers on trait methods, language-item traits, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

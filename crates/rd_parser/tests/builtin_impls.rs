@@ -564,16 +564,18 @@ fn a_prelude_impl_on_a_built_in_is_used_through_a_bound() {
 // ── Targets that stay unsupported ────────────────────────────────
 
 #[test]
-fn an_impl_or_extend_for_a_collection_is_type_129() {
-    let imp = with_show("impl Show for List<int> { fn show(self) string { return \"l\" } }\nfn main() void { println(1) }\n");
+fn an_impl_or_extend_for_a_set_is_type_129() {
+    // List, Dictionary, Queue, Stack and InlineList take impls since S3e
+    // (tests/generic_impls.rs); a Set has no value of its own at run time.
+    let imp = with_show("impl Show for Set<int> { fn show(self) string { return \"l\" } }\nfn main() void { println(1) }\n");
     assert_eq!(codes(&imp), (Stage::Sema, vec!["TYPE-129"]));
     assert_eq!(messages(&imp), vec![
-        "implementing a trait for a type that is not a struct, an enum, a primitive, a tuple or an array is not supported yet",
+        "implementing a trait for a type that is not a struct, an enum, a primitive, a tuple, an array, a List, a Dictionary, a Queue, a Stack or an InlineList is not supported yet",
     ]);
-    let ext = "extend List<int> { fn first2(self) int { return 1 } }\nfn main() void { println(1) }\n";
+    let ext = "extend Set<int> { fn first2(self) int { return 1 } }\nfn main() void { println(1) }\n";
     assert_eq!(codes(ext), (Stage::Sema, vec!["TYPE-129"]));
     assert_eq!(messages(ext), vec![
-        "extending a type that is not a struct, an enum, a primitive, a tuple or an array is not supported yet",
+        "extending a type that is not a struct, an enum, a primitive, a tuple, an array, a List, a Dictionary, a Queue, a Stack or an InlineList is not supported yet",
     ]);
 }
 

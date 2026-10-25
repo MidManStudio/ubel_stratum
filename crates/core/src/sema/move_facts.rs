@@ -644,7 +644,7 @@ mod tests {
             span: Z,
         });
         let items = arena.alloc_slice_copy(&[Item::Extend(ExtendDecl {
-            attributes: &[], target_type: ty, methods, span: Z,
+            attributes: &[], generic_params: &[], target_type: ty, methods, span: Z,
         })]);
         let program = Program { package: None, imports: &[], items, span: Z };
         let names = user_method_names(&program);

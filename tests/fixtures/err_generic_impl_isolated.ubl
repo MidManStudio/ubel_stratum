@@ -1,0 +1,32 @@
+// tests/fixtures/err_generic_impl_isolated.ubl
+// Impl targets that cannot be read. A type parameter repeated or nested in
+// the target, one the target does not use, a blanket impl, an optional or a
+// task, a Set, and a Pool are reported once each as not supported yet
+// (TYPE-129); a generic head written without its arguments in a trait impl,
+// and with the wrong number of them, are count mistakes (TYPE-108). The valid
+// impl in between is not reported.
+// Expected: sema FAIL (UnsupportedTraitFeature TYPE-129 seven times,
+// GenericArgCountMismatch TYPE-108 three times).
+
+trait Show {
+    fn show(self) string
+}
+
+struct Box<T> { v: T }
+struct Pair<A, B> { a: A, b: B }
+
+impl<T> Show for Pair<T, T> { fn show(self) string { return "repeated" } }
+impl<T> Show for Box<List<T>> { fn show(self) string { return "nested" } }
+impl<T> Show for Box<int> { fn show(self) string { return "unused" } }
+impl<T> Show for T { fn show(self) string { return "blanket" } }
+impl Show for int? { fn show(self) string { return "optional" } }
+impl Show for Set<int> { fn show(self) string { return "set" } }
+impl Show for Pool<int> { fn show(self) string { return "pool" } }
+
+impl Show for Box { fn show(self) string { return "bare" } }
+impl Show for List { fn show(self) string { return "bare list" } }
+impl Show for Box<int, int> { fn show(self) string { return "count" } }
+
+impl<T> Show for Box<T> { fn show(self) string { return "fine" } }
+
+fn main() void { }

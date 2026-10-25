@@ -134,12 +134,12 @@ AssociatedType  ::= "type" Ident
 DefaultMethod   ::= "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec? Block
 
 (* ── Impl ── *)
-ImplBlock     ::= "impl" (QualifiedIdent GenericArgs? "for")? TypeExpr "{" ImplItem* "}"
+ImplBlock     ::= "impl" GenericParams? (QualifiedIdent GenericArgs? "for")? TypeExpr "{" ImplItem* "}"
 ImplItem      ::= MethodDecl
 
 (* ── Extend ── *)
 (* Adds methods to existing types without modifying them.      *)
-ExtendDecl    ::= "extend" TypeExpr ("{" ExtendItem* "}")?
+ExtendDecl    ::= "extend" GenericParams? TypeExpr ("{" ExtendItem* "}")?
 ExtendItem    ::= MethodDecl
 
 (* ── Constants, Statics and Type Aliases ── *)

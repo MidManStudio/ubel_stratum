@@ -493,7 +493,7 @@ mod tests {
         let ty = arena.alloc(Type { kind: TypeKind::Named { path: &["Foo"], args: &[] }, span: Z });
         let methods: &[MethodDecl] = arena.alloc_slice_copy(&[method]);
         let impl_block = ImplBlock {
-            attributes: &[], tier: None, trait_path: None, trait_args: &[], target_type: ty, methods, span: Z,
+            attributes: &[], tier: None, generic_params: &[], trait_path: None, trait_args: &[], target_type: ty, methods, span: Z,
         };
 
         let mut c = Counter::default();

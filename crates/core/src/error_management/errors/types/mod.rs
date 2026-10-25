@@ -203,6 +203,9 @@ pub enum TypeError {
     UnsatisfiedBound {
         type_name:  String,
         trait_name: String,
+        /// The type is a type parameter, which gets the trait from a bound
+        /// written where it is declared, not from an `impl`.
+        is_param:   bool,
         span:       Span,
     },
 
@@ -591,6 +594,8 @@ impl TypeError {
             TypeError::UnknownTraitMethod { .. } =>
                 Some("move it to an inherent `extend` block, or declare it in the trait".to_string()),
 
+            TypeError::UnsatisfiedBound { type_name, trait_name, is_param: true, .. } =>
+                Some(format!("declare the bound where `{}` is declared, as in `<{}: {}>`", type_name, type_name, trait_name)),
             TypeError::UnsatisfiedBound { type_name, trait_name, .. } =>
                 Some(format!("add `impl {} for {} {{ .. }}`", trait_name, type_name)),
 

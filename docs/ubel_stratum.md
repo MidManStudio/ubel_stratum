@@ -1517,3 +1517,30 @@ through sema to 260, 252 and 137, with 136 interpreted. The mutation pass is des
 under `tests/builtin_impls.rs` in `docs/ubel_stratum_rd.md`. Every line it wrote was
 checked for em dashes and first or second person.
 
+A twenty-second delivery (traits slice S3e) touched `ast/declarations.rs`
+(`ImplBlock.generic_params`, `ExtendDecl.generic_params`),
+`rd_parser/src/parsers/parse_decl.rs`, `ast/types.rs` (`builtin_impl_key`),
+`interpreter/value.rs` (`Value::impl_key`), the TypeError enum
+(`UnsatisfiedBound` carries `is_param`), `sema/type_infer.rs` and a new module
+`sema/type_infer/impl_patterns.rs`. Sema analyses each `impl` or `extend` block for a
+generic head, or with parameters, into an `ImplPattern` (`build_impl_pattern`): each
+impl parameter is numbered by the argument of the head it occupies, the block's
+methods stay in the head's own numbering, and what the impl asks of the arguments is
+an `ImplGuard` (concrete positions and bounds) attached to its methods and to the
+`(trait, head)` pair. `bound_status`, `bound_args_status`, `trait_args_of`,
+`type_implements`, `prelude_status_native`, the instance, associated and built-in
+method calls and `check_impl_supertraits` consult it. The five built-in generic
+heads get a synthetic definition each and run-time keys in `builtin_impl_key` and
+`Value::impl_key`; an impl for a user struct needed no interpreter change.
+`register_trait_impls` became a per-impl function that runs in the block's scope,
+`register_extend_impl_methods` rejects a second inherent definition of one method
+name for a generic head or a run-time kind (`extend int` with `extend long`), and a
+reported block is not read. It added `tests/generic_impls.rs` (82 tests), four
+fixtures (`ok_generic_impl_isolated`, `err_generic_impl_isolated`,
+`ok_generic_impl_combined`, `err_generic_impl_combined`), changed three tests
+(`tests/traits.rs` twice, `tests/builtin_impls.rs`) and one fixture
+(`err_builtin_impl_isolated` uses `Set` where it used `List`). The workspace has
+884 passing tests. The mutation pass is described under `tests/generic_impls.rs`
+in `docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first
+or second person.
+

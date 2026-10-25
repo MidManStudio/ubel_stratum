@@ -1,0 +1,76 @@
+// tests/fixtures/ok_generic_impl_combined.ubl
+// Impls for generic types together with the features that came before them:
+// supertraits and generic traits (S3a, S3b), a method's own generic
+// parameters (S3c), impls for built-in types (S3d) and a prelude trait
+// written by hand. A supertrait impl is found when it asks no more than the
+// impl does; a trait argument may name an impl parameter; a hand-written
+// `PartialEq` for a generic struct drives `==`; an alias of a collection is
+// the collection as a target.
+// Expected: sema OK, interpret OK.
+
+trait Show {
+    fn show(self) string
+}
+
+trait Loud: Show {
+    fn loud(self) string
+}
+
+trait Convert<T> {
+    fn convert(self) T
+}
+
+struct Box<T> { v: T }
+enum Opt<T> { Some(T), None }
+
+type Ints = List<int>
+
+impl Show for int { fn show(self) string { return $"i{self}" } }
+impl Convert<int> for string { fn convert(self) int { return 7 } }
+
+impl<T: Show> Show for Box<T> {
+    fn show(self) string { return "Box(" + self.v.show() + ")" }
+}
+
+impl<T: Show> Loud for Box<T> {
+    fn loud(self) string { return self.show() + "!" }
+}
+
+impl<T> Convert<T> for Box<T> {
+    fn convert(self) T { return self.v }
+}
+
+impl<T: Show> Show for Opt<T> {
+    fn show(self) string {
+        match self {
+            Opt.Some(v) => { return "Some " + v.show() }
+            Opt.None => { return "None" }
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for Box<T> {
+    fn eq(self, o: Box<T>) bool { return self.v == o.v }
+}
+
+impl Show for Ints { fn show(self) string { return "ints" } }
+
+extend<A> Box<A> {
+    fn pick<U>(self, u: U) U { return u }
+}
+
+fn conv<X: Convert<int>>(x: X) int { return x.convert() }
+fn loud<X: Loud>(x: X) string { return x.loud() }
+fn same<X: PartialEq>(a: X, b: X) bool { return a == b }
+
+fn main() void {
+    assert(loud(Box { v = 3 }) == "Box(i3)!", "a supertrait through a conditional impl")
+    assert(conv(Box { v = 4 }) == 4, "a trait argument naming an impl parameter")
+    assert(Box { v = "s" }.convert() == "s", "the same impl at another instance")
+    assert(Opt.Some(1).show() == "Some i1", "an enum head")
+    assert(same(Box { v = 1 }, Box { v = 1 }), "a hand-written PartialEq")
+    assert(Box { v = 1 } != Box { v = 2 }, "and the operator")
+    assert([1, 2].show() == "ints", "an alias of a collection")
+    assert(Box { v = 1 }.pick("z") == "z", "a method's own parameter")
+    println("ok")
+}
