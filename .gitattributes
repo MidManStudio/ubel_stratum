@@ -1,0 +1,13 @@
+# Tell GitHub's Linguist to highlight .ubl files using Rust syntax.
+# This is a temporary approximation until Ubel Stratum is submitted to
+# github-linguist/linguist as a first-class language.
+*.ubl linguist-language=Rust
+
+# Treat .ubl source files as text with LF line endings
+*.ubl text eol=lf
+
+# Treat compiled binaries, encrypted files, and keys as binary
+*.ubl.enc binary
+*.ubl.bin binary
+*.ubl.key binary
+*.ubl.au  binary
