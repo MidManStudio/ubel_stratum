@@ -12,6 +12,8 @@ struct Counter {
     value: int,
 }
 
+// The methods are LOW: a LOW function may only call LOW methods.
+@tier(low)
 extend Counter {
     fn zero() Counter {
         return Counter { value = 0 }

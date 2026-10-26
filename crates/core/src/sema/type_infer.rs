@@ -120,6 +120,7 @@ use crate::ast::types::{Type, TypeKind};
 use crate::builtins::instance::{self, MethodReturn, ReceiverWrap};
 use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
+use crate::sema::tier_check;
 use crate::ast::common::Visibility;
 use crate::sema::symbol_table::{DefId, DefKind};
 use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
@@ -298,6 +299,14 @@ struct MethodShape {
     /// receiver's type arguments (`impl<T: Show> Show for Box<T>`, `extend
     /// Box<int>`). `None` for a method with nothing to ask.
     guard:       Option<Rc<ImplGuard>>,
+    /// The tier a call to the method is checked against (the cross-tier
+    /// rule, `TIER-005`). `Some` for a method written in source: an inherent
+    /// method of a struct, an `impl` or an `extend`, and a method an
+    /// `impl Trait for Type` writes. `None` when there is nothing to enforce
+    /// yet: a trait's own signatures and default methods (their tiers arrive
+    /// with the trait-tier slice) and every method with no source
+    /// declaration.
+    tier:        Option<TierAnnotation>,
 }
 
 /// One generic parameter a method declares itself, with the bounds written
@@ -2271,7 +2280,7 @@ impl<'a> InferCtx<'a> {
     fn method_shape_of_fn_type(&self, has_self: bool, fn_ty: TypeId, generics: MethodGenerics) -> Option<MethodShape> {
         match self.ctx.types.get(fn_ty).clone() {
             SemaType::Function { params, return_type, is_fallible, .. } =>
-                Some(MethodShape { has_self, params, return_type, is_fallible, generics, guard: None }),
+                Some(MethodShape { has_self, params, return_type, is_fallible, generics, guard: None, tier: None }),
             _ => None,
         }
     }
@@ -2299,7 +2308,7 @@ impl<'a> InferCtx<'a> {
         let (return_type, is_fallible) = self.return_type_to_sema(sig.return_type.as_ref());
         let generics = self.method_generics_of(sig.generic_params, base);
         self.pop_own_generic_scope(scope);
-        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible, generics, guard: None }
+        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible, generics, guard: None, tier: None }
     }
 
     /// Collect a trait: its required signatures and its default methods,
@@ -2410,6 +2419,7 @@ impl<'a> InferCtx<'a> {
             has_self: shape.has_self, params, return_type, is_fallible: shape.is_fallible,
             generics: MethodGenerics { base: 0, own },
             guard: None,
+            tier: shape.tier,
         }
     }
 
@@ -2670,6 +2680,7 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                     expected.guard = guard.clone();
+                    expected.tier = Some(m.tier);
                     self.add_trait_method(target_def, trait_def, &tm.name, expected);
                 }
                 None if tm.has_default => {
@@ -2694,6 +2705,21 @@ impl<'a> InferCtx<'a> {
                     span:       m.span,
                 });
             }
+        }
+    }
+
+    /// The cross-tier rule for a call to a method (`TIER-005`): the caller is
+    /// the function whose body is being inferred. A method without a tier to
+    /// enforce (`MethodShape::tier` is `None`) is never reported.
+    fn check_method_tier(&mut self, m: &MethodShape, name: &str, span: Span) {
+        let Some(callee) = m.tier else { return; };
+        if tier_check::tier_call_forbidden(self.current_tier, callee) {
+            self.errors.add_tier_error(TierError::IllegalTierCall {
+                caller_tier: self.current_tier,
+                callee_tier: callee,
+                callee_name: name.to_string(),
+                span,
+            });
         }
     }
 
@@ -3267,6 +3293,7 @@ impl<'a> InferCtx<'a> {
         let recv_args = self.builtin_head_args(bare);
         // A method an impl for `List<int>` gave is not a method of `List<string>`.
         if !self.apply_impl_guard(&m.guard, &recv_args, callee_span) { return None; }
+        self.check_method_tier(&m, field, callee_span);
         let inst = self.instantiate_method(&m, &recv_args);
         self.check_method_args(&inst.params, args, call_span);
         self.require_method_bounds(&m, &inst, args, call_span);
@@ -3381,7 +3408,7 @@ impl<'a> InferCtx<'a> {
                     let generics = self.generics_at(m.span);
                     self.struct_methods.entry(def_id).or_default().push((
                         m.name.to_string(),
-                        MethodShape { has_self, params, return_type, is_fallible, generics, guard: guard.clone() },
+                        MethodShape { has_self, params, return_type, is_fallible, generics, guard: guard.clone(), tier: Some(m.tier) },
                     ));
                 }
             }
@@ -3499,6 +3526,7 @@ impl<'a> InferCtx<'a> {
                     {
                         methods.push((m.name.to_string(), MethodShape {
                             has_self, params, return_type, is_fallible, generics, guard: None,
+                            tier: Some(m.tier),
                         }));
                     }
                 }
@@ -4860,6 +4888,7 @@ impl<'a> InferCtx<'a> {
                             if let Some(methods) = self.struct_methods.get(&def_id).cloned() {
                                 if let Some((_, m)) = methods.iter().find(|(n, m)| n == field && !m.has_self) {
                                     let m = m.clone();
+                                    self.check_method_tier(&m, field, callee.span);
                                     let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
                                     let fresh_args: Vec<TypeId> = (0..arity).map(|_| self.fresh_var()).collect();
                                     self.require_def_bounds(def_id, &fresh_args, expr.span);
@@ -5168,6 +5197,7 @@ impl<'a> InferCtx<'a> {
                                             });
                                             return self.unknown();
                                         }
+                                        self.check_method_tier(&m, field, callee.span);
                                         let inst = self.instantiate_method(&m, &recv_args);
                                         self.check_method_args(&inst.params, args, expr.span);
                                         self.require_method_bounds(&m, &inst, args, expr.span);

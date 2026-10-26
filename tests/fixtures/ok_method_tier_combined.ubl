@@ -1,0 +1,77 @@
+// tests/fixtures/ok_method_tier_combined.ubl
+// A LOW-tier physics step made of LOW methods, mixed with features shipped
+// earlier: a generic struct, a generic `impl` with a concrete argument, an
+// `extend` on a built-in type, Unique ownership (which the move checker
+// enforces in LOW functions), a tier block, a while loop and interpolation.
+// A HIGH `main` drives it through a LOW function (only LOW code may build a
+// Unique), and a HIGH method still gives a readable report.
+// Expected: sema OK, interpret OK.
+
+struct Vec2 {
+    x: int,
+    y: int,
+}
+
+@tier(low) {
+    impl Vec2 {
+        fn add(self, other: Vec2) Vec2 {
+            return Vec2 { x = self.x + other.x, y = self.y + other.y }
+        }
+    }
+
+    extend int {
+        fn squared(self) int {
+            return self * self
+        }
+    }
+}
+
+@tier(low)
+struct Body<T> {
+    id: T,
+    pos: Vec2,
+
+    fn nudge(self, d: Vec2) void {
+        self.pos = self.pos.add(d)
+    }
+
+    fn energy(self) int {
+        return self.pos.x.squared() + self.pos.y.squared()
+    }
+}
+
+@tier(low)
+impl Body<int> {
+    fn label(self) int {
+        return self.id * 10 + self.energy()
+    }
+}
+
+extend Body<int> {
+    fn report(self) string {
+        return $"body {self.id}: energy {self.energy()}"
+    }
+}
+
+@tier(low)
+fn simulate(b: Unique<Body<int>>, steps: int) int {
+    let i = 0
+    while (i < steps) {
+        b.nudge(Vec2 { x = 1, y = 2 })
+        i = i + 1
+    }
+    return b.energy()
+}
+
+@tier(low)
+fn run_simulation() int {
+    let b = Unique.new(Body { id = 7, pos = Vec2 { x = 0, y = 0 } })
+    return simulate(b, 3)
+}
+
+fn main() void {
+    assert(run_simulation() == 45, "three nudges of (1, 2) land on (3, 6): 9 + 36")
+    let c = Body { id = 7, pos = Vec2 { x = 3, y = 6 } }
+    assert(c.label() == 115, "seven times ten plus 45")
+    println(c.report())
+}

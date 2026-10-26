@@ -54,6 +54,14 @@ methods, parameters, structs, enums, traits, impls.
 - `parse_impl_block` keeps the type arguments written after the trait when `for`
   follows (`impl Convert<int> for X`, stored as `trait_args`) and drops them for an
   inherent impl (`impl Box<int> { .. }`), where they are part of the type.
+- The tier of a method is resolved here, in this order: its own `@tier`, the `@tier` of
+  the `impl`, `extend` or struct around it, a tier block around that, then `HIGH`
+  (`PARSER_RULES.md` 5.11). `has_own_tier` in `parse_attr.rs` decides by the attribute's
+  name whether a method writes a tier, so an unrelated attribute such as `@inline` keeps
+  the block's tier. `parse_struct_decl` hands the struct's own `@tier` to
+  `parse_struct_member`, and `apply_block_attrs` moves the methods of a struct, an `impl`
+  or an `extend` that write none to the block's tier (`retier_methods`,
+  `retier_members`). No AST field was added.
 
 **Tests:** see `tests/fixtures/ok_wildcard_and_discard_isolated.ubl` and
 `tests/fixtures/ok_callback_registry_combined.ubl`; for `static`, the
@@ -263,6 +271,34 @@ suggestions and positions and through the interpreter for run-time values.
 **Mutation pass:** 74 mutations over `sema/type_infer/impl_patterns.rs`,
 `sema/type_infer.rs`, `ast/types.rs` and `interpreter/value.rs`, 70 caught. Three survivors are equivalent mutants (the run-time key text sema gives `Dictionary`, which is only compared with itself, and the undecided answer of an impl guard, which every consumer treats like a satisfied one because an obligation fails only on a definite no); one more showed an arity entry for a built-in head's definition that no reader reaches, and was removed as dead code. Every other mutant was caught, after tests were added for the first survivors.
 
+### `tests/method_tiers.rs`
+
+**What it does:** Integration tests for the tier of a method and the tier check on a call
+on a receiver, slice S4a (46 tests). Programs go through `check_source` for stage, codes,
+messages and positions and through the interpreter for run-time values.
+
+**Decisions:**
+- The call rule: every caller and callee tier pair generated into a program; the message
+  naming both tiers and the method; the error placed at the call; one diagnostic per
+  offending call; every route to a method (an `extend`, an `impl`, a struct member, a
+  trait impl, an associated function, a method of a built-in type, a generic struct, a
+  generic impl for one instance, a sibling method), and a built-in method carrying no tier.
+- Where a tier comes from: an unrelated attribute never changes it; a method's own `@tier`
+  wins over the `impl`, `extend`, struct and tier block around it; a tier block moves only
+  the methods that write none; an item's own tier survives a block; the innermost block
+  wins; an `async` method that inherits `LOW` is `TIER-003`, one that writes `@tier(high)`
+  is fine.
+- Pinned as not checked yet, each to be flipped by S4b: a call through a bound, a default
+  method call, and a `@tier` written on a trait default method.
+- Run time unchanged: `LOW` methods called from `LOW` code run.
+
+**Mutation pass:** 31 mutations over `parsers/parse_attr.rs`, `parsers/parse_decl.rs`,
+`prelude.rs`, `sema/type_infer.rs` and `sema/tier_check.rs`, 30 caught. Two were caught only
+after three tests were added (a tier block around an `impl`, an `extend` or a struct whose
+methods are partly tiered); the survivor is an equivalent mutant (the copy of a trait
+shape's tier, `None` for every trait shape until S4b). The mutant that removes the
+prelude's `Hasher` tier is caught by `tests/prelude_traits.rs`.
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in
@@ -320,7 +356,9 @@ and through the interpreter for run-time values.
 
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-`Clone`, `Hasher`, `Hash`) as Ubel source. `parse()` calls `prelude::inject` after parsing the
+`Clone`, `Hasher`, `Hash`) as Ubel source. `Hasher` is `@tier(low)`, so code at any tier can
+hash: the prelude is ordinary source and its methods are `HIGH` unless a tier is written.
+`parse()` calls `prelude::inject` after parsing the
 program. `tests/prelude_traits.rs` (95 tests) covers what each kind of type
 satisfies, the methods, hashing, the `Dictionary` key requirement, the
 operators on a type parameter, hand-written impls and what calls them

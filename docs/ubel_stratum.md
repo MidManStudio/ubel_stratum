@@ -1544,3 +1544,28 @@ fixtures (`ok_generic_impl_isolated`, `err_generic_impl_isolated`,
 in `docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first
 or second person.
 
+A twenty-third delivery (traits slice S4a) touched `rd_parser/src/parsers/parse_attr.rs`
+(`has_own_tier`), `rd_parser/src/parsers/parse_decl.rs`, `rd_parser/src/prelude.rs`,
+`sema/tier_check.rs` (`tier_call_forbidden`) and `sema/type_infer.rs`. The tier of a method
+is now the tier written for it: its own `@tier`, otherwise that of the `impl`, `extend` or
+struct around it, otherwise that of a tier block around those, otherwise `HIGH`.
+`has_own_tier` replaced "has no attributes", so an unrelated attribute no longer drops the
+block's tier, and a tier block now reaches the methods of an `impl`, an `extend` and a
+struct. `MethodShape` gained `tier`, set for every method written in source (an inherent
+method of a struct, an `impl` or an `extend`, and a method an `impl Trait for Type` writes),
+and `check_method_tier` applies the cross-tier rule (`TIER-005`) at the instance,
+associated-function and built-in-kind call sites with the same function the by-name check
+uses. A call through a bound, a trait default method call, a qualified call and a `@tier`
+written on a trait item are not covered yet (slice S4b). The prelude's `Hasher` is
+`@tier(low)`. It added `tests/method_tiers.rs` (46 tests), five fixtures
+(`ok_method_tier_isolated`, `ok_method_tier_combined`, `err_method_tier_isolated`,
+`err_method_tier_combined`, `err_method_tier_reach_isolated`) and
+`docs/TRAITS_TIERS_SPEC.md`, and corrected seven fixtures whose `LOW` functions called
+methods of an `extend` or `impl` block with no tier (each block is now `@tier(low)`). The
+workspace has 930 passing tests in 29 suites. The fixture sweep went from 266 files to 271:
+2 fail lexing, 8 fail parsing, 120 stop at sema (3 more) and 141 are clean (2 more), 140 of
+them interpreted; no fixture that existed before changed stage or diagnostics after the
+seven corrections. The mutation pass is described under `tests/method_tiers.rs` in
+`docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first or second
+person.
+

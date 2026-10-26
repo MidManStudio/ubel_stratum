@@ -498,11 +498,12 @@ it actually turned up:
   literal or an associated call naming a type that has no such members is
   not checked for any non-struct name, alias or not; only the alias route
   is new reachable surface.
-- Method calls on a receiver are not tier-checked at all. The cross-tier
-  call rule runs only for calls whose callee resolves to a definition (a
-  plain function name); `recv.method()` has no such resolution, so a `MID`
-  function can call a `HIGH` method with no error. Found while building
-  traits; slice S4 (tiers on trait methods) starts by fixing it.
+- A call through a bound (`t.label()` with `t: T`, `T: Tick`), a call to a trait
+  default method, a qualified call (`Tick.label(v)`) and the implicit calls of
+  operators and `for-in` are not tier-checked, and a `@tier` written on a trait
+  method signature or default method is parsed and dropped. Calls to a method
+  written in source on a concrete receiver are checked since slice S4a
+  (`TIER-005`); S4b covers the rest of the trait cases, S5 the implicit calls.
 - Struct printing is nondeterministic. The default `$"{p}"` of a struct
   walks a `HashMap`, so field order varies between runs (`P {x: 1, y: 2}`
   or `P {y: 2, x: 1}`); `Value::Struct` already carries `field_order`.

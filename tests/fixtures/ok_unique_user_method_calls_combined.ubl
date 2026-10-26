@@ -8,12 +8,16 @@ struct Account {
     balance: int,
 }
 
+// The methods are LOW: a LOW function may only call LOW methods.
+@tier(low)
 impl Account {
     fn deposit(self, amount: int) void {
         self.balance = self.balance + amount
     }
 }
 
+// The methods are LOW: a LOW function may only call LOW methods.
+@tier(low)
 extend Account {
     fn total(self) int {
         return self.balance

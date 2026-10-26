@@ -9,6 +9,8 @@ struct Counter {
     value: int,
 }
 
+// The methods are LOW: a LOW function may only call LOW methods.
+@tier(low)
 extend Counter {
     fn bump(self) void {
         self.value = self.value + 1

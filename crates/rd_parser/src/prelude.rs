@@ -13,7 +13,8 @@
 //! + Eq`) plus the types its signatures mention (`SIGNATURE_DEPS`).
 //!
 //! The trait names are the ones `@derive` already uses. `Hasher` is the
-//! state `Hash.hash` writes into; `Hash.hash` itself is native. What a built-in or
+//! state `Hash.hash` writes into, and is `@tier(low)` (plain arithmetic on one
+//! `u64`) so that code at any tier can hash; `Hash.hash` itself is native. What a built-in or
 //! derived type does for each method is native, see
 //! `ubel_stratum::sema` (satisfaction) and the interpreter (the methods).
 
@@ -70,6 +71,7 @@ trait Clone {
     fn clone(self) Self
 }
 
+@tier(low)
 struct Hasher {
     state: u64,
     fn new() Hasher { return Hasher { state = 1469598103934665603u64 } }

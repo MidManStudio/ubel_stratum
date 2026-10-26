@@ -137,6 +137,13 @@ and outlives enforcement across a boundary are real, running checks in
 the semantic analysis pass, independent of which backend eventually
 executes the program.
 
+**Calls on a value.** `value.method()` and `Type.make()` obey the same call
+matrix as a call by name, using the tier written for the method. A method is
+`HIGH` unless it, the `impl`, `extend` or struct around it, or a
+`@tier(...) { }` block around them says otherwise, and an unrelated attribute
+such as `@inline` never changes that. A call through a trait bound is not
+checked yet.
+
 **Outlives / subset enforcement across a boundary.** LOW-tier borrow
 checking is real: a control-flow graph is built per function, and loan
 and liveness checking on top of it rejects a conflicting borrow with

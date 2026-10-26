@@ -9,6 +9,8 @@ struct Counter {
     value: int,
 }
 
+// The methods are LOW: a LOW function may only call LOW methods.
+@tier(low)
 extend Counter {
     fn read(self) int {
         return self.value

@@ -1,12 +1,12 @@
 # Tiers on Trait Methods: S4 Specification
 
-> **Status:** Proposed. The choices in section 5 are marked for selection. No
-> code is written until they are agreed.
+> **Status:** Agreed on 2026-10-25 (section 5 records each choice). S4a is
+> built. S4b is next.
 >
 > **Verified against:** `MidManStudio/ubel_stratum` master at `43fc418`, using
 > `ubel check --json` and its `stage` field. Every probe in section 3 is paired
 > with a control that must fail, so a clean probe means a real gap and not a
-> bad program.
+> bad program. S4a was built on that commit.
 >
 > **Companion:** `docs/TRAITS_DESIGN.md` (decision D7, slice S4, and the
 > section "D7: what has to be specified before S4").
@@ -64,17 +64,17 @@ Each row is a program checked with `ubel check --json`. "Clean" means no
 diagnostic. A control for the same shape written as a plain function (or with
 the tier on the method itself) fails with `TIER-005` in every case.
 
-| Probe | Program shape | Result | Correct result |
-|---|---|---|---|
-| P1 | `@tier(low) fn` calls `s.hi()`, where `hi` comes from `extend S` and is `HIGH` | clean | `TIER-005` |
-| P1b | the same call, where `hi` comes from `impl T for S` | clean | `TIER-005` |
-| P1c | `@tier(mid) fn run<T: Tick>(t: T)` calls `t.label()`, where the trait declares `label` `HIGH` | clean | `TIER-005` |
-| P2 | `@tier(low) fn f(self) { h() }` as a default method inside a trait, `h` being `HIGH` | clean | `TIER-005` |
-| P3 | `@tier(low) impl S { @inline fn f(self) { h() } }` | clean | `TIER-005` |
-| P4 | `@tier(low) { impl S { fn f(self) { h() } } }` | clean | `TIER-005` |
-| P5 | `@tier(low) extend S { fn f(self) { h() } }` | clean | `TIER-005` |
-| P6a | `@tier(low) struct S { fn f(self) { h() } }` | clean | `TIER-005` |
-| P6b | `@tier(low) { struct S { fn f(self) { h() } } }` | clean | `TIER-005` |
+| Probe | Program shape | Result | Correct result | Closed by |
+|---|---|---|---|---|
+| P1 | `@tier(low) fn` calls `s.hi()`, where `hi` comes from `extend S` and is `HIGH` | clean | `TIER-005` | S4a |
+| P1b | the same call, where `hi` comes from `impl T for S` | clean | `TIER-005` | S4a |
+| P1c | `@tier(mid) fn run<T: Tick>(t: T)` calls `t.label()`, where the trait declares `label` `HIGH` | clean | `TIER-005` | S4b |
+| P2 | `@tier(low) fn f(self) { h() }` as a default method inside a trait, `h` being `HIGH` | clean | `TIER-005` | S4b |
+| P3 | `@tier(low) impl S { @inline fn f(self) { h() } }` | clean | `TIER-005` | S4a |
+| P4 | `@tier(low) { impl S { fn f(self) { h() } } }` | clean | `TIER-005` | S4a |
+| P5 | `@tier(low) extend S { fn f(self) { h() } }` | clean | `TIER-005` | S4a |
+| P6a | `@tier(low) struct S { fn f(self) { h() } }` | clean | `TIER-005` | S4a |
+| P6b | `@tier(low) { struct S { fn f(self) { h() } } }` | clean | `TIER-005` | S4a |
 
 Controls: a plain `@tier(low) fn` calling `h()`; `@tier(low)` on an `extend`
 method; `@tier(low) impl S { fn f(self) { h() } }` with no other attribute; a
@@ -180,6 +180,11 @@ the callee.
 | Associated function | `Box.wrap(v)` | the function's own tier |
 | Built-in method | `list.push(x)` | unchanged, governed by `TIER-008` |
 
+S4a checks the first, second and fifth rows (the tier of a method written in
+source). The default-method, bound and qualified rows come with S4b: until a
+trait can carry a tier, every trait method is `HIGH` and there would be no way
+to write the fix.
+
 Two properties follow.
 
 - A call through a bound is checked against the trait because the impl is not
@@ -205,6 +210,22 @@ S3e.
   tier and are never rejected by the new check.
 - `a == b`, `a < b`, `for x in v` and the other implicit calls are not method
   calls in the syntax. They stay unchecked until S5.
+
+### 4.6 Prelude traits
+
+The six prelude traits (`PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`,
+`Clone`) are `@tier(low)` (choice Q4 C). Their methods (`eq`, `ne`,
+`partial_cmp`, `lt`, `le`, `gt`, `ge`, `cmp`, `hash`, `clone`) are therefore
+`LOW`, so code at any tier can call them through a bound. Under the exact
+match rule every hand-written impl of a prelude trait is `LOW` too, and an
+impl method that writes no tier takes `LOW` from the trait. The body of such an
+impl is checked at `LOW`: it may call only `LOW` code, and the `LOW` rules of
+`type_infer` apply to it (no collection construction, no static access).
+
+The prelude's `Hasher` struct is `@tier(low)` already in S4a: it is plain
+arithmetic on one `u64`, and without the tier a `LOW` function could no longer
+write `Hasher.new()` or `h.finish()`, because the prelude is ordinary source and
+its methods are `HIGH` unless a tier is written.
 
 ---
 
@@ -236,6 +257,8 @@ Declared tier means the tier the trait gives the method.
 must match"). A can be relaxed to B later without breaking any program A
 accepted, because accepting more is always compatible; the reverse is not.
 
+**Decided: A.**
+
 ### Q2. Where an unwritten tier on an impl method comes from
 
 - **a. The trait.** An impl method with no tier of its own, in a block with no
@@ -252,6 +275,8 @@ assertion that Q1 checks.
 A tier block that wraps both a trait and its impl (`@tier(low) { trait ...
 impl ... }`) resolves to the same tier on both sides under either option.
 
+**Decided: a.**
+
 ### Q3. Whether the tier-reaching fixes (P3 to P6) are part of S4
 
 Once calls on a receiver are checked, a method that is silently `HIGH` makes
@@ -261,8 +286,9 @@ program text says is `MID` or `LOW`. The fixes are:
 - an impl method with unrelated attributes keeps the block tier (P3);
 - a tier block reaches the methods of an impl, an `extend` and a struct
   (P4, P5, P6b);
-- `ExtendDecl` gets `tier: Option<TierAnnotation>`, the same shape as
-  `ImplBlock` (P5);
+- an `extend` block takes a block tier, the same rule as an `impl` (P5). No new
+  AST field is needed: the tier is resolved onto the methods at parse time, and
+  nothing downstream reads a block's own tier;
 - a struct's own `@tier` becomes the default for its methods (P6a).
 
 Options: **include all four** (recommended); **include P3 and P4 only** and
@@ -272,6 +298,8 @@ is silently ignored; or **leave them out** and keep the silent ignore.
 **Recommended: include all four.** They make the documented inheritance true,
 and the alternatives keep or replace a silent ignore. They also narrow what is
 accepted (section 9), which is the reason to decide them explicitly.
+
+**Decided: include all four.**
 
 ### Q4. Tier of the prelude traits' methods
 
@@ -294,12 +322,17 @@ unchecked until S5.
 **Recommended: A.** B opens a hole on purpose and C imposes a restriction with
 no current demand.
 
+**Decided: C**, against the recommendation. Section 4.6 states what it means. The
+cost is the one named above: a hand-written `eq`, `hash` or `clone` can call
+only `LOW` code. The gain is that generic code at any tier can use the prelude
+traits through a bound.
+
 ### Q5. Delivery shape
 
 - **One delivery.** All of section 4 together.
 - **Two deliveries** (recommended): S4a, then S4b, as in section 8.
 
-**Recommended: two.** S4a is the one that narrows what existing programs are
+**Decided: two** (the recommendation was not changed). **Recommended: two.** S4a is the one that narrows what existing programs are
 accepted, so its fixture sweep can be read on its own. Bound calls cannot land
 before trait tiers exist: with every trait method `HIGH`, checking a bound call
 in S4a would reject every `MID` caller with no way to write the fix.
@@ -385,24 +418,36 @@ classified. The probes in section 3 become the isolated fixtures, and each
 delivery adds a combined fixture that uses the rules together with generics
 (S3e) and bounds (S1b).
 
-**S4a: carry tiers and check concrete receivers.**
+**S4a: carry tiers and check concrete receivers (built).**
 
-- Parser: P3, P4, P5 and P6 (section 4.3); `ExtendDecl.tier`.
-- Sema: `tier` on `MethodShape`; the check in section 4.4 for the inherent,
-  trait-on-concrete, default and associated-function rows.
-- Tests and fixtures: `crates/rd_parser/tests/method_tiers.rs` with exact
-  counts, an isolated and a combined `ok_` and `err_` fixture.
-- Docs: `TRAITS_DESIGN.md` (D7 and the S4 rows), `DIAGNOSTICS_RULES.md`,
-  `PARSER_RULES.md`, `GENERICS_RULES.md` if generic receivers change, the
-  delivery log in `ubel_stratum.md` and `ubel_stratum_rd.md`, and
-  `web/site/src/project-status.md`.
+- Parser (`parse_decl.rs`, `parse_attr.rs`): `has_own_tier` decides whether a
+  method writes a tier, replacing "has no attributes"; an `impl` method keeps the
+  block tier when it carries an unrelated attribute (P3); an `extend` takes a
+  block tier (P5); a struct's own `@tier` is the default of its methods (P6a); a
+  tier block passes its tier to the methods of an `impl`, an `extend` and a
+  struct that write none (P4, P6b). No AST field was added.
+- Sema: `MethodShape.tier` (`Some` for a method written in source, `None` for a
+  trait's own signatures and defaults and for every method with no
+  declaration); `check_method_tier` at the instance, associated-function and
+  built-in-kind call sites, using the one cross-tier rule shared with
+  `tier_check.rs` (`tier_call_forbidden`); a method an `impl Trait for Type`
+  writes is called at its own tier.
+- Prelude: `Hasher` is `@tier(low)`.
+- Tests and fixtures: `crates/rd_parser/tests/method_tiers.rs` (46 tests) and
+  five fixtures (`ok_method_tier_isolated`, `ok_method_tier_combined`,
+  `err_method_tier_isolated`, `err_method_tier_combined`,
+  `err_method_tier_reach_isolated`); seven existing fixtures corrected (section 9).
+- Pinned as not checked yet, each by a test that S4b flips: a call through a
+  bound, a default method call, and a `@tier` written on a trait method.
 
 **S4b: tiers on traits.**
 
 - Parser and AST: `TraitDecl.tier`, `MethodSig.tier`, the default-method tier
-  from its own attribute (P2), and the trait tier from a surrounding block.
+  from its own attribute (P2), the trait tier from a surrounding block, and
+  `ImplBlock.tier` kept distinct for an explicit `@tier(high)`.
+- Prelude: the six prelude traits become `@tier(low)` (section 4.6).
 - Sema: the resolved tier in the trait's method shapes; the conformance check
-  of Q1; the unwritten-tier rule of Q2; the bound, qualified and
+  of Q1 and the unwritten-tier rule of Q2; the bound, qualified and
   default-method rows of section 4.4.
 - Tests, fixtures and docs as in S4a, plus `ubel.ebnf` if the grammar for
   trait items changes.
@@ -411,20 +456,32 @@ delivery adds a combined fixture that uses the rules together with generics
 
 ## 9. Impact on existing programs
 
+Measured on the 266 fixtures with `ubel check --json` before and after S4a.
+
 Acceptance narrows in two ways.
 
 1. A `MID` or `LOW` function that calls a method which is `HIGH` (by default or
-   by writing) is now an error. Before, it passed.
+   by writing) is now an error. Before, it passed. Seven fixtures changed: four
+   `ok_` fixtures that became errors, and three `err_` fixtures whose expected
+   diagnostic was hidden behind the new one, because a type-inference error
+   stops the pipeline before the later passes run. All seven are `LOW`
+   functions (where the move checker runs) calling methods of a struct whose
+   `extend` or `impl` block had no tier. Each was corrected by writing
+   `@tier(low)` on that block, which also exercises the new rule, and after
+   that no fixture differs from before. The 139 fixtures that check clean still
+   run with the same exit codes.
 2. A method that sat in a tier block, a tier-annotated struct, an `extend`, or
    an impl with unrelated attributes now has the tier written around it
-   instead of `HIGH`. Its body is checked at that tier: calls to `HIGH`
-   functions, `await`, and the `LOW` rules (borrow and move checks, no
-   collection construction) now apply to it.
+   instead of `HIGH`, and its body is checked at that tier by the passes that
+   walk methods: a call to a function at a higher tier (`TIER-005`), `await` and
+   `with arena` outside their tier, a static read outside `HIGH` (`TIER-015`)
+   and a collection constructed in `LOW` (`TIER-009`). The borrow, move and
+   outlives passes walk free functions only and still do. An `async` method that
+   inherits `LOW` or `MID` is now `TIER-003`, the same rule as an `async fn` in
+   a tier block; writing `@tier(high)` on it keeps it legal.
 
-The number of existing fixtures that change stage is measured when S4a is
-built and reported with the delivery. No count is claimed here. Any fixture
-that changes is corrected, or its expected result is stated, and none changes
-silently.
+The prelude is ordinary source, so it is subject to the same rule: its `Hasher`
+had to be given `@tier(low)`.
 
 ---
 

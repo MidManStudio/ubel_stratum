@@ -32,7 +32,7 @@ use ubel_stratum::{
 };
 
 use crate::parser::{cap, Parser};
-use crate::parsers::parse_attr::extract_tier_from_attrs;
+use crate::parsers::parse_attr::{extract_tier_from_attrs, has_own_tier};
 
 impl<'ast, 'tok> Parser<'ast, 'tok> {
 
@@ -146,18 +146,43 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         }
     }
 
-    /// Applies a block's attrs/tier to one item parsed inside it. Only
-    /// `Function` and `Impl` carry a `tier` field at all — everything else
-    /// just gets the generic attrs appended. `has_own_tier` gates the tier
+    /// Applies a block's attrs/tier to one item parsed inside it. A function
+    /// takes the tier itself. A struct, an `impl` and an `extend` pass it on to
+    /// each of their methods that writes no `@tier` of its own, unless the item
+    /// writes one (then its methods already took it at parse time). Everything
+    /// else just gets the generic attrs appended. `has_own_tier` gates the tier
     /// override specifically (not "attrs.is_empty()"), so e.g. a lone
     /// `@doc(...)` on one function doesn't silently pull it out of the
     /// block's tier.
     fn apply_block_attrs(
         &self, item: Item<'ast>, block_attrs: &'ast [Attribute<'ast>], block_tier: TierAnnotation,
     ) -> Item<'ast> {
-        fn has_own_tier(attrs: &[Attribute]) -> bool {
-            attrs.iter().any(|a| a.name == "tier")
-        }
+        // The methods of one block-less item that write no tier of their own,
+        // moved to the block's tier. Nothing is allocated when none moves.
+        let retier_methods = |methods: &'ast [MethodDecl<'ast>]| -> &'ast [MethodDecl<'ast>] {
+            if methods.iter().all(|m| has_own_tier(m.attributes)) { return methods; }
+            let mut moved: Vec<MethodDecl<'ast>> = Vec::with_capacity(methods.len());
+            for m in methods {
+                let mut m = m.clone();
+                if !has_own_tier(m.attributes) { m.tier = block_tier; }
+                moved.push(m);
+            }
+            self.arena.alloc_slice_clone(&moved)
+        };
+        let retier_members = |members: &'ast [StructMember<'ast>]| -> &'ast [StructMember<'ast>] {
+            let mut moved: Vec<StructMember<'ast>> = Vec::with_capacity(members.len());
+            for member in members {
+                match member {
+                    StructMember::Method(m) if !has_own_tier(m.attributes) => {
+                        let mut m = m.clone();
+                        m.tier = block_tier;
+                        moved.push(StructMember::Method(m));
+                    }
+                    other => moved.push(other.clone()),
+                }
+            }
+            self.arena.alloc_slice_clone(&moved)
+        };
 
         let merge_attrs = |own: &'ast [Attribute<'ast>]| -> &'ast [Attribute<'ast>] {
             if block_attrs.is_empty() { return own; }
@@ -174,15 +199,26 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 f.attributes = merge_attrs(f.attributes);
                 Item::Function(f)
             }
-            Item::Struct(mut s) => { s.attributes = merge_attrs(s.attributes); Item::Struct(s) }
+            Item::Struct(mut s) => {
+                if !has_own_tier(s.attributes) { s.members = retier_members(s.members); }
+                s.attributes = merge_attrs(s.attributes);
+                Item::Struct(s)
+            }
             Item::Enum(mut e)   => { e.attributes = merge_attrs(e.attributes); Item::Enum(e) }
             Item::Trait(mut t)  => { t.attributes = merge_attrs(t.attributes); Item::Trait(t) }
             Item::Impl(mut i) => {
-                if i.tier.is_none() && !has_own_tier(i.attributes) { i.tier = Some(block_tier); }
+                if i.tier.is_none() && !has_own_tier(i.attributes) {
+                    i.tier = Some(block_tier);
+                    i.methods = retier_methods(i.methods);
+                }
                 i.attributes = merge_attrs(i.attributes);
                 Item::Impl(i)
             }
-            Item::Extend(mut e)    => { e.attributes = merge_attrs(e.attributes); Item::Extend(e) }
+            Item::Extend(mut e) => {
+                if !has_own_tier(e.attributes) { e.methods = retier_methods(e.methods); }
+                e.attributes = merge_attrs(e.attributes);
+                Item::Extend(e)
+            }
             Item::Const(mut c)     => { c.attributes = merge_attrs(c.attributes); Item::Const(c) }
             // A block's `@tier` is deliberately not applied to a static
             // (always HIGH) or a const (tier-agnostic), only its generic
@@ -406,7 +442,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             return None;
         }
 
-        let members = self.parse_struct_body();
+        // `@tier(low) struct S { .. }`: the default tier of its methods.
+        let default_tier = if has_own_tier(attrs) { extract_tier_from_attrs(attrs) }
+                           else { TierAnnotation::High };
+        let members = self.parse_struct_body(default_tier);
 
         let close_span = self.span();
         if !self.cursor.eat(&TokenType::RightBrace) {
@@ -428,12 +467,12 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         })
     }
 
-    fn parse_struct_body(&mut self) -> &'ast [StructMember<'ast>] {
+    fn parse_struct_body(&mut self, default_tier: TierAnnotation) -> &'ast [StructMember<'ast>] {
         let mut members: Vec<StructMember<'ast>> = Vec::with_capacity(cap::STRUCT_FIELDS);
 
         while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
             let pos_before = self.cursor.position();
-            if let Some(m) = self.parse_struct_member() {
+            if let Some(m) = self.parse_struct_member(default_tier) {
                 members.push(m);
             } else {
                 self.recover_to_struct_member();
@@ -445,7 +484,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.arena.alloc_slice_clone(&members)
     }
 
-    fn parse_struct_member(&mut self) -> Option<StructMember<'ast>> {
+    fn parse_struct_member(&mut self, default_tier: TierAnnotation) -> Option<StructMember<'ast>> {
         // Attributes (only valid on methods)
         let (attrs, _) = if self.cursor.is_at(&TokenType::At) {
             self.parse_attribute_list()
@@ -453,7 +492,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             (&[][..], None)
         };
 
-        let tier = extract_tier_from_attrs(attrs);
+        let tier = if has_own_tier(attrs) { extract_tier_from_attrs(attrs) } else { default_tier };
         let vis  = self.parse_visibility();
 
         match self.cursor.peek().clone() {
@@ -857,8 +896,8 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             } else {
                 (&[][..], None)
             };
-            let m_tier = if m_attrs.is_empty() { tier }
-                         else { extract_tier_from_attrs(m_attrs) };
+            let m_tier = if has_own_tier(m_attrs) { extract_tier_from_attrs(m_attrs) }
+                         else { tier };
             let m_vis = self.parse_visibility();
             if let Some(m) = self.parse_method_decl_inner(m_attrs, m_tier, m_vis) {
                 methods.push(m);
@@ -903,6 +942,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         let generic_params = self.parse_generic_params();
         let target_type = self.parse_type_expr()?;
 
+        // Block-level tier: `@tier(low) extend Foo { .. }`. Each method that
+        // writes no `@tier` of its own takes it, the same rule as an `impl`.
+        let block_tier = extract_tier_from_attrs(attrs);
+
         // Body is optional per EBNF: `("{" ExtendItem* "}")?`
         let methods: &'ast [MethodDecl<'ast>] = if self.cursor.is_at(&TokenType::LeftBrace) {
             let open_span = self.span();
@@ -916,7 +959,8 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 } else {
                     (&[][..], None)
                 };
-                let m_tier = extract_tier_from_attrs(m_attrs);
+                let m_tier = if has_own_tier(m_attrs) { extract_tier_from_attrs(m_attrs) }
+                             else { block_tier };
                 let m_vis  = self.parse_visibility();
                 if let Some(m) = self.parse_method_decl_inner(m_attrs, m_tier, m_vis) {
                     ms.push(m);

@@ -1,0 +1,59 @@
+// tests/fixtures/err_method_tier_reach_isolated.ubl
+// A tier written around a method reaches it, and its body is checked at that
+// tier. Each method below is made LOW by what surrounds it, and each body
+// calls a HIGH function. Before this, three of the four stayed HIGH and
+// passed: an `impl` method with an unrelated attribute lost the block's
+// tier, and neither a tier block nor `extend` nor a struct passed a tier on.
+// Expected: sema FAIL (four IllegalTierCall, TIER-005).
+
+fn log_line() int {
+    return 1
+}
+
+struct A {
+    n: int,
+}
+
+struct B {
+    n: int,
+}
+
+struct C {
+    n: int,
+}
+
+@tier(low)
+impl A {
+    @inline
+    fn f(self) int {
+        return log_line()
+    }
+}
+
+@tier(low) {
+    impl B {
+        fn f(self) int {
+            return log_line()
+        }
+    }
+}
+
+@tier(low)
+extend C {
+    fn f(self) int {
+        return log_line()
+    }
+}
+
+@tier(low)
+struct E {
+    n: int,
+
+    fn f(self) int {
+        return log_line()
+    }
+}
+
+fn main() void {
+    println(1)
+}

@@ -10,6 +10,8 @@ struct Score {
     points: int,
 }
 
+// The methods are LOW: a LOW function may only call LOW methods.
+@tier(low)
 impl Score {
     fn new() Score {
         return Score { points = 0 }

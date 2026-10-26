@@ -407,6 +407,14 @@ fn try_extract_tier(attr: &Attribute<'_>) -> Option<TierAnnotation> {
 
 // ── Public re-export helper for declaration parsers ───────────────────────────
 
+/// Whether the attribute list writes a `@tier(...)` at all, valid or not.
+/// This, and not "the list is empty", decides whether an item keeps the tier
+/// of the block, struct or impl around it: an unrelated attribute such as
+/// `@inline` or `@doc(...)` must never change which tier a method has.
+pub(crate) fn has_own_tier(attrs: &[Attribute<'_>]) -> bool {
+    attrs.iter().any(|a| a.name == "tier")
+}
+
 /// Convenience: given an attribute list already parsed, find the tier.
 /// Called by parse_decl.rs so it doesn't re-implement the extraction.
 pub(crate) fn extract_tier_from_attrs(attrs: &[Attribute<'_>]) -> TierAnnotation {

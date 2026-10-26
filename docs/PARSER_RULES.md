@@ -632,12 +632,12 @@ per item:**
 - The generic `attributes` list: always appended, regardless of tier
   overrides.
 
-Only `FunctionDecl.tier` and `ImplBlock.tier` exist to override — every
-other item kind (`struct`/`enum`/`trait`/`extend`/`const`/`type`) only
-has `attributes` to merge, tier is meaningless for them. `ImplBlock`
-already had exactly this "one tier for a whole group of methods"
-concept before this — its `tier: Option<TierAnnotation>` field is the
-direct precedent this generalises from.
+A function takes the block's tier in its `tier` field. A struct, an `impl`
+and an `extend` pass it on to each of their methods that writes no `@tier`
+(5.11). Every other item kind (`enum`/`trait`/`const`/`type`) only has
+`attributes` to merge; tier is meaningless for them or, for a trait, not
+applied yet. `ImplBlock.tier` already had exactly this "one tier for a whole
+group of methods" concept before this and is the precedent it generalises.
 
 Collecting a block's items uses `Vec::split_off`, not in-place mutation
 — `parse_item_or_block` doesn't know in advance how many items a
@@ -796,6 +796,37 @@ a target type, and neither starts with `<`. The list lands in
 `ImplBlock.generic_params` and `ExtendDecl.generic_params` (an empty slice when
 absent). The parser does not check that every parameter is used or that a
 bound names a trait; that is the sema pass in `impl_patterns.rs`.
+
+### 5.11 The tier of a method
+
+A method's tier is decided at parse time, in this order:
+
+1. its own `@tier(...)`;
+2. otherwise the `@tier(...)` on the `impl`, `extend` or struct around it;
+3. otherwise the tier of a `@tier(...) { }` block around that item;
+4. otherwise `HIGH`.
+
+`has_own_tier` (`parse_attr.rs`) decides whether a list writes a tier, by the
+attribute's name. It is never "the list is empty": an unrelated attribute such
+as `@inline` or `@doc(...)` on a method does not change its tier (the rule 5.7
+states for functions).
+
+- `parse_impl_block` and `parse_extend_decl` give each method that writes no tier
+  the block's own tier.
+- `parse_struct_decl` passes the struct's own `@tier` to `parse_struct_member` as the
+  default for its methods.
+- `apply_block_attrs` handles a block around the item. A struct, an `impl` or an
+  `extend` that writes no tier of its own has the block's tier applied to each
+  method that writes none (`retier_methods`, `retier_members`). An item that writes
+  its own tier keeps it, and its methods already took it, so the innermost block
+  wins when blocks nest.
+
+No AST field carries a block's tier for an `extend` or a struct: it is resolved
+onto `MethodDecl.tier` here, and nothing downstream reads the block's own tier.
+Sema reads `MethodDecl.tier` and checks every call to the method against it
+(`TIER-005`, `docs/DIAGNOSTICS_RULES.md`). A trait's own tier is not read yet:
+`@tier` on a trait method is parsed and not applied (slice S4b,
+`docs/TRAITS_TIERS_SPEC.md`).
 
 ## 6. LINQ Query Parsing — Removed
 

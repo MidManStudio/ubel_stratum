@@ -470,13 +470,7 @@ impl<'a> TierChecker<'a> {
         callee_name: &str,
         span: Span,
     ) {
-        let forbidden = matches!(
-            (caller, callee),
-            (TierAnnotation::Mid, TierAnnotation::High)
-            | (TierAnnotation::Low, TierAnnotation::High)
-            | (TierAnnotation::Low, TierAnnotation::Mid)
-        );
-        if forbidden {
+        if tier_call_forbidden(caller, callee) {
             self.errors.add_tier_error(TierError::IllegalTierCall {
                 caller_tier: caller,
                 callee_tier: callee,
@@ -486,3 +480,16 @@ impl<'a> TierChecker<'a> {
         }
     }
                 }
+
+/// The cross-tier call rule: a callee must be at the caller's tier or lower.
+/// One definition, shared by the call-by-name check in this pass and the
+/// method-call check in `type_infer` (which has the receiver types this pass
+/// lacks), so the two can never disagree about what is legal.
+pub(crate) fn tier_call_forbidden(caller: TierAnnotation, callee: TierAnnotation) -> bool {
+    matches!(
+        (caller, callee),
+        (TierAnnotation::Mid, TierAnnotation::High)
+        | (TierAnnotation::Low, TierAnnotation::High)
+        | (TierAnnotation::Low, TierAnnotation::Mid)
+    )
+}

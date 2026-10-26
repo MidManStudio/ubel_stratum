@@ -1,0 +1,79 @@
+// tests/fixtures/err_method_tier_combined.ubl
+// Every route to a method tier in one program, each ending in a LOW or MID
+// caller of a method that is above it: an `extend`, an associated function, a
+// generic `impl`, a trait impl and a method of a built-in type from a LOW
+// function, and an `extend` method from a MID function. `fast` is LOW only
+// because the tier block around it says so, and calling it is legal, so it
+// stays silent.
+// Expected: sema FAIL (six IllegalTierCall, TIER-005).
+
+struct Vec2 {
+    x: int,
+    y: int,
+}
+
+extend Vec2 {
+    fn len2(self) int {
+        return self.x * self.x + self.y * self.y
+    }
+
+    fn origin() Vec2 {
+        return Vec2 { x = 0, y = 0 }
+    }
+}
+
+struct Box<T> {
+    v: T,
+}
+
+impl<T> Box<T> {
+    fn get(self) T {
+        return self.v
+    }
+}
+
+trait Shape {
+    fn area(self) int
+}
+
+impl Shape for Vec2 {
+    fn area(self) int {
+        return self.x * self.y
+    }
+}
+
+extend int {
+    fn doubled(self) int {
+        return self * 2
+    }
+}
+
+@tier(low) {
+    extend Vec2 {
+        fn fast(self) int {
+            return self.x + self.y
+        }
+    }
+}
+
+@tier(low)
+fn physics(v: Vec2, b: Box<int>, n: int) int {
+    let fine = v.fast()
+    let a = v.len2()
+    let o = Vec2.origin()
+    let g = b.get()
+    let s = v.area()
+    let d = n.doubled()
+    return fine + a + g + s + d
+}
+
+@tier(mid)
+fn mid_step(v: Vec2) int {
+    return v.fast() + v.len2()
+}
+
+fn main() void {
+    let v = Vec2 { x = 1, y = 2 }
+    println(physics(v, Box { v = 3 }, 4))
+    println(mid_step(v))
+}

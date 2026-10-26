@@ -43,7 +43,9 @@
 | **S3c** | **Built** | A method's own generic parameters with bounds (including generic methods in traits) and bounds on a type alias parameter. See "What S3c settled" below. |
 | **S3d** | **Built** | Impls and `extend` blocks for primitives, tuples and arrays, and hand-written prelude traits where a built-in type lacks them. See "What S3d settled" below. |
 | **S3e** | **Built** | Impls and `extend` blocks for generic types: a generic struct or enum, and `List`, `Dictionary`, `Queue`, `Stack` and `InlineList`. Impl parameters, conditional impls, impls for one instance (`Box<int>`). See "What S3e settled" below. |
-| S4 to S6 | Planned | As in section 4. |
+| **S4a** | **Built** | The tier of a method is the tier written for it (its own, its `impl`, `extend` or struct, or a tier block), and a call on a receiver (`value.method()`, `Type.assoc()`) is checked against it with the cross-tier rule (`TIER-005`). The prelude's `Hasher` is `@tier(low)`. See `docs/TRAITS_TIERS_SPEC.md`. |
+| S4b | Planned | Tiers on traits: a trait, a trait method signature and a default method carry a tier; an impl method must match it; a call through a bound, a qualified call and a default method call are checked; the six prelude traits become `@tier(low)`. See `docs/TRAITS_TIERS_SPEC.md`. |
+| S5 and S6 | Planned | As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -625,6 +627,9 @@ Two facts found while building S1a bear on the tier design.
    match or lower (sound with the existing rule); or arbitrary override with
    per-instantiation checking. It is written and agreed before S4 is built.
 
+Both are resolved in `docs/TRAITS_TIERS_SPEC.md`: an impl method must match the
+trait's tier exactly, and S4a (built) makes a call on a receiver tier-checked.
+
 ---
 
 ## 1. Where things stand (at the start of the design session)
@@ -815,7 +820,7 @@ exact-count tests, and the docs updated in the same bundle.
 | **S3d** | Impls and `extend` blocks for primitives, tuples and arrays (built). | D4 ii |
 | **S3e** | Impls and `extend` blocks for generic types and the generic built-in collections (built). | D4 ii |
 | Later | Associated types, blanket impls, impls for `Option`-like wrappers and for `Pool` and `Handle`. The order is chosen with the project owner. | D4 ii |
-| **S4** | Tier on trait method signatures. | D7 a |
+| **S4** | Tier on trait method signatures, in two deliveries: S4a (built) carries tiers to methods and checks calls on a concrete receiver; S4b puts the tier on traits. | D7 |
 | **S5** | Language-item traits, one decision and one delivery each: `Display`/`Debug`, `Iterable<T>`, operators. | D5 C |
 | **S6** | `dyn Trait` in `HIGH`. | D2 B |
 

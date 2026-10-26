@@ -1,0 +1,77 @@
+// tests/fixtures/ok_method_tier_isolated.ubl
+// A method has the tier written around it, and a call on a receiver is
+// checked like a call by name: a callee must be at the caller's tier or lower.
+//   - `@tier(low) extend`: every method in it is LOW.
+//   - A method's own `@tier` wins over the block it sits in.
+//   - A method with an unrelated attribute keeps the block's tier.
+//   - `@tier(low) struct`: the default tier of the struct's own methods.
+//   - A tier block reaches the `impl` inside it.
+// Every call below stays level or goes down, so the program is accepted.
+// Expected: sema OK, interpret OK.
+
+struct Counter {
+    value: int,
+}
+
+@tier(low)
+extend Counter {
+    fn bump(self) void {
+        self.value = self.value + 1
+    }
+
+    @inline
+    fn read(self) int {
+        return self.value
+    }
+
+    @tier(high)
+    fn describe(self) string {
+        return $"counter at {self.value}"
+    }
+}
+
+@tier(low)
+struct Gauge {
+    level: int,
+
+    fn raise(self) void {
+        self.level = self.level + 2
+    }
+
+    fn now(self) int {
+        return self.level
+    }
+}
+
+struct Meter {
+    ticks: int,
+}
+
+@tier(low) {
+    impl Meter {
+        fn tick(self) void {
+            self.ticks = self.ticks + 1
+        }
+
+        fn count(self) int {
+            return self.ticks
+        }
+    }
+}
+
+@tier(low)
+fn drive(c: Counter, g: Gauge, m: Meter) int {
+    c.bump()
+    c.bump()
+    g.raise()
+    m.tick()
+    return c.read() + g.now() + m.count()
+}
+
+fn main() void {
+    let c = Counter { value = 0 }
+    let g = Gauge { level = 0 }
+    let m = Meter { ticks = 0 }
+    assert(drive(c, g, m) == 5, "two bumps, one raise of two, one tick")
+    println(c.describe())
+}

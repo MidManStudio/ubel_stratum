@@ -131,8 +131,13 @@ verified safe.
   written by hand where the type lacks it (`Hash` for `double`). Impls and `extend`
   blocks also work for generic types (`impl<T: Show> Show for Box<T>`, `impl Show
   for Box<int>`, `extend<T> List<T>`), for `List`, `Dictionary`, `Queue`, `Stack`
-  and `InlineList`, and an impl can be conditional on a bound of its parameter. Next:
-  associated types, tiers on trait methods, language-item traits, and `dyn Trait`
+  and `InlineList`, and an impl can be conditional on a bound of its parameter. A call on a value
+  (`value.method()`) or on a type (`Type.make()`) now obeys the tier rule: a `LOW`
+  or `MID` function cannot call a method that is `HIGH`. A method has the tier
+  written on it, on its `impl`, `extend` or struct, or on a `@tier(...) { }` block
+  around them. Next: tiers written on traits and trait methods (a call through a
+  bound is not tier-checked yet), associated types, language-item traits, and
+  `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

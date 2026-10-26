@@ -1,0 +1,25 @@
+// tests/fixtures/err_method_tier_isolated.ubl
+// A method is HIGH unless a tier is written for it, and a LOW function may
+// only call LOW code. Before this check a call on a receiver was never tier
+// checked, so `c.read()` passed.
+// Expected: sema FAIL (IllegalTierCall, TIER-005).
+
+struct Counter {
+    value: int,
+}
+
+extend Counter {
+    fn read(self) int {
+        return self.value
+    }
+}
+
+@tier(low)
+fn peek(c: Counter) int {
+    return c.read()
+}
+
+fn main() void {
+    let c = Counter { value = 1 }
+    println(peek(c))
+}
