@@ -147,7 +147,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     }
 
     /// Applies a block's attrs/tier to one item parsed inside it. A function
-    /// takes the tier itself. A struct, an `impl` and an `extend` pass it on to
+    /// takes the tier itself. A struct, an `impl`, an `extend` and a trait pass it on to
     /// each of their methods that writes no `@tier` of its own, unless the item
     /// writes one (then its methods already took it at parse time). Everything
     /// else just gets the generic attrs appended. `has_own_tier` gates the tier
@@ -166,6 +166,25 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 let mut m = m.clone();
                 if !has_own_tier(m.attributes) { m.tier = block_tier; }
                 moved.push(m);
+            }
+            self.arena.alloc_slice_clone(&moved)
+        };
+        let retier_trait_items = |items: &'ast [TraitItem<'ast>]| -> &'ast [TraitItem<'ast>] {
+            let mut moved: Vec<TraitItem<'ast>> = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    TraitItem::MethodSig(sig) if !has_own_tier(sig.attributes) => {
+                        let mut sig = sig.clone();
+                        sig.tier = block_tier;
+                        moved.push(TraitItem::MethodSig(sig));
+                    }
+                    TraitItem::DefaultMethod(m) if !has_own_tier(m.attributes) => {
+                        let mut m = m.clone();
+                        m.tier = block_tier;
+                        moved.push(TraitItem::DefaultMethod(m));
+                    }
+                    other => moved.push(other.clone()),
+                }
             }
             self.arena.alloc_slice_clone(&moved)
         };
@@ -205,7 +224,11 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 Item::Struct(s)
             }
             Item::Enum(mut e)   => { e.attributes = merge_attrs(e.attributes); Item::Enum(e) }
-            Item::Trait(mut t)  => { t.attributes = merge_attrs(t.attributes); Item::Trait(t) }
+            Item::Trait(mut t) => {
+                if !has_own_tier(t.attributes) { t.items = retier_trait_items(t.items); }
+                t.attributes = merge_attrs(t.attributes);
+                Item::Trait(t)
+            }
             Item::Impl(mut i) => {
                 if i.tier.is_none() && !has_own_tier(i.attributes) {
                     i.tier = Some(block_tier);
@@ -745,6 +768,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         let generic_params = self.parse_generic_params();
         let supertraits = self.parse_supertraits();
 
+        // `@tier(mid) trait Tick { .. }`: the default tier of its methods.
+        let default_tier = if has_own_tier(attrs) { extract_tier_from_attrs(attrs) }
+                           else { TierAnnotation::High };
+
         // Body is optional per EBNF: `("{ TraitItem* "}")?`
         let items: &'ast [TraitItem<'ast>] = if self.cursor.is_at(&TokenType::LeftBrace) {
             let open_span = self.span();
@@ -753,7 +780,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
             while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
                 let pos_before = self.cursor.position();
-                if let Some(item) = self.parse_trait_item() { items.push(item); } else { self.recover_to_decl(); }
+                if let Some(item) = self.parse_trait_item(default_tier) { items.push(item); } else { self.recover_to_decl(); }
                 self.eat_sep();
                 self.guard_progress(pos_before);
             }
@@ -779,7 +806,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.parse_trait_bound_list("supertrait name")
     }
 
-    fn parse_trait_item(&mut self) -> Option<TraitItem<'ast>> {
+    fn parse_trait_item(&mut self, default_tier: TierAnnotation) -> Option<TraitItem<'ast>> {
         let (attrs, _) = if self.cursor.is_at(&TokenType::At) {
             self.parse_attribute_list()
         } else {
@@ -812,13 +839,17 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         }
         let return_type = self.parse_return_spec();
 
+        // The method's own `@tier`, otherwise the trait's (never "no
+        // attributes": an unrelated `@doc` must not change a tier).
+        let tier = if has_own_tier(attrs) { extract_tier_from_attrs(attrs) } else { default_tier };
+
         // Has body → default method
         if self.cursor.is_at(&TokenType::LeftBrace) {
             let body = self.parse_block()?;
             let span = body.span;
             return Some(TraitItem::DefaultMethod(MethodDecl {
                 attributes: attrs,
-                tier: TierAnnotation::High,
+                tier,
                 visibility: Visibility::Public,
                 is_async,
                 name, generic_params, params, return_type, body, span,
@@ -827,6 +858,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         // No body → required method signature
         Some(TraitItem::MethodSig(MethodSig {
+            attributes: attrs, tier,
             name, generic_params, params, return_type,
             span: self.span(),
         }))

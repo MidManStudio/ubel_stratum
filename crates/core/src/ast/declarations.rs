@@ -190,6 +190,13 @@ pub enum TraitItem<'ast> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct MethodSig<'ast> {
+    /// `@tier(...)`, `@doc(...)` and other attributes before the signature.
+    pub attributes:     &'ast [Attribute<'ast>],
+    /// The tier the trait declares for this method: its own `@tier`,
+    /// otherwise the `@tier` on the trait (or on a tier block around it),
+    /// otherwise `High`. A call through a bound is checked against it and
+    /// every impl method has to match it (docs/TRAITS_TIERS_SPEC.md).
+    pub tier:           TierAnnotation,
     pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
     pub params:         &'ast [Param<'ast>],

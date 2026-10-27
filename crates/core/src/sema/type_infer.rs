@@ -274,6 +274,11 @@ enum VariantShape {
 
 /// Whether a parameter list starts with `self`, `mut self`, `&self` or
 /// `&mut self`.
+/// Whether an attribute list writes a `@tier(...)` at all, valid or not.
+fn writes_tier(attrs: &[Attribute<'_>]) -> bool {
+    attrs.iter().any(|a| a.name == "tier")
+}
+
 fn has_self_param(params: &[Param<'_>]) -> bool {
     params.first().is_some_and(|p| matches!(p.kind,
         ParamKind::SelfVal | ParamKind::SelfMut | ParamKind::SelfRef | ParamKind::SelfRefMut))
@@ -301,11 +306,11 @@ struct MethodShape {
     guard:       Option<Rc<ImplGuard>>,
     /// The tier a call to the method is checked against (the cross-tier
     /// rule, `TIER-005`). `Some` for a method written in source: an inherent
-    /// method of a struct, an `impl` or an `extend`, and a method an
-    /// `impl Trait for Type` writes. `None` when there is nothing to enforce
-    /// yet: a trait's own signatures and default methods (their tiers arrive
-    /// with the trait-tier slice) and every method with no source
-    /// declaration.
+    /// method of a struct, an `impl` or an `extend`, a trait's own signatures
+    /// and default methods (the tier the trait declares), and a method an
+    /// `impl Trait for Type` writes (which has to equal the trait's). `None`
+    /// for every method with no source declaration (a built-in method, a
+    /// derived or native prelude method).
     tier:        Option<TierAnnotation>,
 }
 
@@ -2308,7 +2313,7 @@ impl<'a> InferCtx<'a> {
         let (return_type, is_fallible) = self.return_type_to_sema(sig.return_type.as_ref());
         let generics = self.method_generics_of(sig.generic_params, base);
         self.pop_own_generic_scope(scope);
-        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible, generics, guard: None, tier: None }
+        MethodShape { has_self: has_self_param(sig.params), params, return_type, is_fallible, generics, guard: None, tier: Some(sig.tier) }
     }
 
     /// Collect a trait: its required signatures and its default methods,
@@ -2335,7 +2340,8 @@ impl<'a> InferCtx<'a> {
                 }
                 TraitItem::DefaultMethod(m) => {
                     let (fn_ty, generics) = self.collect_method_sig(m, arity + 1);
-                    if let Some(shape) = self.method_shape_of_fn_type(has_self_param(m.params), fn_ty, generics) {
+                    if let Some(mut shape) = self.method_shape_of_fn_type(has_self_param(m.params), fn_ty, generics) {
+                        shape.tier = Some(m.tier);
                         methods.push(TraitMethodInfo {
                             name: m.name.to_string(), shape, has_default: true,
                         });
@@ -2680,7 +2686,27 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                     expected.guard = guard.clone();
-                    expected.tier = Some(m.tier);
+                    let trait_tier = tm.shape.tier.unwrap_or(TierAnnotation::High);
+                    // A tier written for the method (on it, on its `impl`, or on
+                    // a tier block around that) has to equal the trait's. One
+                    // that is not written is the trait's.
+                    // (A tier block around the impl merges its own `@tier` into the
+                    // impl's attributes, so `writes_tier` covers that case too.)
+                    let written = writes_tier(m.attributes) || writes_tier(i.attributes);
+                    let impl_tier = if written { m.tier } else { trait_tier };
+                    if !written {
+                        self.ctx.method_tiers.insert(m.span, trait_tier);
+                    } else if impl_tier != trait_tier {
+                        self.errors.add_tier_error(TierError::TraitMethodTierMismatch {
+                            trait_name: info.name.clone(),
+                            type_name:  type_name.clone(),
+                            method:     tm.name.clone(),
+                            impl_tier,
+                            trait_tier,
+                            span:       m.span,
+                        });
+                    }
+                    expected.tier = Some(impl_tier);
                     self.add_trait_method(target_def, trait_def, &tm.name, expected);
                 }
                 None if tm.has_default => {
@@ -2829,6 +2855,7 @@ impl<'a> InferCtx<'a> {
             }
             1 => {
                 let shape = self.instantiate_trait_shape(&found[0].1, receiver_ty, &found[0].2);
+                self.check_method_tier(&shape, method, callee_span);
                 let inst = self.instantiate_method(&shape, &[]);
                 self.check_method_args(&inst.params, args, call_span);
                 self.require_method_bounds(&shape, &inst, args, call_span);
@@ -2896,6 +2923,7 @@ impl<'a> InferCtx<'a> {
         }
         let trait_args = self.trait_args_of(recv_ty, trait_def);
         let shape = self.instantiate_trait_shape(&tm.shape.clone(), recv_ty, &trait_args);
+        self.check_method_tier(&shape, method, span);
         let inst = self.instantiate_method(&shape, &[]);
         self.check_method_args(&inst.params, &args[1..], span);
         self.require_method_bounds(&shape, &inst, &args[1..], span);
@@ -4076,7 +4104,7 @@ impl<'a> InferCtx<'a> {
         let prev_fallible = self.current_fallible;
         self.current_fallible = is_fallible;
         let prev_tier = self.current_tier;
-        self.current_tier = m.tier;
+        self.current_tier = self.ctx.method_tier(m);
         self.infer_block(&m.body);
         self.finish_body_checks();
         self.pop_own_generic_scope(scope);

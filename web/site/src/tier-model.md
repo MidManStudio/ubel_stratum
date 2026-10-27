@@ -137,12 +137,20 @@ and outlives enforcement across a boundary are real, running checks in
 the semantic analysis pass, independent of which backend eventually
 executes the program.
 
-**Calls on a value.** `value.method()` and `Type.make()` obey the same call
-matrix as a call by name, using the tier written for the method. A method is
-`HIGH` unless it, the `impl`, `extend` or struct around it, or a
-`@tier(...) { }` block around them says otherwise, and an unrelated attribute
-such as `@inline` never changes that. A call through a trait bound is not
-checked yet.
+**Calls on a value.** `value.method()`, `Type.make()`, a call through a trait
+bound and a qualified call (`Trait.f(v)`) obey the same call matrix as a call by
+name, using the tier written for the method. A method is `HIGH` unless it, the
+`impl`, `extend`, struct or trait around it, or a `@tier(...) { }` block around
+them says otherwise, and an unrelated attribute such as `@inline` never changes
+that.
+
+**Trait methods.** A trait method has a tier: its own `@tier`, otherwise the
+trait's, otherwise `HIGH`. A call through a bound is checked against it, because
+the impl is not known there, so every impl method has to be at exactly that tier
+(an impl method that writes no tier takes it). The prelude traits (`PartialEq`,
+`Eq`, `PartialOrd`, `Ord`, `Hash`, `Clone`) are `@tier(low)`: code at any tier can
+call them through a bound, and a hand-written impl of one is `LOW`, so its body
+cannot read a `static`, build a collection or call a `HIGH` function.
 
 **Outlives / subset enforcement across a boundary.** LOW-tier borrow
 checking is real: a control-flow graph is built per function, and loan

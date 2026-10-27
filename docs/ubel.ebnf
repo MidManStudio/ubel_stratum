@@ -129,9 +129,12 @@ TraitItem     ::= MethodSignature
                 | AssociatedType
                 | DefaultMethod
 
-MethodSignature ::= "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec?
+MethodSignature ::= Attributes? "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec?
 AssociatedType  ::= "type" Ident
-DefaultMethod   ::= "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec? Block
+DefaultMethod   ::= Attributes? "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec? Block
+(* A `@tier(...)` on a method signature or default method is that method's tier;
+   a `@tier(...)` on the trait (Item attributes, or a block around it) is the
+   default for its methods. See docs/TRAITS_TIERS_SPEC.md. *)
 
 (* ── Impl ── *)
 ImplBlock     ::= "impl" GenericParams? (QualifiedIdent GenericArgs? "for")? TypeExpr "{" ImplItem* "}"

@@ -1569,3 +1569,30 @@ seven corrections. The mutation pass is described under `tests/method_tiers.rs` 
 `docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first or second
 person.
 
+A twenty-fourth delivery (traits slice S4b) touched `core/src/ast/declarations.rs`
+(`MethodSig.attributes`, `MethodSig.tier`), `rd_parser/src/parsers/parse_decl.rs`,
+`rd_parser/src/prelude.rs`, `sema/sema_context.rs` (`method_tiers`, `method_tier`),
+`sema/type_infer.rs`, `sema/tier_check.rs` and `error_management/errors/tier/mod.rs`
+(`TIER-016`, `TraitMethodTierMismatch`). A trait method now has a tier: its own `@tier`,
+otherwise the `@tier` on the trait or on a tier block around it, otherwise `HIGH`, resolved by
+the parser onto `MethodSig.tier` and `MethodDecl.tier` (a `@tier` on a default method is no
+longer dropped). A call through a bound, a qualified call and a call to a default method are
+checked with the cross-tier rule (`TIER-005`). An impl method has to equal its trait's tier
+(`TIER-016`), and one that writes no tier takes it: sema resolves that in
+`register_one_trait_impl`, keeps it in `SemaContext::method_tiers`, and the type inference
+of a body and the tier pass read it through `method_tier`. The six prelude traits are
+`@tier(low)`, so a hand-written impl of one is `LOW`: its body may call only `LOW` code, read
+no `static` and build no collection. It added `tests/trait_tiers.rs` (47 tests), five fixtures
+(`ok_trait_tier_isolated`, `ok_trait_tier_combined`, `err_trait_tier_isolated`,
+`err_trait_tier_conformance_isolated`, `err_trait_tier_combined`), turned the three "not
+checked yet" pins in `tests/method_tiers.rs` into checks (43 tests there now), and corrected
+three fixtures and two tests that the new rules reject (`ok_bound_combined`,
+`ok_prelude_impl_combined`, `ok_prelude_impl_ord_isolated`, and one test each in
+`tests/bounds.rs` and `tests/prelude_traits.rs`). The workspace has 974 passing tests in 30
+suites. The fixture sweep went from 271 files to 276: 2 fail lexing, 8 fail parsing, 123 stop
+at sema (3 more) and 143 are clean (2 more), 142 of them interpreted; no fixture that existed
+before changed result after the three corrections, and the 37 other `.ubl` files are
+unchanged. The mutation pass is described under `tests/trait_tiers.rs` in
+`docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first or second
+person.
+

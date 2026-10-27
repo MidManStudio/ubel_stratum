@@ -132,12 +132,14 @@ verified safe.
   blocks also work for generic types (`impl<T: Show> Show for Box<T>`, `impl Show
   for Box<int>`, `extend<T> List<T>`), for `List`, `Dictionary`, `Queue`, `Stack`
   and `InlineList`, and an impl can be conditional on a bound of its parameter. A call on a value
-  (`value.method()`) or on a type (`Type.make()`) now obeys the tier rule: a `LOW`
-  or `MID` function cannot call a method that is `HIGH`. A method has the tier
-  written on it, on its `impl`, `extend` or struct, or on a `@tier(...) { }` block
-  around them. Next: tiers written on traits and trait methods (a call through a
-  bound is not tier-checked yet), associated types, language-item traits, and
-  `dyn Trait`
+  (`value.method()`), on a type (`Type.make()`) or through a trait obeys the tier
+  rule: a `LOW` or `MID` function cannot call a method that is `HIGH`. A method has
+  the tier written on it, on its `impl`, `extend`, struct or trait, or on a
+  `@tier(...) { }` block around them. A trait method has a tier too, and an impl
+  method has to equal it (a method that writes none takes the trait's). The prelude
+  traits are `@tier(low)`, so a hand-written `eq`, `hash` or `clone` is `LOW`. Next:
+  associated types, language-item traits (the operators then check their calls),
+  and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

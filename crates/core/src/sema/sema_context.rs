@@ -23,7 +23,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use crate::ast::common::Span;
+use crate::ast::common::{Span, TierAnnotation};
 use crate::lexer::token::IntSuffix;
 use crate::sema::symbol_table::{DefId, ResolutionMap, SymbolTable};
 use crate::sema::type_table::{TypeId, TypeTable};
@@ -68,6 +68,14 @@ pub struct SemaContext {
     /// of the flat table where an inherent method wins.
     pub trait_call_sites: HashMap<Span, String>,
 
+    /// The tier of a method of an `impl Trait for Type` that writes no tier
+    /// of its own (nor does its `impl`, nor a tier block around it): it takes
+    /// the tier the trait declares, which the parser cannot know. Keyed by the
+    /// method's `Span`. A method with no entry keeps `MethodDecl::tier`.
+    /// type_infer fills it before any body is inferred; both it and the tier
+    /// pass read it through `method_tier`.
+    pub method_tiers: HashMap<Span, TierAnnotation>,
+
     /// Module-level (top-level item) name -> DefId, populated during
     /// name resolution's pre-declare step. Used by type_infer to resolve
     /// type positions (`: Foo`, `Foo<T>`, struct-literal paths) without
@@ -92,6 +100,13 @@ impl SemaContext {
 
     pub fn def_at(&self, span: Span) -> Option<&crate::sema::symbol_table::Def> {
         self.resolutions.get(span).map(|id| self.symbols.lookup(id))
+    }
+
+    /// The tier a method body is checked at: the one resolved from its trait
+    /// when it takes the trait's tier (`method_tiers`), otherwise the tier the
+    /// parser put on the method.
+    pub fn method_tier(&self, m: &crate::ast::declarations::MethodDecl<'_>) -> TierAnnotation {
+        self.method_tiers.get(&m.span).copied().unwrap_or(m.tier)
     }
 
     pub fn top_level_def(&self, name: &str) -> Option<DefId> {

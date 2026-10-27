@@ -1,0 +1,85 @@
+// tests/fixtures/ok_trait_tier_combined.ubl
+// Tiers on traits beside features shipped earlier: a LOW trait with a default
+// method, a struct that is LOW and bounded by it, a generic impl of a MID
+// trait for that struct, a hand-written prelude impl (LOW, like the prelude
+// trait it implements), a bound on the prelude trait in LOW code, Unique
+// ownership (enforced in LOW functions), a tier block holding a trait and its
+// impl, and a HIGH `main` that drives it.
+// Expected: sema OK, interpret OK.
+
+@tier(low)
+trait Body {
+    fn mass(self) int
+
+    fn weight(self) int {
+        return self.mass() * 10
+    }
+}
+
+@tier(low) {
+    struct Rock {
+        m: int,
+    }
+
+    impl Body for Rock {
+        fn mass(self) int {
+            return self.m
+        }
+    }
+}
+
+impl PartialEq for Rock {
+    fn eq(self, other: Rock) bool {
+        return self.m == other.m
+    }
+}
+
+@tier(low)
+struct Crate<T: Body> {
+    item: T,
+
+    fn load(self) int {
+        return self.item.weight()
+    }
+}
+
+@tier(mid)
+trait Describe {
+    fn describe(self) int
+}
+
+impl<T: Body> Describe for Crate<T> {
+    fn describe(self) int {
+        return self.load()
+    }
+}
+
+@tier(mid)
+fn report<D: Describe>(d: D) int {
+    return d.describe()
+}
+
+@tier(low)
+fn same<T: PartialEq>(a: T, b: T) bool {
+    return a.eq(b)
+}
+
+@tier(low)
+fn weigh(r: Unique<Rock>) int {
+    return r.weight()
+}
+
+@tier(low)
+fn build_and_weigh() int {
+    let r = Unique.new(Rock { m = 4 })
+    return weigh(r)
+}
+
+fn main() void {
+    let c = Crate { item = Rock { m = 4 } }
+    assert(report(c) == 40, "four times ten")
+    assert(c.load() == 40, "the same through the struct")
+    assert(same(Rock { m = 2 }, Rock { m = 2 }), "equal by the hand-written eq")
+    assert(build_and_weigh() == 40, "through a Unique")
+    println(Rock { m = 1 } == Rock { m = 1 })
+}

@@ -8,9 +8,7 @@
 //! that, otherwise `HIGH`. An unrelated attribute on a method never changes
 //! the result.
 //!
-//! What is deliberately NOT checked yet (a trait's own tiers, a call through
-//! a bound, a default method) is pinned too, so the slice that adds it has a
-//! test to flip.
+//! A trait's own tiers, and the calls through them, are in `trait_tiers.rs`.
 //!
 //! The `.ubl` fixtures show whole programs accepted or rejected. These tests
 //! pin the exact diagnostics and the run-time output.
@@ -251,10 +249,9 @@ fn built_in_methods_carry_no_tier() {
 
 #[test]
 fn a_trait_impl_method_is_called_at_the_tier_the_impl_wrote() {
-    // The impl method is LOW, so a LOW caller may call it. Whether that may
-    // differ from the trait's tier is the next slice's rule.
+    // The impl method is LOW, equal to the trait's, so a LOW caller may call it.
     assert_clean(&prog(
-        "trait T { fn f(self) int }\n\
+        "@tier(low) trait T { fn f(self) int }\n\
          impl T for S { @tier(low) fn f(self) int { return self.x } }\n\
          @tier(low) fn l(s: S) int { return s.f() }",
     ));
@@ -263,38 +260,9 @@ fn a_trait_impl_method_is_called_at_the_tier_the_impl_wrote() {
 #[test]
 fn a_tier_block_around_the_trait_impl_sets_its_methods() {
     assert_clean(&prog(
-        "trait T { fn f(self) int }\n\
+        "@tier(low) trait T { fn f(self) int }\n\
          @tier(low) { impl T for S { fn f(self) int { return self.x } } }\n\
          @tier(low) fn l(s: S) int { return s.f() }",
-    ));
-}
-
-// ── Not checked yet: pinned so the slice that adds them flips them ───────────
-
-#[test]
-fn a_call_through_a_bound_is_not_checked_yet() {
-    assert_clean(
-        "trait Tick { @tier(high) fn label(self) string }\n\
-         @tier(mid) fn run<T: Tick>(t: T) string { return t.label() }\n\
-         fn main() void { }\n",
-    );
-}
-
-#[test]
-fn a_default_method_call_is_not_checked_yet() {
-    assert_clean(&prog(
-        "trait T { fn g(self) int { return 1 } }\n\
-         impl T for S { }\n\
-         @tier(low) fn l(s: S) int { return s.g() }",
-    ));
-}
-
-#[test]
-fn a_tier_written_on_a_trait_method_is_not_applied_yet() {
-    // The default method asks for LOW, but its body still checks as HIGH.
-    assert_clean(&prog(
-        "trait T { @tier(low) fn g(self) int { return h() } }\n\
-         impl T for S { }",
     ));
 }
 

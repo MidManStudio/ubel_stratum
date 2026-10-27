@@ -2,8 +2,10 @@
 // Bounds together with the features they have to live beside: a `static`
 // global updated from a trait method, an enum that implements the bound
 // trait, a bounded struct holding the enum, a sized-integer return typed
-// by the trait, a MID-tier bounded function reached with an arena value,
-// and a bounded function held in a variable and called through it.
+// by the trait, a MID-tier bounded function reached with an arena value
+// (over a MID-tier trait: a MID function may not call a HIGH trait method,
+// and a MID impl may not touch a `static`), and a bounded function held in
+// a variable and called through it.
 // Expected: sema OK, interpret OK.
 
 trait Level {
@@ -38,6 +40,15 @@ impl Level for Unit {
     }
 }
 
+@tier(mid)
+trait Weight {
+    fn weight(self) u8
+}
+
+impl Weight for Unit {
+    fn weight(self) u8 { return self.base }
+}
+
 struct Slot<T: Level> {
     item: T,
     fn boost(self) u8 { return self.item.power() }
@@ -48,8 +59,8 @@ fn read<T: Level>(x: T) u8 {
 }
 
 @tier(mid)
-fn read_mid<T: Level>(x: T) u8 {
-    return x.power()
+fn read_mid<T: Weight>(x: T) u8 {
+    return x.weight()
 }
 
 @tier(mid)

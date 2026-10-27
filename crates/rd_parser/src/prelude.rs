@@ -14,7 +14,9 @@
 //!
 //! The trait names are the ones `@derive` already uses. `Hasher` is the
 //! state `Hash.hash` writes into, and is `@tier(low)` (plain arithmetic on one
-//! `u64`) so that code at any tier can hash; `Hash.hash` itself is native. What a built-in or
+//! `u64`) so that code at any tier can hash; `Hash.hash` itself is native. The six
+//! traits are `@tier(low)` too, so code at any tier can call their methods through a
+//! bound and every hand-written impl of them is `LOW` (docs/TRAITS_TIERS_SPEC.md, 4.6). What a built-in or
 //! derived type does for each method is native, see
 //! `ubel_stratum::sema` (satisfaction) and the interpreter (the methods).
 
@@ -35,14 +37,17 @@ pub const PRELUDE_SRC: &str = r#"enum Ordering {
     Greater,
 }
 
+@tier(low)
 trait PartialEq {
     fn eq(self, other: Self) bool
     fn ne(self, other: Self) bool { return !self.eq(other) }
 }
 
+@tier(low)
 trait Eq: PartialEq {
 }
 
+@tier(low)
 trait PartialOrd: PartialEq {
     fn partial_cmp(self, other: Self) Ordering?
     fn lt(self, other: Self) bool {
@@ -63,10 +68,12 @@ trait PartialOrd: PartialEq {
     }
 }
 
+@tier(low)
 trait Ord: PartialOrd + Eq {
     fn cmp(self, other: Self) Ordering
 }
 
+@tier(low)
 trait Clone {
     fn clone(self) Self
 }
@@ -78,6 +85,7 @@ struct Hasher {
     fn finish(self) u64 { return self.state }
 }
 
+@tier(low)
 trait Hash: Eq {
     fn hash(self, state: Hasher) void
 }

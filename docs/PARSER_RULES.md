@@ -632,11 +632,10 @@ per item:**
 - The generic `attributes` list: always appended, regardless of tier
   overrides.
 
-A function takes the block's tier in its `tier` field. A struct, an `impl`
-and an `extend` pass it on to each of their methods that writes no `@tier`
-(5.11). Every other item kind (`enum`/`trait`/`const`/`type`) only has
-`attributes` to merge; tier is meaningless for them or, for a trait, not
-applied yet. `ImplBlock.tier` already had exactly this "one tier for a whole
+A function takes the block's tier in its `tier` field. A struct, an `impl`,
+an `extend` and a trait pass it on to each of their methods that writes no
+`@tier` (5.11). Every other item kind (`enum`/`trait`/`const`/`type`) only has
+`attributes` to merge; tier is meaningless for them. `ImplBlock.tier` already had exactly this "one tier for a whole
 group of methods" concept before this and is the precedent it generalises.
 
 Collecting a block's items uses `Vec::split_off`, not in-place mutation
@@ -802,7 +801,7 @@ bound names a trait; that is the sema pass in `impl_patterns.rs`.
 A method's tier is decided at parse time, in this order:
 
 1. its own `@tier(...)`;
-2. otherwise the `@tier(...)` on the `impl`, `extend` or struct around it;
+2. otherwise the `@tier(...)` on the `impl`, `extend`, struct or trait around it;
 3. otherwise the tier of a `@tier(...) { }` block around that item;
 4. otherwise `HIGH`.
 
@@ -814,19 +813,30 @@ states for functions).
 - `parse_impl_block` and `parse_extend_decl` give each method that writes no tier
   the block's own tier.
 - `parse_struct_decl` passes the struct's own `@tier` to `parse_struct_member` as the
-  default for its methods.
-- `apply_block_attrs` handles a block around the item. A struct, an `impl` or an
-  `extend` that writes no tier of its own has the block's tier applied to each
-  method that writes none (`retier_methods`, `retier_members`). An item that writes
+  default for its methods. `parse_trait_decl` does the same for `parse_trait_item`, which
+  gives a required signature (`MethodSig.tier`) and a default method (`MethodDecl.tier`)
+  the resolved tier. `MethodSig` carries `attributes` for this, so a tier block can tell a
+  signature that writes a tier from one that does not.
+- `apply_block_attrs` handles a block around the item. A struct, an `impl`, an
+  `extend` or a trait that writes no tier of its own has the block's tier applied to
+  each method that writes none (`retier_methods`, `retier_members`,
+  `retier_trait_items`). An item that writes
   its own tier keeps it, and its methods already took it, so the innermost block
   wins when blocks nest.
 
-No AST field carries a block's tier for an `extend` or a struct: it is resolved
-onto `MethodDecl.tier` here, and nothing downstream reads the block's own tier.
-Sema reads `MethodDecl.tier` and checks every call to the method against it
-(`TIER-005`, `docs/DIAGNOSTICS_RULES.md`). A trait's own tier is not read yet:
-`@tier` on a trait method is parsed and not applied (slice S4b,
-`docs/TRAITS_TIERS_SPEC.md`).
+No AST field carries a block's tier for an `extend`, a struct or a trait: it is resolved
+onto `MethodDecl.tier` and `MethodSig.tier` here, and nothing downstream reads the
+block's own tier. Sema reads those and checks every call to the method against
+it (`TIER-005`, `docs/DIAGNOSTICS_RULES.md`).
+
+The one tier the parser cannot decide is that of a method in `impl Trait for Type`
+that writes none: it is the trait's, and the trait may be anywhere in the program or the
+prelude. Sema resolves it when the impl is registered (`register_one_trait_impl`),
+keeps the result in `SemaContext::method_tiers` keyed by the method's span, and every
+pass that checks a method body reads the tier through `SemaContext::method_tier`.
+A method counts as writing a tier when it, its `impl`, or a tier block around the impl
+carries a `@tier` attribute (a tier block merges its own `@tier` into the attributes of
+the item it wraps); a written tier that differs from the trait's is `TIER-016`.
 
 ## 6. LINQ Query Parsing — Removed
 

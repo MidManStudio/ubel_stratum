@@ -498,12 +498,21 @@ it actually turned up:
   literal or an associated call naming a type that has no such members is
   not checked for any non-struct name, alias or not; only the alias route
   is new reachable surface.
-- A call through a bound (`t.label()` with `t: T`, `T: Tick`), a call to a trait
-  default method, a qualified call (`Tick.label(v)`) and the implicit calls of
-  operators and `for-in` are not tier-checked, and a `@tier` written on a trait
-  method signature or default method is parsed and dropped. Calls to a method
-  written in source on a concrete receiver are checked since slice S4a
-  (`TIER-005`); S4b covers the rest of the trait cases, S5 the implicit calls.
+- The implicit calls of operators and `for-in` into a trait method are not
+  tier-checked: `a == b` and `a < b` run a hand-written `eq` or `partial_cmp`
+  with no check against the caller's tier. Every other call to a method is
+  checked (`TIER-005`; slices S4a and S4b). Slice S5 decides the operator
+  desugaring and with it this check.
+- A hand-written impl of a prelude trait is `LOW` (`TIER-016` otherwise), so its
+  body may not call a `HIGH` function, read or write a `static`, or build a
+  collection. A helper such as a ranking function has to be `@tier(low)`. This
+  was chosen in the S4 specification (Q4) so that generic code at any tier can
+  call the prelude traits through a bound; the alternative is a tier-agnostic
+  marker for the prelude traits, which would let a `LOW` caller reach a `HIGH`
+  impl.
+- A tier error found in type inference (a call on a receiver, a call through a
+  trait, a `TIER-016`) stops the pipeline before the tier pass runs, so a by-name
+  `TIER-005` in a method body is reported only once those are fixed.
 - Struct printing is nondeterministic. The default `$"{p}"` of a struct
   walks a `HashMap`, so field order varies between runs (`P {x: 1, y: 2}`
   or `P {y: 2, x: 1}`); `Value::Struct` already carries `field_order`.

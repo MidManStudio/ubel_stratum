@@ -1004,7 +1004,9 @@ fn main() void {
 
 #[test]
 fn an_enum_may_order_itself_and_replace_its_automatic_eq() {
+    // A hand-written prelude impl is LOW, so the helper it calls is LOW too.
     let src = r#"enum Level { Low, Mid, High }
+@tier(low)
 fn rank(l: Level) int {
     match l {
         Level.Low => { return 0 }

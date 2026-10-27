@@ -12,6 +12,8 @@ enum Level {
     High,
 }
 
+// A hand-written prelude impl is LOW, so a helper it calls is LOW too.
+@tier(low)
 fn rank(l: Level) int {
     match l {
         Level.Low => { return 0 }

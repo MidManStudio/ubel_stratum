@@ -177,8 +177,15 @@ fn main() void { println(dbl(Sq { s = 3 })) }
 
 #[test]
 fn a_value_reached_through_an_arena_still_satisfies_the_bound() {
+    // A MID function may only call a MID trait method, so the bound here is a
+    // MID trait of its own.
     let src = prog(r#"@tier(mid)
-fn total<T: Shape>(x: T) int { return x.area() }
+trait Weight { fn weight(self) int }
+impl Weight for Sq {
+    fn weight(self) int { return self.s * self.s }
+}
+@tier(mid)
+fn total<T: Weight>(x: T) int { return x.weight() }
 @tier(mid)
 fn go() void {
     with arena(64KB) {

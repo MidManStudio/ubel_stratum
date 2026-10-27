@@ -1,12 +1,12 @@
 # Tiers on Trait Methods: S4 Specification
 
-> **Status:** Agreed on 2026-10-25 (section 5 records each choice). S4a is
-> built. S4b is next.
+> **Status:** Agreed on 2026-10-25 (section 5 records each choice). S4a and S4b
+> are built.
 >
 > **Verified against:** `MidManStudio/ubel_stratum` master at `43fc418`, using
 > `ubel check --json` and its `stage` field. Every probe in section 3 is paired
 > with a control that must fail, so a clean probe means a real gap and not a
-> bad program. S4a was built on that commit.
+> bad program. S4a was built on that commit and S4b on top of it.
 >
 > **Companion:** `docs/TRAITS_DESIGN.md` (decision D7, slice S4, and the
 > section "D7: what has to be specified before S4").
@@ -142,7 +142,9 @@ is `HIGH`.
 
 The tier of an impl method is checked against the trait method it implements
 (choice Q1 fixes what "checked" means). A tier the impl does not write is taken
-from the trait method (choice Q2). A tier the impl does write, on the method or
+from the trait method (choice Q2). The parser cannot know it, because the trait may sit
+anywhere in the program or in the prelude, so sema resolves it when the impl is
+registered and every pass that checks a method body reads it from there. A tier the impl does write, on the method or
 on the block, has to satisfy the rule of Q1.
 
 A default method that an impl does not override keeps the tier the trait gives
@@ -180,10 +182,10 @@ the callee.
 | Associated function | `Box.wrap(v)` | the function's own tier |
 | Built-in method | `list.push(x)` | unchanged, governed by `TIER-008` |
 
-S4a checks the first, second and fifth rows (the tier of a method written in
-source). The default-method, bound and qualified rows come with S4b: until a
-trait can carry a tier, every trait method is `HIGH` and there would be no way
-to write the fix.
+S4a checked the first, second and fifth rows (the tier of a method written in
+source). The default-method, bound and qualified rows came with S4b: until a
+trait could carry a tier, every trait method was `HIGH` and there would have been
+no way to write the fix. All rows are checked now.
 
 Two properties follow.
 
@@ -214,7 +216,7 @@ S3e.
 ### 4.6 Prelude traits
 
 The six prelude traits (`PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`,
-`Clone`) are `@tier(low)` (choice Q4 C). Their methods (`eq`, `ne`,
+`Clone`) are `@tier(low)` (choice Q4 C, built in S4b). Their methods (`eq`, `ne`,
 `partial_cmp`, `lt`, `le`, `gt`, `ge`, `cmp`, `hash`, `clone`) are therefore
 `LOW`, so code at any tier can call them through a bound. Under the exact
 match rule every hand-written impl of a prelude trait is `LOW` too, and an
@@ -341,7 +343,7 @@ in S4a would reject every `MID` caller with no way to write the fix.
 
 ## 6. Worked examples
 
-Results below assume the recommended options (Q1 A, Q2 a, Q3 all, Q4 A).
+Results below follow the decided options (Q1 A, Q2 a, Q3 all, Q4 C).
 
 ```ubel
 @tier(mid) trait Tick {
@@ -385,9 +387,11 @@ Rejected with `TIER-005`: `hi` is `HIGH` by default and the caller is `LOW`.
 Writing `@tier(low)` on `hi`, on the `extend`, or on a tier block around it
 makes the program valid.
 
-All four programs lex, parse and check clean on live today, which is what the
-probes in section 3 rely on. The rejections above are the intended behaviour,
-not the current one.
+All four programs lex and parse as shown, and on `43fc418` they all checked
+clean, which is what the probes in section 3 rely on. Since S4a and S4b they
+behave as stated above, and the fixtures `err_method_tier_isolated.ubl`,
+`err_trait_tier_isolated.ubl` and `err_trait_tier_conformance_isolated.ubl`
+cover the three kinds of rejection.
 
 ---
 
@@ -396,12 +400,12 @@ not the current one.
 | Situation | Diagnostic |
 |---|---|
 | A call whose callee tier is above the caller's | `TIER-005` `IllegalTierCall`, reused. The callee name is the method name. |
-| An impl method whose tier breaks the rule of Q1 | New, in the `TIER-0xx` family (next free code `TIER-016`). Working name `TraitMethodTierMismatch`; the code is assigned when built. |
+| An impl method whose tier breaks the rule of Q1 | `TIER-016` `TraitMethodTierMismatch`, new in S4b. |
 
-Draft wording for the new one: "method `tick` in `impl Tick for P` is
-`@tier(high)`, but trait `Tick` declares it `@tier(mid)`", with the suggestion
-"remove the `@tier` on the method to take the trait's tier, or write
-`@tier(mid)`". The span is the impl method.
+Wording of the new one: "method `tick` in `impl Tick for P` is `@tier(high)`,
+but trait `Tick` declares it `@tier(mid)`", with the suggestion "remove the tier
+written for this method (on it, on its `impl`, or on a tier block around it) to
+take the trait's tier, or write `@tier(mid)`". The span is the impl method.
 
 Nothing silently ignored remains: a `@tier` on a trait, a trait signature, a
 struct, an `extend` and an impl method is either honoured or reported.
@@ -440,17 +444,26 @@ delivery adds a combined fixture that uses the rules together with generics
 - Pinned as not checked yet, each by a test that S4b flips: a call through a
   bound, a default method call, and a `@tier` written on a trait method.
 
-**S4b: tiers on traits.**
+**S4b: tiers on traits (built).**
 
-- Parser and AST: `TraitDecl.tier`, `MethodSig.tier`, the default-method tier
-  from its own attribute (P2), the trait tier from a surrounding block, and
-  `ImplBlock.tier` kept distinct for an explicit `@tier(high)`.
-- Prelude: the six prelude traits become `@tier(low)` (section 4.6).
-- Sema: the resolved tier in the trait's method shapes; the conformance check
-  of Q1 and the unwritten-tier rule of Q2; the bound, qualified and
-  default-method rows of section 4.4.
-- Tests, fixtures and docs as in S4a, plus `ubel.ebnf` if the grammar for
-  trait items changes.
+- AST and parser: `MethodSig` gained `attributes` and a resolved `tier`; a
+  trait's own `@tier` is the default of its methods (`parse_trait_decl`,
+  `parse_trait_item`); a default method takes its own `@tier`, then the trait's
+  (P2); a tier block around a trait reaches the methods that write none
+  (`retier_trait_items`). `TraitDecl` needed no field.
+- Prelude: the six prelude traits are `@tier(low)`.
+- Sema: the resolved tier in the trait's method shapes; the conformance check of
+  Q1 (`TIER-016`, `TierError::TraitMethodTierMismatch`) and the unwritten-tier
+  rule of Q2 in `register_one_trait_impl`, with the result kept in
+  `SemaContext::method_tiers` and read through `SemaContext::method_tier` by the
+  type inference of a method body and by the tier pass; the bound, qualified and
+  default-method rows of section 4.4 through `check_method_tier`.
+- Grammar: `ubel.ebnf` allows attributes before a trait method.
+- Tests and fixtures: `crates/rd_parser/tests/trait_tiers.rs` (47 tests); five
+  fixtures (`ok_trait_tier_isolated`, `ok_trait_tier_combined`,
+  `err_trait_tier_isolated`, `err_trait_tier_conformance_isolated`,
+  `err_trait_tier_combined`); the three tests in `method_tiers.rs` that pinned
+  "not checked yet" now assert the check, so that file has 43 tests.
 
 ---
 
@@ -483,9 +496,46 @@ Acceptance narrows in two ways.
 The prelude is ordinary source, so it is subject to the same rule: its `Hasher`
 had to be given `@tier(low)`.
 
+S4b was measured the same way on the 271 fixtures and on the 37 other `.ubl`
+files in the repository (308 programs) against the S4a binary. Three fixtures
+changed, all of them consequences of the rules and not defects, and each was
+corrected:
+
+- `ok_bound_combined` had a `MID` function calling, through a bound, a trait method
+  that updates a `static`. A `MID` caller needs a `MID` trait method, and a `MID`
+  impl cannot touch a `static`, so the `MID` path now has a `@tier(mid)` trait of
+  its own and the static is updated only from `HIGH` paths (the printed count
+  changes from 4 to 3).
+- `ok_prelude_impl_ord_isolated` called a `HIGH` helper from the bodies of a
+  hand-written `PartialOrd`; the helper is `@tier(low)` now.
+- `ok_prelude_impl_combined` counted how often a hand-written `eq` ran in a
+  `static`; a `LOW` impl cannot touch one, so the counter is gone (the dictionary
+  lookup that finds `Id { n = 15 }` for the key `Id { n = 5 }` already shows that
+  the impl ran).
+
+The last two are the cost of choice Q4 C: the body of a hand-written prelude impl
+may call only `LOW` code, read no `static` and build no collection. One
+`bounds.rs` test (a `MID` bound over an arena value) and one `prelude_traits.rs`
+test (a ranking helper) needed the same two corrections. After them no fixture
+and no other `.ubl` file differs from the S4a result.
+
 ---
 
-## 10. Deferred
+## 10. Known limits
+
+- A tier error found in type inference (a call on a receiver or through a trait,
+  or `TIER-016`) stops the pipeline before the tier pass runs, so a by-name
+  `TIER-005` inside a method body is reported only once those are fixed.
+- A method whose impl mismatches the trait is still called at the tier it has, so
+  a caller above it gets `TIER-005` as well as the `TIER-016`.
+- The implicit calls of `a == b`, `a < b` and `for-in` into a hand-written trait
+  method are not tier-checked (S5).
+- The check for an impl method uses a trait's tier as declared; a generic trait or
+  impl is not checked per instantiation.
+
+---
+
+## 11. Deferred
 
 `dyn Trait` (S6); operators, `for-in` and `Display` (S5, which reuse the
 call-site check of section 4.4); associated types; impls for `Pool` and

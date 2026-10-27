@@ -1,0 +1,58 @@
+// tests/fixtures/err_trait_tier_isolated.ubl
+// A call through a trait is checked against the tier the trait declares. The
+// trait and the impl below are HIGH (no tier written), so each caller above is
+// too low: a MID function through a bound, a LOW function through a qualified
+// call, a LOW function on the concrete type, and a LOW function reaching a
+// default method. Before this check none of them was tier checked.
+// Expected: sema FAIL (four IllegalTierCall, TIER-005).
+
+trait Shape {
+    fn area(self) int
+}
+
+trait Named {
+    fn name(self) string {
+        return "shape"
+    }
+}
+
+struct Sq {
+    side: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int {
+        return self.side * self.side
+    }
+}
+
+impl Named for Sq {
+}
+
+@tier(mid)
+fn through_bound<T: Shape>(x: T) int {
+    return x.area()
+}
+
+@tier(low)
+fn qualified(s: Sq) int {
+    return Shape.area(s)
+}
+
+@tier(low)
+fn concrete(s: Sq) int {
+    return s.area()
+}
+
+@tier(low)
+fn default_method(s: Sq) string {
+    return s.name()
+}
+
+fn main() void {
+    let s = Sq { side = 2 }
+    println(through_bound(s))
+    println(qualified(s))
+    println(concrete(s))
+    println(default_method(s))
+}

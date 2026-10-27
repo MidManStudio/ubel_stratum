@@ -1,0 +1,62 @@
+// tests/fixtures/err_trait_tier_conformance_isolated.ubl
+// An impl method has to be at exactly the tier its trait declares: a higher
+// tier and a lower one are both a mismatch. A tier the impl does not write is
+// the trait's, so `tack` is fine. The prelude traits are LOW, so a
+// hand-written impl of one has to be LOW as well, whether the tier is written
+// on the method or on the impl.
+// Expected: sema FAIL (four TraitMethodTierMismatch, TIER-016).
+
+@tier(mid)
+trait Tick {
+    fn tick(self) int
+
+    fn tock(self) int
+
+    @tier(low)
+    fn tack(self) int
+}
+
+struct P {
+    n: int,
+}
+
+impl Tick for P {
+    @tier(high)
+    fn tick(self) int {
+        return self.n
+    }
+
+    @tier(low)
+    fn tock(self) int {
+        return self.n
+    }
+
+    fn tack(self) int {
+        return self.n
+    }
+}
+
+struct Id {
+    n: int,
+}
+
+impl PartialEq for Id {
+    @tier(high)
+    fn eq(self, other: Id) bool {
+        return self.n == other.n
+    }
+}
+
+impl Eq for Id {
+}
+
+@tier(high)
+impl Hash for Id {
+    fn hash(self, state: Hasher) void {
+        self.n.hash(state)
+    }
+}
+
+fn main() void {
+    println(1)
+}

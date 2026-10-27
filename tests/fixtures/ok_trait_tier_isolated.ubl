@@ -1,0 +1,102 @@
+// tests/fixtures/ok_trait_tier_isolated.ubl
+// A trait method has a tier: its own `@tier`, otherwise the `@tier` on the
+// trait, otherwise HIGH. A call through a bound or a qualified call is checked
+// against it. An impl method that writes no tier takes the trait's, and one
+// that writes a tier writes the trait's. Every call below goes down or stays
+// level, so the program is accepted.
+//   - `Shape` is MID, with one HIGH method written on the method.
+//   - `Counter` is LOW and is implemented without a single `@tier`.
+//   - `Reset` and its impl sit together in a LOW tier block.
+// Expected: sema OK, interpret OK.
+
+@tier(mid)
+trait Shape {
+    fn area(self) int
+
+    fn doubled(self) int {
+        return self.area() * 2
+    }
+
+    @tier(high)
+    fn describe(self) string
+}
+
+struct Sq {
+    side: int,
+}
+
+impl Shape for Sq {
+    fn area(self) int {
+        return self.side * self.side
+    }
+
+    @tier(high)
+    fn describe(self) string {
+        return $"square {self.side}"
+    }
+}
+
+@tier(low)
+trait Counter {
+    fn next(self) int
+}
+
+struct Tick {
+    n: int,
+}
+
+impl Counter for Tick {
+    fn next(self) int {
+        self.n = self.n + 1
+        return self.n
+    }
+}
+
+@tier(low) {
+    trait Reset {
+        fn reset(self) void
+    }
+
+    impl Reset for Tick {
+        fn reset(self) void {
+            self.n = 0
+        }
+    }
+}
+
+@tier(mid)
+fn total<T: Shape>(x: T) int {
+    return x.area() + x.doubled()
+}
+
+@tier(mid)
+fn both(s: Sq) int {
+    return s.area() + Shape.area(s)
+}
+
+@tier(low)
+fn twice<T: Counter>(c: T) int {
+    return c.next() + c.next()
+}
+
+@tier(low)
+fn first(c: Tick) int {
+    return Counter.next(c)
+}
+
+@tier(low)
+fn clear(c: Tick) void {
+    c.reset()
+}
+
+fn main() void {
+    let s = Sq { side = 3 }
+    assert(total(s) == 27, "nine plus eighteen")
+    assert(both(s) == 18, "nine twice")
+    let t = Tick { n = 0 }
+    assert(twice(t) == 3, "one plus two")
+    assert(first(t) == 3, "the counter was at two")
+    clear(t)
+    assert(first(t) == 1, "after the reset")
+    println(s.describe())
+}

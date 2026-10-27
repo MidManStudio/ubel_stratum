@@ -2,12 +2,11 @@
 // Hand-written impls beside the features they meet: a user type with `Ord`
 // used as the parameter of a generic struct with an `Ord` bound, an enum
 // that replaces its automatic `PartialEq` with its own, a dictionary keyed
-// by a type with its own `eq` and reached through an alias, a `static`
-// counting how often `eq` runs, and a tuple-free comparison of derived
-// structs whose fields carry impls.
+// by a type with its own `eq` and reached through an alias, and a tuple-free
+// comparison of derived structs whose fields carry impls. A prelude impl is
+// `@tier(low)`, so its body cannot touch a `static`; that the impl ran is
+// shown by the lookup that finds `Id { n = 15 }` for the key `Id { n = 5 }`.
 // Expected: sema OK, interpret OK.
-
-static EQ_CALLS: int = 0
 
 struct Id {
     n: int,
@@ -15,7 +14,6 @@ struct Id {
 
 impl PartialEq for Id {
     fn eq(self, other: Id) bool {
-        EQ_CALLS += 1
         return self.n % 10 == other.n % 10
     }
 }
@@ -76,5 +74,4 @@ fn main() void {
     t.set(Id { n = 5 }, "five")
     println(t.get(Id { n = 15 }))
     println(t.contains_key(Id { n = 6 }))
-    println(EQ_CALLS > 0)
 }

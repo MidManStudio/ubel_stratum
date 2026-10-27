@@ -37,6 +37,13 @@
 //! - `@tier(low)` → `@tier(mid)` call: forbidden
 //! - a `static` may only be read or written from `@tier(high)` code
 //!   (`TIER-015`)
+//!
+//! A call that resolves to a method (`value.method()`, `Type.make()`, a call
+//! through a trait bound, a qualified call) has no entry in the resolution map
+//! this pass reads; it is checked in `type_infer.rs` by `check_method_tier`,
+//! with the same `tier_call_forbidden` rule. A method's tier, including the
+//! one an `impl Trait for Type` method takes from its trait, is read through
+//! `SemaContext::method_tier`.
 
 #![allow(dead_code)]
 
@@ -138,14 +145,15 @@ impl<'a> TierChecker<'a> {
     }
 
     fn check_method<'ast>(&mut self, m: &MethodDecl<'ast>) {
-        if m.is_async && m.tier != TierAnnotation::High {
+        let tier = self.ctx.method_tier(m);
+        if m.is_async && tier != TierAnnotation::High {
             self.errors.add_tier_error(TierError::AsyncFunctionNotHigh {
-                actual: m.tier,
+                actual: tier,
                 span:   m.span,
             });
         }
         let prev = self.current_tier;
-        self.current_tier = m.tier;
+        self.current_tier = tier;
         self.check_block(&m.body);
         self.current_tier = prev;
     }

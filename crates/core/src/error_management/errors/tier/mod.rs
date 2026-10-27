@@ -156,6 +156,22 @@ pub enum TierError {
         actual: TierAnnotation,
         span:   Span,
     },
+
+    // ── Trait method tiers ───────────────────────────────────────────
+    /// A method of an `impl Trait for Type` has a tier different from the one
+    /// the trait declares for it. A call through a bound is checked against the
+    /// trait's tier because the impl is not known there, so an impl at another
+    /// tier would run in a context the check never considered. An impl method
+    /// has to match exactly (docs/TRAITS_TIERS_SPEC.md, Q1). A tier the impl
+    /// does not write is the trait's, so only a written one can differ.
+    TraitMethodTierMismatch {
+        trait_name: String,
+        type_name:  String,
+        method:     String,
+        impl_tier:  TierAnnotation,
+        trait_tier: TierAnnotation,
+        span:       Span,
+    },
 }
 
 impl TierError {
@@ -175,6 +191,7 @@ impl TierError {
             TierError::PoolConstructedOutsideBlock { span, .. } => *span,
             TierError::OwnershipWrapperOutsideLowTier { span, .. } => *span,
             TierError::StaticAccessOutsideHigh { span, .. } => *span,
+            TierError::TraitMethodTierMismatch { span, .. } => *span,
         }
     }
 
@@ -266,6 +283,12 @@ impl TierError {
                     "`{}.new()` is only valid in `@tier(low)`; this function is `@tier({})`",
                     wrapper, tier_name(*actual)
                 ),
+
+            TierError::TraitMethodTierMismatch { trait_name, type_name, method, impl_tier, trait_tier, .. } =>
+                format!(
+                    "method `{}` in `impl {} for {}` is `@tier({})`, but trait `{}` declares it `@tier({})`",
+                    method, trait_name, type_name, tier_name(*impl_tier), trait_name, tier_name(*trait_tier)
+                ),
         }
     }
 
@@ -328,6 +351,13 @@ impl TierError {
                     wrapper
                 )),
 
+            TierError::TraitMethodTierMismatch { trait_tier, .. } =>
+                Some(format!(
+                    "remove the tier written for this method (on it, on its `impl`, or on a tier \
+                     block around it) to take the trait's tier, or write `@tier({})`",
+                    tier_name(*trait_tier)
+                )),
+
             _ => None,
         }
     }
@@ -369,6 +399,7 @@ impl crate::error_management::render::Diagnosable for TierError {
             TierError::PoolConstructedOutsideBlock { .. } => "TIER-013",
             TierError::OwnershipWrapperOutsideLowTier { .. } => "TIER-014",
             TierError::StaticAccessOutsideHigh { .. }        => "TIER-015",
+            TierError::TraitMethodTierMismatch { .. }        => "TIER-016",
         }
     }
     fn span(&self) -> Span { self.span() }
