@@ -521,6 +521,9 @@ struct InferCtx<'a> {
     /// definition. Every function gets a type of its own, so a call
     /// through `let f = total` still finds `total`'s bounds.
     fn_type_defs:     HashMap<TypeId, DefId>,
+    /// D1 (docs/ARENA_BORROW_RULES.md): the lifetimes each non-async top-level function names in
+    /// a `where` clause. Rule R2 refuses to lend an arena reference through any of them.
+    fn_where_lifetimes: HashMap<DefId, HashSet<String>>,
     /// Display names for the type parameters of the body being inferred
     /// (installed by `install_def_scope`).
     param_names:      HashMap<TypeId, String>,
@@ -681,6 +684,7 @@ impl<'a> InferCtx<'a> {
             generic_bounds:    HashMap::new(),
             generic_param_names: HashMap::new(),
             fn_type_defs:      HashMap::new(),
+            fn_where_lifetimes: HashMap::new(),
             param_names:       HashMap::new(),
             pending_obligations: Vec::new(),
             reported_obligations: HashSet::new(),
@@ -3466,6 +3470,7 @@ impl<'a> InferCtx<'a> {
         if let Some(def_id) = self.ctx.top_level_def(f.name) {
             self.ctx.set_def_type(def_id, fn_ty);
             self.generic_arity.insert(def_id, f.generic_params.len());
+            self.record_where_lifetimes(def_id, f);
             if self.generic_bounds.contains_key(&def_id) {
                 self.fn_type_defs.insert(fn_ty, def_id);
             }
@@ -5273,7 +5278,7 @@ impl<'a> InferCtx<'a> {
                     }
                 }
 
-                self.call_return_type(callee_ty, args, expr.span)
+                self.call_return_type(callee, callee_ty, args, expr.span)
             }
 
             ExprKind::Field { target, field } => {
@@ -6241,6 +6246,166 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    // ── D1: borrowed arena references across calls ───────────────────
+    // Rules and reasoning: docs/ARENA_BORROW_RULES.md.
+
+    /// The `where` clause lifetimes of a declared function, kept for rule R2.
+    fn record_where_lifetimes<'ast>(&mut self, def_id: DefId, f: &FunctionDecl<'ast>) {
+        let mut names: HashSet<String> = HashSet::new();
+        for lp in f.lifetime_params.iter() {
+            if let Some(c) = lp.constraint {
+                names.insert(c.longer.to_string());
+                names.insert(c.shorter.to_string());
+            }
+        }
+        self.fn_where_lifetimes.insert(def_id, names);
+    }
+
+    /// The function a call names, when the callee is a plain identifier that resolves to a
+    /// non-async top-level function. A closure, a function-typed variable or a method gives
+    /// `None`: their bodies and captures are not visible from the call, so no arena borrow is
+    /// allowed through them yet.
+    fn callee_fn_def<'ast>(&self, callee: &Expr<'ast>) -> Option<DefId> {
+        if !matches!(callee.kind, ExprKind::Ident(_)) { return None; }
+        let def_id = self.ctx.resolutions.get(callee.span)?;
+        match self.ctx.symbols.lookup(def_id).kind {
+            DefKind::Function { is_async: false, .. } => Some(def_id),
+            _ => None,
+        }
+    }
+
+    /// How many references in `ty` carry the named lifetime `name`. Exhaustive on purpose: a
+    /// new `SemaType` variant has to say here whether it can hold a reference.
+    fn count_ref_lifetime(&self, ty: TypeId, name: &str) -> usize {
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Reference { lifetime, inner, .. } => {
+                let here = (lifetime.as_deref() == Some(name)) as usize;
+                here + self.count_ref_lifetime(inner, name)
+            }
+            SemaType::List(a) | SemaType::Set(a) | SemaType::Queue(a) | SemaType::Stack(a)
+            | SemaType::InlineList(a) | SemaType::Linqerizer(a) | SemaType::Slice(a)
+            | SemaType::Pool(a) | SemaType::Handle(a) | SemaType::Fallible(a)
+            | SemaType::Task(a) | SemaType::Optional(a) | SemaType::GcRef(a)
+            | SemaType::Unique(a) | SemaType::Shared(a) | SemaType::SyncShared(a)
+            | SemaType::Array { elem: a, .. }
+            | SemaType::ArenaRef { inner: a, .. } | SemaType::PoolRef { inner: a, .. }
+            | SemaType::OwnedRef { inner: a, .. } => self.count_ref_lifetime(a, name),
+            SemaType::Dictionary(a, b) =>
+                self.count_ref_lifetime(a, name) + self.count_ref_lifetime(b, name),
+            SemaType::Tuple(ts) => ts.iter().map(|t| self.count_ref_lifetime(*t, name)).sum(),
+            SemaType::Named { args, .. } =>
+                args.iter().map(|t| self.count_ref_lifetime(*t, name)).sum(),
+            SemaType::Function { params, return_type, .. } =>
+                params.iter().map(|t| self.count_ref_lifetime(*t, name)).sum::<usize>()
+                    + self.count_ref_lifetime(return_type, name),
+            SemaType::Int | SemaType::Uint | SemaType::Long | SemaType::Ulong
+            | SemaType::Float | SemaType::Double | SemaType::Bool | SemaType::Char
+            | SemaType::Str | SemaType::Void
+            | SemaType::I8 | SemaType::I16 | SemaType::I32 | SemaType::I64
+            | SemaType::U8 | SemaType::U16 | SemaType::U32 | SemaType::U64
+            | SemaType::F32 | SemaType::F64 | SemaType::Isize | SemaType::Usize
+            | SemaType::Param(_) | SemaType::Var(_) | SemaType::Null | SemaType::Unknown => 0,
+        }
+    }
+
+    /// Could a value of this type hold on to a reference (or a closure or task that captured
+    /// one)? Struct fields and enum payloads are followed; anything not yet known counts as yes.
+    fn can_carry_ref(&self, ty: TypeId, seen: &mut HashSet<DefId>) -> bool {
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Reference { .. } | SemaType::Function { .. } | SemaType::Task(_)
+            | SemaType::Param(_) | SemaType::Var(_) | SemaType::Unknown => true,
+            SemaType::List(a) | SemaType::Set(a) | SemaType::Queue(a) | SemaType::Stack(a)
+            | SemaType::InlineList(a) | SemaType::Linqerizer(a) | SemaType::Slice(a)
+            | SemaType::Pool(a) | SemaType::Handle(a) | SemaType::Fallible(a)
+            | SemaType::Optional(a) | SemaType::GcRef(a)
+            | SemaType::Unique(a) | SemaType::Shared(a) | SemaType::SyncShared(a)
+            | SemaType::Array { elem: a, .. }
+            | SemaType::ArenaRef { inner: a, .. } | SemaType::PoolRef { inner: a, .. }
+            | SemaType::OwnedRef { inner: a, .. } => self.can_carry_ref(a, seen),
+            SemaType::Dictionary(a, b) =>
+                self.can_carry_ref(a, seen) || self.can_carry_ref(b, seen),
+            SemaType::Tuple(ts) => ts.iter().any(|t| self.can_carry_ref(*t, seen)),
+            SemaType::Named { def, args } => {
+                if args.iter().any(|t| self.can_carry_ref(*t, seen)) { return true; }
+                if !seen.insert(def) { return false; }
+                if let Some(fields) = self.struct_fields.get(&def) {
+                    if fields.iter().any(|(_, t)| self.can_carry_ref(*t, seen)) { return true; }
+                }
+                if let Some(shapes) = self.enum_variants.get(&def) {
+                    for (_, shape) in shapes.iter() {
+                        let hit = match shape {
+                            VariantShape::None | VariantShape::Discriminant => false,
+                            VariantShape::Tuple(ts) => ts.iter().any(|t| self.can_carry_ref(*t, seen)),
+                            VariantShape::Struct(fs) => fs.iter().any(|(_, t)| self.can_carry_ref(*t, seen)),
+                        };
+                        if hit { return true; }
+                    }
+                }
+                false
+            }
+            SemaType::Int | SemaType::Uint | SemaType::Long | SemaType::Ulong
+            | SemaType::Float | SemaType::Double | SemaType::Bool | SemaType::Char
+            | SemaType::Str | SemaType::Void
+            | SemaType::I8 | SemaType::I16 | SemaType::I32 | SemaType::I64
+            | SemaType::U8 | SemaType::U16 | SemaType::U32 | SemaType::U64
+            | SemaType::F32 | SemaType::F64 | SemaType::Isize | SemaType::Usize
+            | SemaType::Null => false,
+        }
+    }
+
+    /// Could a reference be stored INTO a value of this parameter type? Look through the
+    /// reference layers to the pointee: a `Vec2` of two ints cannot take one.
+    fn param_is_sink_free(&self, ty: TypeId) -> bool {
+        let mut t = ty;
+        loop {
+            match self.ctx.types.get(t).clone() {
+                SemaType::Reference { inner, .. } | SemaType::OwnedRef { inner, .. }
+                | SemaType::GcRef(inner) | SemaType::ArenaRef { inner, .. }
+                | SemaType::PoolRef { inner, .. } => t = inner,
+                _ => break,
+            }
+        }
+        !self.can_carry_ref(t, &mut HashSet::new())
+    }
+
+    /// Rules R2 to R4: may parameter `idx` of function `def` receive a reference into the
+    /// caller's arena? Only if the callee has no way to hand it back or keep it.
+    /// R2  its lifetime is not named in a `where` clause, and a named one appears nowhere else
+    ///     in the signature;
+    /// R3  the result cannot carry a reference (no reference, closure or task inside it);
+    /// R4  no other parameter is a place a reference could be stored into.
+    fn param_is_borrow_only(&self, def: DefId, fn_ty: TypeId, idx: usize) -> bool {
+        let Some(where_names) = self.fn_where_lifetimes.get(&def) else { return false };
+        let SemaType::Function { params, return_type, .. } = self.ctx.types.get(fn_ty).clone() else { return false };
+        let Some(&p) = params.get(idx) else { return false };
+        let SemaType::Reference { lifetime, .. } = self.ctx.types.get(p).clone() else { return false };
+        if let Some(l) = &lifetime {
+            if where_names.contains(l) { return false; }
+            let uses: usize = params.iter()
+                .map(|q| self.count_ref_lifetime(*q, l.as_str()))
+                .sum::<usize>()
+                + self.count_ref_lifetime(return_type, l.as_str());
+            if uses != 1 { return false; }
+        }
+        if self.can_carry_ref(return_type, &mut HashSet::new()) { return false; }
+        params.iter().enumerate().all(|(i, q)| i == idx || self.param_is_sink_free(*q))
+    }
+
+    /// Rule R1: `&x` for an arena-resident `x` carries its tag one layer in
+    /// (`Reference { inner: ArenaRef { .. } }`, see `unify_struct_field`). For a borrow-only
+    /// parameter, take the tag off so the call unifies like an ordinary borrow; the callee
+    /// cannot return or store it, so nothing it produces needs the tag back.
+    fn strip_arena_borrow(&mut self, arg_ty: TypeId) -> TypeId {
+        let resolved = self.apply(arg_ty);
+        if let SemaType::Reference { mutable, lifetime, inner } = self.ctx.types.get(resolved).clone() {
+            let inner = self.apply(inner);
+            if let SemaType::ArenaRef { inner: stripped, .. } = self.ctx.types.get(inner).clone() {
+                return self.ctx.types.insert(SemaType::Reference { mutable, lifetime, inner: stripped });
+            }
+        }
+        arg_ty
+    }
+
     fn unwrap_optional(&mut self, ty: TypeId) -> TypeId {
         let resolved = self.apply(ty);
         match self.ctx.types.get(resolved) {
@@ -6263,7 +6428,7 @@ impl<'a> InferCtx<'a> {
     /// function held in a variable keeps them) become one obligation per
     /// bounded parameter, reported at the first argument whose declared
     /// type is exactly that parameter (the call itself when there is none).
-    fn call_return_type<'ast>(&mut self, callee_ty: TypeId, args: &[Arg<'ast>], span: Span) -> TypeId {
+    fn call_return_type<'ast>(&mut self, callee: &Expr<'ast>, callee_ty: TypeId, args: &[Arg<'ast>], span: Span) -> TypeId {
         let resolved = self.apply(callee_ty);
         let callee_def = self.fn_type_defs.get(&resolved).copied();
         match self.ctx.types.get(resolved).clone() {
@@ -6282,12 +6447,17 @@ impl<'a> InferCtx<'a> {
                         span,
                     });
                 }
-                for (arg, param_ty) in args.iter().zip(params.iter()) {
+                let borrow_def = self.callee_fn_def(callee);
+                for (arg_idx, (arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
                     let arg_span = match &arg.kind {
                         ArgKind::Positional(e)       => e.span,
                         ArgKind::Named { value, .. } => value.span,
                     };
                     if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
+                        let arg_ty = match borrow_def {
+                            Some(def) if self.param_is_borrow_only(def, resolved, arg_idx) => self.strip_arena_borrow(arg_ty),
+                            _ => arg_ty,
+                        };
                         self.unify(*param_ty, arg_ty, arg_span);
                     }
                 }
