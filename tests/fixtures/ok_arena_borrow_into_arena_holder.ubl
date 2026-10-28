@@ -1,0 +1,35 @@
+// tests/fixtures/ok_arena_borrow_into_arena_holder.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R4 from the other side: a callee may store an ordinary value into a
+// holder that lives in the arena (the holder is the borrowed argument; what is stored outlives
+// it). The holder's parameter qualifies because the other parameter, `&Vec2`, cannot take a
+// reference.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Vec2 {
+    x: int
+    y: int
+}
+edge struct Holder [lifetime M] {
+    r: &M Vec2
+}
+
+@tier(mid)
+fn link(h: &mut Holder, r: &Vec2) void {
+    h.r = r
+}
+
+@tier(mid)
+fn run(g: Vec2) int {
+    let first = Vec2 { x = 9, y = 9 }
+    with arena(256) {
+        let h = Holder { r = &first }
+        link(&mut h, &g)
+        return h.r.x
+    }
+}
+
+fn main() void {
+    let g = Vec2 { x = 5, y = 6 }
+    assert(run(g) == 5, "the holder in the arena now points at the ordinary value")
+}

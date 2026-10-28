@@ -1,0 +1,28 @@
+// tests/fixtures/err_arena_borrow_where_clause.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R2: a lifetime named in a `where` clause can be tied to another
+// parameter's, so it cannot take an arena borrow.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(mid)
+fn weigh [lifetime L, lifetime M where L outlives M] (a: &L Vec2, b: &M Vec2) int {
+    return a.x + b.x
+}
+
+@tier(mid)
+fn run(g: Vec2) int {
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        return weigh(&v, &g)
+    }
+}
+
+fn main() void {
+    let g = Vec2 { x = 1, y = 2 }
+    println(run(g))
+}

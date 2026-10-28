@@ -1,0 +1,27 @@
+// tests/fixtures/ok_arena_borrow_elided.ubl
+// D1 (docs/ARENA_BORROW_RULES.md): an unnamed reference parameter qualifies too, as long as the result
+// holds no reference at all.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(mid)
+fn sum(v: &Vec2) int {
+    return v.x + v.y
+}
+
+@tier(mid)
+fn run(a: int, b: int) int {
+    with arena(256) {
+        let v = Vec2 { x = a, y = b }
+        return sum(&v)
+    }
+}
+
+fn main() void {
+    assert(run(3, 4) == 7, "an unnamed reference parameter takes an arena borrow")
+}

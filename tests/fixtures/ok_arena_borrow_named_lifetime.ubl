@@ -1,0 +1,33 @@
+// tests/fixtures/ok_arena_borrow_named_lifetime.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rules R1 to R4: `&v` for a value in the caller's arena may be passed to a
+// parameter whose named lifetime appears nowhere else in the signature, when the result cannot
+// carry a reference. Shown with a @tier(low) and a @tier(mid) callee.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(low)
+fn len2 [lifetime L] (v: &L Vec2) int {
+    return v.x * v.x + v.y * v.y
+}
+
+@tier(mid)
+fn len2_mid [lifetime L] (v: &L Vec2) int {
+    return v.x * v.x + v.y * v.y
+}
+
+@tier(mid)
+fn run(a: int, b: int) int {
+    with arena(256) {
+        let v = Vec2 { x = a, y = b }
+        return len2(&v) + len2_mid(&v)
+    }
+}
+
+fn main() void {
+    assert(run(3, 4) == 50, "both callees read the arena value through a borrow")
+}

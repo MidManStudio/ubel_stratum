@@ -1,0 +1,27 @@
+// tests/fixtures/err_arena_borrow_by_value.ubl
+// D1 (docs/ARENA_BORROW_RULES.md): only a reference may be lent. Passing the arena value itself (a struct has
+// reference semantics, so this is the same object) stays rejected at the call.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(mid)
+fn norm(v: Vec2) int {
+    return v.x * v.x + v.y * v.y
+}
+
+@tier(mid)
+fn run() int {
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        return norm(v)
+    }
+}
+
+fn main() void {
+    println(run())
+}

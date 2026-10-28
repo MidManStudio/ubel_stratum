@@ -1,0 +1,35 @@
+// tests/fixtures/err_arena_borrow_stored_through_param.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R4: another parameter is a place the borrow could be stored into
+// (`out` holds a reference). The same call with an ordinary local is accepted today, because a
+// field assignment of a reference is not checked against the holder's lifetime (a pre-existing
+// gap, noted in docs/ARENA_BORROW_RULES.md), so for arena values the rule refuses it.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+edge struct Holder [lifetime M] {
+    r: &M Vec2
+}
+
+@tier(mid)
+fn stash(v: &Vec2, out: &mut Holder) void {
+    out.r = v
+}
+
+@tier(mid)
+fn run() int {
+    let a = Vec2 { x = 1, y = 2 }
+    let mut h = Holder { r = &a }
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        stash(&v, &mut h)
+    }
+    return h.r.x
+}
+
+fn main() void {
+    println(run())
+}

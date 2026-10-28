@@ -1,0 +1,28 @@
+// tests/fixtures/err_arena_borrow_elided_result_ref.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R3: an unnamed parameter qualifies only if the result holds no
+// reference, because elision could tie the result to it.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(mid)
+fn same(v: &Vec2) &Vec2 {
+    return v
+}
+
+@tier(mid)
+fn run() int {
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        let r = same(&v)
+        return r.x
+    }
+}
+
+fn main() void {
+    println(run())
+}

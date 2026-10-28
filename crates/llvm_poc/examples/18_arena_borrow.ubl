@@ -1,0 +1,85 @@
+// Borrowing an arena value across a call (roadmap D1, docs/ARENA_BORROW_RULES.md). A function
+// may take `&x` for a value that lives in the caller's arena and read it, as long as its
+// signature gives the callee no way to hand the borrow back or keep it: the parameter's
+// lifetime appears nowhere else in the signature and in no `where` clause, or the parameter
+// is an unnamed reference and the result holds no reference. A `&x` is the same pointer as
+// `x`; the lifetime is checked by sema and erased.
+struct Vec2 {
+    x: int
+    y: int
+}
+
+edge struct IntNode [lifetime L] {
+    value: int
+}
+
+@tier(low)
+fn len2 [lifetime L] (v: &L Vec2) int {
+    return v.x * v.x + v.y * v.y
+}
+
+@tier(mid)
+fn dot [lifetime A, lifetime B] (a: &A Vec2, b: &B Vec2) int {
+    return a.x * b.x + a.y * b.y
+}
+
+@tier(mid)
+fn sum_elided(v: &Vec2) int {
+    return v.x + v.y
+}
+
+@tier(mid)
+fn read_node [lifetime L] (n: &L IntNode) int {
+    return n.value
+}
+
+@tier(mid)
+fn one_value(a: int, b: int) int {
+    with arena(256) {
+        let v = Vec2 { x = a, y = b }
+        return len2(&v) + sum_elided(&v)
+    }
+}
+
+// One GC value and one arena value borrowed in the same call, in both argument orders.
+@tier(mid)
+fn mixed(g: Vec2, k: int) int {
+    with arena(256) {
+        let v = Vec2 { x = k, y = k + 1 }
+        return dot(&v, &g) + dot(&g, &v)
+    }
+}
+
+// Inside the inner arena, borrow a value that lives in the outer one.
+@tier(mid)
+fn nested(a: int) int {
+    with arena(128) {
+        let outer = Vec2 { x = a, y = 1 }
+        with arena(128) {
+            let inner = Vec2 { x = 2, y = a }
+            return dot(&outer, &inner) + len2(&outer)
+        }
+    }
+}
+
+// A fresh arena per iteration, with every value in it borrowed by a call.
+@tier(mid)
+fn per_iteration(n: int) int {
+    let mut total = 0
+    for i in 0 .. n {
+        with arena(64) {
+            let v = Vec2 { x = i, y = 2 }
+            let node = IntNode { value = i * 3 }
+            total += sum_elided(&v) + read_node(&node)
+        }
+    }
+    return total
+}
+
+fn main() void {
+    println("one_value:", one_value(3, 4))
+    let g = Vec2 { x = 1, y = 2 }
+    println("mixed:", mixed(g, 5))
+    println("nested:", nested(7))
+    println("per_iteration:", per_iteration(100))
+}

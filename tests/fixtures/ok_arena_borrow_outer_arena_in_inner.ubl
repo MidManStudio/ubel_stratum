@@ -1,0 +1,35 @@
+// tests/fixtures/ok_arena_borrow_outer_arena_in_inner.ubl
+// D1 (docs/ARENA_BORROW_RULES.md): inside an inner `with arena`, borrow a value that lives in the outer one.
+// The callee cannot keep it, so the inner block ending first is the only lifetime that matters.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(low)
+fn len2 [lifetime L] (v: &L Vec2) int {
+    return v.x * v.x + v.y * v.y
+}
+
+@tier(mid)
+fn dot [lifetime A, lifetime B] (a: &A Vec2, b: &B Vec2) int {
+    return a.x * b.x + a.y * b.y
+}
+
+@tier(mid)
+fn nested(a: int) int {
+    with arena(128) {
+        let outer = Vec2 { x = a, y = 1 }
+        with arena(128) {
+            let inner = Vec2 { x = 2, y = a }
+            return dot(&outer, &inner) + len2(&outer)
+        }
+    }
+}
+
+fn main() void {
+    assert(nested(7) == 71, "21 from dot plus 50 from len2")
+}

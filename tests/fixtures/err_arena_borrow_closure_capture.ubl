@@ -1,0 +1,31 @@
+// tests/fixtures/err_arena_borrow_closure_capture.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R3: a closure in the result can capture the borrowed parameter and
+// outlive the arena. The same shape with an ordinary local is accepted today (closure captures
+// are not lifetime-tracked: a pre-existing gap, noted in docs/ARENA_BORROW_RULES.md), so for
+// arena values the rule has to refuse a result that can hold a closure.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(mid)
+fn make(v: &Vec2) fn() int {
+    return fn() v.x
+}
+
+@tier(mid)
+fn run() int {
+    let mut f = fn() 0
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        f = make(&v)
+    }
+    return f()
+}
+
+fn main() void {
+    println(run())
+}

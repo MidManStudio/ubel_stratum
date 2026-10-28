@@ -1,0 +1,34 @@
+// tests/fixtures/err_arena_borrow_arena_stored_into_outer_holder.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R4 from the other side: the holder is an ordinary value outside the
+// arena and the reference being stored is the arena value. Must stay rejected: the holder would
+// be left pointing into an arena that has ended.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+edge struct Holder [lifetime M] {
+    r: &M Vec2
+}
+
+@tier(mid)
+fn link(h: &mut Holder, r: &Vec2) void {
+    h.r = r
+}
+
+@tier(mid)
+fn run() int {
+    let a = Vec2 { x = 1, y = 2 }
+    let mut h = Holder { r = &a }
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        link(&mut h, &v)
+    }
+    return h.r.x
+}
+
+fn main() void {
+    println(run())
+}

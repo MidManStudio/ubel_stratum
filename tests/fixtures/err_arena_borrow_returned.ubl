@@ -1,0 +1,31 @@
+// tests/fixtures/err_arena_borrow_returned.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R2/R3: the callee hands the borrow back through its result (`&L` in
+// the return type), and the caller lets it leave the arena. Letting this through was the first
+// thing tried, and it is unsound: `keep` would point into an arena that has ended. Stays rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(mid)
+fn pick [lifetime L] (a: &L Vec2) &L Vec2 {
+    return a
+}
+
+@tier(mid)
+fn leak(g: Vec2) int {
+    let mut keep = &g
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        keep = pick(&v)
+    }
+    return keep.x
+}
+
+fn main() void {
+    let g = Vec2 { x = 1, y = 2 }
+    println(leak(g))
+}

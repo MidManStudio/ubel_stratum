@@ -1,0 +1,33 @@
+// tests/fixtures/err_arena_borrow_stored_through_param_named.ubl
+// D1 (docs/ARENA_BORROW_RULES.md), rule R4, with a named lifetime on the borrowed parameter. Same hole as
+// err_arena_borrow_stored_through_param, same refusal.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Vec2 {
+    x: int
+    y: int
+}
+edge struct Holder [lifetime M] {
+    r: &M Vec2
+}
+
+@tier(mid)
+fn stash [lifetime L] (v: &L Vec2, out: &mut Holder) void {
+    out.r = v
+}
+
+@tier(mid)
+fn run() int {
+    let a = Vec2 { x = 1, y = 2 }
+    let mut h = Holder { r = &a }
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        stash(&v, &mut h)
+    }
+    return h.r.x
+}
+
+fn main() void {
+    println(run())
+}

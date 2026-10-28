@@ -1,0 +1,29 @@
+// tests/fixtures/ok_arena_borrow_two_params.ubl
+// D1 (docs/ARENA_BORROW_RULES.md): two borrow-only parameters in one call, one argument from the arena and
+// one an ordinary value, in both orders. Each parameter has its own lifetime, and neither
+// parameter is a place the other could be stored into (a Vec2 of two ints cannot hold one).
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Vec2 {
+    x: int
+    y: int
+}
+
+@tier(mid)
+fn dot [lifetime A, lifetime B] (a: &A Vec2, b: &B Vec2) int {
+    return a.x * b.x + a.y * b.y
+}
+
+@tier(mid)
+fn run(g: Vec2) int {
+    with arena(256) {
+        let v = Vec2 { x = 3, y = 4 }
+        return dot(&v, &g) + dot(&g, &v)
+    }
+}
+
+fn main() void {
+    let g = Vec2 { x = 1, y = 2 }
+    assert(run(g) == 22, "11 in each argument order")
+}
