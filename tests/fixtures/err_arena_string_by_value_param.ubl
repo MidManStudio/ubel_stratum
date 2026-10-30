@@ -1,0 +1,22 @@
+// tests/fixtures/err_arena_string_by_value_param.ubl
+// D3b (docs/ARENA_STRINGS.md): a by-value `string` parameter could store or return the pointer, so an
+// arena string cannot be passed to one. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn show(s: string) void {
+    println(s)
+}
+
+@tier(mid)
+fn run(n: int) int {
+    with arena(256) {
+        show($"n={n}")
+        return n
+    }
+}
+
+fn main() void {
+    println(run(2))
+}

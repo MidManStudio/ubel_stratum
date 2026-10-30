@@ -1,0 +1,20 @@
+// tests/fixtures/ok_arena_string_concat_outer.ubl
+// D3b (docs/ARENA_STRINGS.md): `+` reads its operands and always allocates its result in the GC heap,
+// so building up an outer string with `+` from inside an arena block stays legal (this is the
+// shape ok_integration_game_events.ubl uses). An arena operand may sit on either side.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(mid)
+fn run(n: int) string {
+    let mut log = ""
+    with arena(256) {
+        let tag = $"n={n}"
+        log = log + tag + ";" + $"{n + 1}"
+    }
+    return log
+}
+
+fn main() void {
+    assert(run(4) == "n=4;5", "an arena string can be appended to an outer string with +")
+}

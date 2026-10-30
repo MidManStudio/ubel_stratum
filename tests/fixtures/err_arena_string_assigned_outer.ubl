@@ -1,0 +1,18 @@
+// tests/fixtures/err_arena_string_assigned_outer.ubl
+// D3b (docs/ARENA_STRINGS.md): assigning an arena string to a variable declared outside the block would
+// leave that variable pointing into an arena that has ended. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn label(n: int) string {
+    let mut out = ""
+    with arena(256) {
+        out = $"n={n}"
+    }
+    return out
+}
+
+fn main() void {
+    println(label(5))
+}

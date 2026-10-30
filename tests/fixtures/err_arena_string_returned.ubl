@@ -1,0 +1,17 @@
+// tests/fixtures/err_arena_string_returned.ubl
+// D3b (docs/ARENA_STRINGS.md): an interpolated string built inside `with arena` lives in the arena,
+// so it cannot be returned out of the block. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn label(n: int) string {
+    with arena(256) {
+        let s = $"n={n}"
+        return s
+    }
+}
+
+fn main() void {
+    println(label(5))
+}

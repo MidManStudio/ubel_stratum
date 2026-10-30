@@ -1,0 +1,22 @@
+// tests/fixtures/err_arena_string_stored_field.ubl
+// D3b (docs/ARENA_STRINGS.md): storing an arena string into a field of a struct that lives outside the
+// block leaves the field pointing into an arena that has ended. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Holder {
+    label: string
+}
+
+@tier(mid)
+fn run(n: int) string {
+    let mut h = Holder { label = "" }
+    with arena(256) {
+        h.label = $"n={n}"
+    }
+    return h.label
+}
+
+fn main() void {
+    println(run(3))
+}

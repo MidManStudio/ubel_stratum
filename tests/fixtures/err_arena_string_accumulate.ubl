@@ -1,0 +1,18 @@
+// tests/fixtures/err_arena_string_accumulate.ubl
+// D3b (docs/ARENA_STRINGS.md): interpolation is allocated by site, so building the outer string with
+// an interpolation (unlike `+`, which copies into the GC heap) is an escape. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn label(n: int) string {
+    let mut log = ""
+    with arena(256) {
+        log = $"{log}x{n}"
+    }
+    return log
+}
+
+fn main() void {
+    println(label(5))
+}

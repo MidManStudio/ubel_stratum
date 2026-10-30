@@ -1,0 +1,19 @@
+// tests/fixtures/ok_arena_string_basic.ubl
+// D3b (docs/ARENA_STRINGS.md): an interpolated string written inside `with arena` is an arena value.
+// It can be bound, printed, interpolated into another string and compared, all inside the block.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(mid)
+fn run(n: int) bool {
+    with arena(256) {
+        let a = $"a={n}"
+        let b = $"[{a}]"
+        println(a, b)
+        return b == "[a=7]" && a != $"a={n + 1}" && a < "b"
+    }
+}
+
+fn main() void {
+    assert(run(7), "arena strings can be printed, nested and compared inside the block")
+}
