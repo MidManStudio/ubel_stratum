@@ -688,10 +688,8 @@ None of this has been started, and the plan is open to change.
 
 ## Limits of the runtime
 
-- One pointer mask describes up to 64 pointer-words: 512 bytes on 64-bit, 256 on 32-bit. A
-  bigger object that holds pointers is an array allocated with `ubel_gc_alloc_array` (a mask per
-  element, any total size); a pointer-free object can be any size. Size classes go up to 32 KiB
-  and larger objects take runs of whole spans. See `docs/GC_LARGE_OBJECTS.md`.
+- Objects up to 64 pointer-words: 512 bytes on 64-bit, 256 on 32-bit. Larger requests
+  abort.
 - HIGH zeroes memory; MID and LOW do not, as an allocator for each tier would.
 - 32- and 64-bit targets are supported: sizes and pointer masks are derived from the
   target's data layout, and `run_bench.sh` sets the width of `size_t`.
@@ -750,15 +748,14 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    uniform-object layout.
 3. **Strings as values** (interpolation that builds one, `==`, printing one). Needs a string
    representation decision, and **large-object support in the collector first**: a string
-   can exceed 512 bytes. The runtime handles that now (`ubel_gc_alloc_noscan`, see
-   `docs/GC_LARGE_OBJECTS.md`); the emitter will use it once strings exist.
+   can exceed the 512-byte small-object limit and the runtime aborts on that today.
 4. **Non-capturing closures** passed to a MID function and called there (`cb(result)`),
    using the Stage 1A closure proposal (GC object, code pointer in the first word) with zero
    captures at first. This completes `build_and_eval` and `compile_expression`.
 
 Parallel track that does not block the above: run the slice 3 CI workflows, and the GC
-hardening items in `docs/GC_RESEARCH.md` (global roots, a collect-on-every-
-allocation debug mode; large objects are done), since items 2 to 4 all allocate more kinds of object.
+hardening items in `docs/GC_RESEARCH.md` (global roots, large objects, a collect-on-every-
+allocation debug mode), since items 2 to 4 all allocate more kinds of object.
 
 Decisions the language still owes the emitter: where a MID helper outside `with arena`
 allocates (the target program sidesteps it, because sema stops arena values crossing calls

@@ -61,7 +61,6 @@ else
   echo "| Programs that must fail the same way | $(cnt PASS failing) | $(cnt FAIL failing) |"
   echo "| Programs the emitter must refuse | $(cnt PASS refusal) | $(cnt FAIL refusal) |"
   echo "| Target program (interpreter reference) | $(cnt PASS target) | $(cnt FAIL target) |"
-  echo "| Collector runtime tests (C: large objects, size classes, arrays) | $(cnt PASS runtime) | $(cnt FAIL runtime) |"
   echo
   if [ "${have_san:-0}" = "1" ]; then san="ASan+UBSan on"; else san="sanitizers NOT available on this runner"; fi
   echo "Each compiled program is built at -O0 and -O2 and under a sanitizer build ($san), run with an arena-leak check, and its output must equal the interpreter's byte for byte.${flags:+ Extra flags: \`$flags\`.}"

@@ -75,7 +75,6 @@ kind_of() {
     u_*) echo refusal ;;
     fail_*) echo failing ;;
     "ast_builder (target)") echo target ;;
-    rt_*) echo runtime ;;
     *) echo runnable ;;
   esac
 }
@@ -223,41 +222,6 @@ if [ -f "$target" ] && [ -f "$golden" ]; then
   else
     echo "  note  ast_builder: not compilable yet:$(sed -n 2p "$out/ast_builder.emit.err")"
     printf 'NOTE\ttarget_emit\ttarget\t%s\n' "$(sed -n 2p "$out/ast_builder.emit.err" | sed 's/^ *//')" >> "$out/results.tsv"
-  fi
-fi
-
-# ---- collector runtime tests (C) -------------------------------------------------------------
-# harness/rt_gc_test.c covers large objects, the size classes above 512 bytes and the array
-# allocator. Each of its tests runs in its own process. It is built at -O0 and -O2 and, when the
-# sanitizers work here, under ASan + UBSan (there with -DRT_SOFT_LIVE and without ASan's
-# stack-use-after-return fake stacks, which would hide live pointers from the conservative scan:
-# see the comments in the file).
-rt_src="$here/harness/rt_gc_test.c"
-rt_timeout() { if command -v timeout >/dev/null 2>&1; then timeout 600 "$@"; else "$@"; fi; }
-run_rt() { # label flags...
-  local label="$1"; shift
-  local exe="$out/rt_gc_test_${label//[^A-Za-z0-9]/_}"
-  if ! "$CLANG" "$@" "${extra[@]}" -Wno-unused-parameter -I "$here/runtime" \
-       "$here/runtime/ubel_rt.c" "$rt_src" -o "$exe" 2>"$exe.build.log"; then
-    bad "rt_gc ($label)" "did not build: $(head -n 2 "$exe.build.log" | tr '\n' ' ')"
-    return
-  fi
-  if ASAN_OPTIONS="detect_stack_use_after_return=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}" \
-       rt_timeout "$exe" all >"$exe.log" 2>&1; then
-    ok "rt_gc ($label)" "$(tail -n 1 "$exe.log")"
-  else
-    bad "rt_gc ($label)" "$(grep -E 'FAIL|abort|rror' "$exe.log" | head -n 3 | tr '\n' ' ')"
-  fi
-}
-if [ -f "$rt_src" ]; then
-  echo
-  echo "collector runtime tests:"
-  run_rt "-O0" -O0
-  run_rt "-O2" -O2
-  if [ "$have_san" = "1" ]; then
-    run_rt "ASan+UBSan" -O1 -g "${san_flags[@]}" -DRT_SOFT_LIVE
-  else
-    echo "  skip  rt_gc (ASan+UBSan)  sanitizers unavailable"
   fi
 fi
 
