@@ -536,6 +536,36 @@ back into it.
 `ok_prelude_impl_*` and `err_prelude_impl_supertraits_isolated`. Mutation-checked,
 see `ubel_stratum_rd.md`.
 
+### `interpreter/eval/display.rs`
+
+**What it does:** Applies a hand-written `impl Display` wherever the runtime turns a value
+into text. `Value`'s own formatting (`Display`, `debug_string`) takes no interpreter and
+cannot call a user's `to_string`, so this module replaces, before the existing formatter
+runs, every value whose type has an impl by the string its `to_string` returns. A string
+prints as its own text, so the output keeps the shape it always had.
+
+**Decisions:**
+- `display_value` and `display_args` are the entry points. They do nothing while
+  `has_user_display` is false (set when an `impl Display` is registered), so a program
+  without one formats exactly as before.
+- `subst_display` finds the impl through `user_trait_fn`, calls it with `call_method`, and
+  otherwise walks the value: a struct's fields, an enum's tuple or struct payload, a tuple,
+  a list, a stack, a queue, an inline list, a dictionary (keys and values), `Unique`,
+  `Shared` and `SyncShared`. It returns `None` when nothing below changed, so an unchanged
+  value is never copied, and stops at a fixed depth so a cyclic value is left as it is.
+- It is called from the output builtins (`println`, `print`, `log`, `to_string`, `assert`,
+  `panic`, gated by name in `call_function`) and from interpolation holes. `{x:?}` skips it.
+- `Value`'s formatting now prints a struct's fields through `ordered_fields`: declaration
+  order from `field_order`, the written order for an anonymous object, sorted by name for an
+  enum's struct variant. The hash map's own order was random.
+- The scalar types satisfy `Display` natively: `to_string` is a method of each, handled in
+  `eval_method_call` and `native_prelude_method` (so a bound and a qualified call both work).
+
+**Tests:** `crates/rd_parser/tests/display.rs` (39 tests) and the fixtures
+`ok_print_order_isolated`, `ok_display_isolated`, `ok_display_combined`,
+`err_display_isolated` and `err_display_combined`. Mutation-checked, see
+`ubel_stratum_rd.md`.
+
 ### `builtins/instance.rs`
 
 **What it does:** The canonical registry for every builtin instance
@@ -1593,6 +1623,30 @@ suites. The fixture sweep went from 271 files to 276: 2 fail lexing, 8 fail pars
 at sema (3 more) and 143 are clean (2 more), 142 of them interpreted; no fixture that existed
 before changed result after the three corrections, and the 37 other `.ubl` files are
 unchanged. The mutation pass is described under `tests/trait_tiers.rs` in
+`docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first or second
+person.
+
+A twenty-fifth delivery (traits slice S5a) touched `interpreter/value.rs` (`ordered_fields`),
+`interpreter/eval/mod.rs` (`has_user_display` and the gate on the output builtins),
+`interpreter/eval/expr.rs` (interpolation, a native `to_string` for the scalars, the order of an
+anonymous object), a new `interpreter/eval/display.rs`, `sema/type_infer.rs`,
+`sema/type_infer/impl_patterns.rs` and `rd_parser/src/prelude.rs`. `Display` is a prelude trait
+(`@tier(low)`, `fn to_string(self) string`): a struct or enum that implements it decides how
+`println`, `print`, `log`, `to_string`, `{x}` (with width and alignment) and the messages of
+`assert` and `panic` show it, at any depth inside a struct, an enum payload, a tuple or a
+collection; `{x:?}` stays structural and a type with no impl still prints structurally. The
+scalar types satisfy it natively (`5` has `to_string`, and a bound `T: Display` takes it), an
+impl for a scalar is `TYPE-128`, for a collection, an array or any other built-in type
+`TYPE-129`, and `@derive(Display)` is not a derive. A struct now prints its fields in declaration
+order (it printed them in a different order on each run), an anonymous object in the order
+written, and an enum's struct variant sorted by name. It added `tests/display.rs` (39 tests) and
+five fixtures (`ok_print_order_isolated`, `ok_display_isolated`, `ok_display_combined`,
+`err_display_isolated`, `err_display_combined`). The workspace has 1013 passing tests in 31
+suites. The fixture sweep went from 276 files to 281: 2 fail lexing, 8 fail parsing, 125 stop at
+sema (2 more) and 146 are clean (3 more), 145 of them interpreted; no fixture that existed
+before changed stage or diagnostics, the 37 other `.ubl` files are unchanged, and the one
+fixture whose output differs (`ok_derive_partial_eq_combined`) printed a struct in a different
+field order on each run before. The mutation pass is described under `tests/display.rs` in
 `docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first or second
 person.
 

@@ -1,0 +1,39 @@
+// tests/fixtures/err_display_isolated.ubl
+// The rules for an `impl Display`: the method has to match the trait (return
+// a string, and be there), a scalar already implements it natively, and a
+// collection is printed element by element at run time so a hand-written impl
+// for one would never be called.
+// Expected: sema FAIL (TYPE-125, TYPE-123, TYPE-128, TYPE-129).
+
+struct Wrong {
+    x: int,
+}
+
+impl Display for Wrong {
+    fn to_string(self) int {
+        return self.x
+    }
+}
+
+struct Empty {
+    x: int,
+}
+
+impl Display for Empty {
+}
+
+impl Display for int {
+    fn to_string(self) string {
+        return "an int"
+    }
+}
+
+impl Display for List<int> {
+    fn to_string(self) string {
+        return "a list"
+    }
+}
+
+fn main() void {
+    println(1)
+}

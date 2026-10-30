@@ -513,12 +513,16 @@ it actually turned up:
 - A tier error found in type inference (a call on a receiver, a call through a
   trait, a `TIER-016`) stops the pipeline before the tier pass runs, so a by-name
   `TIER-005` in a method body is reported only once those are fixed.
-- Struct printing is nondeterministic. The default `$"{p}"` of a struct
-  walks a `HashMap`, so field order varies between runs (`P {x: 1, y: 2}`
-  or `P {y: 2, x: 1}`); `Value::Struct` already carries `field_order`.
 - `for x in value` over a user type and arithmetic operators on user types
   are accepted by sema and panic at runtime. The language-item traits of
-  slice S5 give them a type error.
+  slice S5 give them a type error (S5b iteration, S5c operators).
+- `Display` (S5a) has no formatter argument: `to_string` returns the whole
+  text, and a width, alignment or precision in a hole applies to that text,
+  not to the fields inside it. An enum's struct variant prints its fields
+  sorted by name, because the runtime keeps no declaration order for them
+  (a struct prints in declaration order, an anonymous object in the order
+  written). `Display` is not derivable, and a struct with no impl has no
+  `to_string` method (`TYPE-104`) although `println` shows it structurally.
 - `pub` written on a `const` or `type` item, and `@tier(...)` written on
   a `type` item, parse and are silently dropped: `ConstDecl` and
   `TypeAlias` carry no visibility or tier, and name resolution declares

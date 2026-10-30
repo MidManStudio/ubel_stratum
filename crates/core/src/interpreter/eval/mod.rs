@@ -11,6 +11,7 @@ pub mod expr;
 pub mod stmt;
 pub mod pattern;
 pub mod user_ops;
+pub mod display;
 
 #[cfg(test)]
 mod tests;
@@ -172,6 +173,9 @@ pub struct Interpreter<'ast> {
     /// cloning of primitives, tuples and arrays look for a user's impl, so a
     /// program without one keeps the fast path (`user_ops`).
     pub(crate) builtin_prelude_impls: bool,
+    /// Whether any `impl Display for Type` was registered. While it is `false`
+    /// the runtime formats values exactly as before and does no extra work.
+    pub(crate) has_user_display: bool,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -193,6 +197,7 @@ impl<'ast> Interpreter<'ast> {
             trait_call_sites: HashMap::new(),
             alias_builtin_keys: HashMap::new(),
             builtin_prelude_impls: false,
+            has_user_display: false,
         };
         interp.register_builtins();
         interp
@@ -364,6 +369,9 @@ impl<'ast> Interpreter<'ast> {
         let Some((type_name, is_builtin)) = self.impl_target_key(imp.target_type) else { return; };
         if is_builtin && expr::is_prelude_trait(trait_name) {
             self.builtin_prelude_impls = true;
+        }
+        if trait_name == "Display" {
+            self.has_user_display = true;
         }
 
         let defaults: &[MethodDecl<'ast>] = trait_defaults
@@ -616,6 +624,10 @@ impl<'ast> Interpreter<'ast> {
             Expr(&'a Expr<'a>),
         }
 
+        let display_builtin = matches!(
+            self.functions[id].name.as_deref(),
+            Some("println" | "print" | "log" | "to_string" | "assert" | "panic")
+        );
         let (body, param_names, closure) = {
             let def = &self.functions[id];
             let body = match &def.body {
@@ -628,7 +640,16 @@ impl<'ast> Interpreter<'ast> {
 
         // Phase 2: run the body — may mutate self freely.
         match body {
-            BodyData::Builtin(f) => f(args),
+            BodyData::Builtin(f) => {
+                // A value with a user-written `Display` is turned into its text
+                // before the output builtins see it (traits slice S5a).
+                if self.has_user_display && display_builtin {
+                    let shown = self.display_args(args)?;
+                    f(&shown)
+                } else {
+                    f(args)
+                }
+            }
 
             BodyData::Block(block) => {
                 let caller_env = std::mem::replace(&mut self.env, closure);

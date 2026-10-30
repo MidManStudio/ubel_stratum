@@ -292,9 +292,11 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         // ── Anonymous object: { x = 1, y = 2 } ───────────────────
         ExprKind::AnonObject(fields) => {
             let mut map = HashMap::new();
+            let mut written: Vec<String> = Vec::with_capacity(fields.len());
             for f in fields.iter() {
                 let v = eval_expr(interp, f.value)?;
                 map.insert(f.name.to_string(), v);
+                written.push(f.name.to_string());
             }
             Ok(Value::Struct {
                 type_name: "<anon>".to_string(),
@@ -304,7 +306,8 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 derives_ord:        false,
                 derives_hash:       false,
                 derives_clone:      false,
-                field_order:        Rc::new(Vec::new()),
+                // The written order, so printing is the same on every run.
+                field_order:        Rc::new(written),
             })
         }
 
@@ -516,6 +519,10 @@ fn eval_literal<'ast>(interp: &mut Interpreter<'ast>, lit: &Literal<'ast>) -> Ev
                     InterpolationPart::Text(t) => result.push_str(t),
                     InterpolationPart::Expr { expr, spec } => {
                         let val = eval_expr(interp, expr)?;
+                        // `{x:?}` is the structural Debug form and never calls a
+                        // user's `Display`; every other hole does.
+                        let val = if spec.as_ref().is_some_and(|s| s.debug) { val }
+                                  else { interp.display_value(&val)? };
                         result.push_str(&apply_format_spec(&val, spec.as_ref()));
                     }
                 }
@@ -1197,9 +1204,21 @@ fn dispatch_key(v: &Value) -> Option<String> {
     }
 }
 
-/// The traits declared in the prelude (`ubel_stratum_rd::prelude`).
+/// The scalar types: the ones that satisfy the prelude `Display` natively.
+fn is_scalar(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Bool(_) | Value::Int(_) | Value::I8(_) | Value::I16(_) | Value::I32(_)
+        | Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::UInt(_)
+        | Value::Float(_) | Value::Double(_) | Value::Char(_) | Value::Str(_)
+    )
+}
+
+/// The traits declared in the prelude (`ubel_stratum_rd::prelude`). `Display` is
+/// here for the scalars that satisfy it natively; sema accepts a hand-written
+/// impl only for a struct or an enum, so no built-in value carries one.
 pub(crate) fn is_prelude_trait(name: &str) -> bool {
-    matches!(name, "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Clone" | "Hash")
+    matches!(name, "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Clone" | "Hash" | "Display")
 }
 
 /// Strip the ownership wrappers (`Unique`, `Shared`, `SyncShared`) so a
@@ -1256,6 +1275,12 @@ fn native_prelude_method(interp: &mut Interpreter<'_>, receiver: Value, method: 
     let receiver = unwrap_ownership(receiver);
     if method == "clone" {
         return interp.values_clone(&receiver);
+    }
+    if method == "to_string" {
+        // `Display` is natively satisfied by the scalar types; a type with a
+        // hand-written impl never gets here (its impl is found first).
+        let shown = interp.display_value(&receiver)?;
+        return Ok(Value::str_from(shown.to_string()));
     }
     if method == "hash" {
         return native_hash_into(interp, &receiver, args);
@@ -1549,6 +1574,11 @@ fn eval_method_call(
         Value::Struct { type_name, derives_clone, .. } => (type_name.clone(), *derives_clone),
         Value::Enum   { type_name, .. }                => (type_name.clone(), false),
         other => {
+            // `Display` is natively satisfied by the scalar types, so
+            // `5.to_string()` is the number's own text.
+            if method_name == "to_string" && args.is_empty() && is_scalar(other) {
+                return Ok(Value::str_from(other.to_string()));
+            }
             // A method an `extend` or `impl` block gave a primitive, a tuple
             // or an array. Every native method was tried above, so a native
             // one wins over a user's of the same name, as sema decides.

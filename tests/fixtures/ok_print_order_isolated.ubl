@@ -1,0 +1,35 @@
+// tests/fixtures/ok_print_order_isolated.ubl
+// A struct prints its fields in declaration order, and an anonymous object in
+// the order written. Each struct owns a hash map with its own seed, so thirty
+// of them in one run would show a wrong order if the printer used the map's
+// order; before this, the order changed from one run to the next.
+// Expected: sema OK, interpret OK.
+
+struct Stats {
+    zeta:  int,
+    alpha: int,
+    beta:  int,
+    gamma: int,
+    delta: int,
+    omega: int,
+}
+
+struct Wrap {
+    inner: Stats,
+    tag:   string,
+}
+
+fn main() void {
+    let i = 0
+    while (i < 30) {
+        let s = Stats { omega = 6, delta = 5, gamma = 4, beta = 3, alpha = 2, zeta = 1 }
+        assert($"{s}" == "Stats {zeta: 1, alpha: 2, beta: 3, gamma: 4, delta: 5, omega: 6}", "display order")
+        assert($"{s:?}" == "Stats {zeta: 1, alpha: 2, beta: 3, gamma: 4, delta: 5, omega: 6}", "debug order")
+        let w = Wrap { tag = "x", inner = s }
+        assert($"{w}" == "Wrap {inner: Stats {zeta: 1, alpha: 2, beta: 3, gamma: 4, delta: 5, omega: 6}, tag: x}", "nested order")
+        i = i + 1
+    }
+    let o = { zed = 1, apple = 2, mid_ = 3 }
+    assert($"{o}" == "<anon> {zed: 1, apple: 2, mid_: 3}", "anonymous order")
+    println("stable")
+}

@@ -266,3 +266,32 @@ inside interpolation holes confusing the hole's own boundary scan, has
 been fixed. See docs/ubel_stratum.md, section "lexer/string_parser.rs",
 for what changed.)
 
+## 9. A hand-written `Display`, and the order a struct prints in (traits slice S5a)
+
+`Display` is a prelude trait, `@tier(low) trait Display { fn to_string(self) string }`.
+A struct or an enum can implement it by hand, and the result is what `println`, `print`,
+`log`, `to_string`, an interpolation hole `{x}` (including `{x:>10}` and the other
+width and alignment forms) and the messages of `assert` and `panic` show for that value,
+at any depth inside a struct, an enum payload, a tuple, a list, a dictionary, a queue, a
+stack, an inline list or an ownership wrapper. `{x:?}` is still the structural form of
+section 7 and never calls the impl. A type with no impl prints structurally as before.
+
+The scalar types satisfy `Display` themselves, so a bound `T: Display` accepts them and
+`n.to_string()` is a method of every scalar. A hand-written impl for a scalar is the
+duplicate of the built-in one (`TYPE-128`); for a collection, an array or any other
+built-in type it is `TYPE-129`.
+
+`Value`'s own formatting cannot call a user method, so the interpreter substitutes first
+(`interpreter/eval/display.rs`): every value whose type has a hand-written `Display` is
+replaced, at any depth, by the string its `to_string` returns, and the old formatter
+prints the result. A `Str` prints as its own text, so the output keeps the shape it always
+had; a test prints the same containers once around a value with an impl and once around the
+text the impl returns, and requires identical output. While no `impl Display` is registered
+the substitution does not run.
+
+**Field order.** A named struct printed its fields in the order of the hash map that
+holds them, which changed from run to run. `Display` and `Debug` now print them in
+declaration order, an anonymous object in the order written, and an enum's struct variant
+sorted by name (the runtime keeps no declaration order for a variant's fields).
+
+Specification: `docs/TRAITS_DESIGN.md`, "What S5a settled".

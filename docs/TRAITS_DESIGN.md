@@ -45,7 +45,10 @@
 | **S3e** | **Built** | Impls and `extend` blocks for generic types: a generic struct or enum, and `List`, `Dictionary`, `Queue`, `Stack` and `InlineList`. Impl parameters, conditional impls, impls for one instance (`Box<int>`). See "What S3e settled" below. |
 | **S4a** | **Built** | The tier of a method is the tier written for it (its own, its `impl`, `extend` or struct, or a tier block), and a call on a receiver (`value.method()`, `Type.assoc()`) is checked against it with the cross-tier rule (`TIER-005`). The prelude's `Hasher` is `@tier(low)`. See `docs/TRAITS_TIERS_SPEC.md`. |
 | **S4b** | **Built** | Tiers on traits: a trait, a trait method signature and a default method carry a tier (`@tier` on the method, else on the trait or a block around it, else `HIGH`); an impl method must equal it (`TIER-016`) and one that writes no tier takes it; a call through a bound, a qualified call and a default method call are checked (`TIER-005`); the six prelude traits are `@tier(low)`, so a hand-written impl of one is `LOW`. See `docs/TRAITS_TIERS_SPEC.md`. |
-| S5 and S6 | Planned | As in section 4. |
+| **S5a** | **Built** | `Display`: a prelude trait (`@tier(low)`, `fn to_string(self) string`) that a struct or enum can implement by hand to decide how `println`, `print`, `log`, `to_string`, `{x}` and the messages of `assert` and `panic` show it, at any depth; a struct prints its fields in declaration order. See \"What S5a settled\" below. |
+| S5b | Planned | `Iterator<T>` with `next(self) T?`, so `for x in value` works on a user type (it passes sema and panics at run time today). |
+| S5c | Planned | Operator traits (`Add`, `Sub`, `Mul`, `Neg`, `Index` and similar), so `a + b`, `-a` and `a[i]` on a user type work (they pass sema and panic at run time today); the implicit calls then get their tier check. |
+| S6 | Planned | `dyn Trait`. As in section 4. |
 
 ### What S1a settled that the options did not
 
@@ -606,6 +609,47 @@ What reading the code established before this was decided:
 - **Not built.** Associated types and blanket impls (deferred as decided), nested
   impl patterns, impls for the transparent wrappers, for `Set`, slices, function
   types, `Pool` and `Handle`, and prelude traits for collections.
+
+### What S5a settled
+
+Decided 2026-10-27, one delivery per language-item trait, in this order: `Display`,
+then `Iterator<T>`, then operator traits. All three follow the S4 rule for prelude
+traits: `@tier(low)`, exact-match impls, so the feature works at any tier.
+
+- **`Display` is a prelude trait with one method, `fn to_string(self) string`.** The
+  scalar types (`int` and the sized integers, `float` and `double`, `bool`, `char`,
+  `string`) satisfy it natively, so `T: Display` accepts them and `5.to_string()`
+  works. A struct or enum implements it by hand (`TYPE-126` when a bound is missing
+  its impl). `@derive(Display)` is not a derive. A type with no impl still prints
+  structurally; `Display` only overrides that.
+- **Only a struct or an enum can have a hand-written `Display`.** An impl for a scalar
+  is the usual duplicate (`TYPE-128`), and an impl for a collection, an array or any
+  other built-in type is `TYPE-129`: the runtime prints those element by element and
+  would never call it. (An array impl was accepted by an early build, and then fired for
+  every list printed; the rule exists because of that.)
+- **Where it applies.** `println`, `print`, `log`, `to_string`, an interpolation hole
+  `{x}` (with width and alignment), and the messages of `assert` and `panic`, for a value
+  at any depth inside a struct, an enum payload, a tuple, a list, a dictionary (keys and
+  values), a queue, a stack, an inline list, or `Unique`, `Shared` and `SyncShared`.
+  `{x:?}` is the structural Debug form and never calls a user's `Display`.
+- **How.** `Value`'s formatting takes no interpreter, so it cannot call a user method.
+  `interpreter/eval/display.rs` replaces, before the existing formatter runs, every value
+  whose type has a hand-written `Display` by the string its `to_string` returns. A string
+  prints as its own text, so the shape of the output does not change, and the formatting
+  code is not duplicated. It runs only when an `impl Display` was registered
+  (`has_user_display`), so a program without one formats exactly as before. The call goes
+  through `user_trait_fn`, the route a hand-written `eq` already takes.
+- **Field order.** A named struct printed its fields in the order of a hash map, which
+  changed from one run to the next. It now prints them in declaration order (the
+  `field_order` the value already carried), an anonymous object in the order written, and
+  an enum's struct variant sorted by name, because the runtime keeps no declaration order
+  for a variant's fields. Debug uses the same order.
+- **A program's own trait named `Display`** takes the name and the prelude one is dropped
+  (the same rule as the other prelude names); printing stays structural unless its
+  `to_string` is the prelude's.
+- **Tier.** The trait is `LOW`, so an impl that writes no tier is `LOW`, a written
+  `@tier(high)` is `TIER-016`, and the body may call only `LOW` code, read no `static` and
+  build no collection, the same cost as the other prelude impls.
 
 ### D7: what has to be specified before S4
 

@@ -428,7 +428,7 @@ struct BoundsScope {
 /// The names of the prelude traits (declared in `rd_parser::prelude`). What
 /// each one builds on is its declared supertrait list (`trait Ord:
 /// PartialOrd + Eq`), read into `trait_supers` like any other trait's.
-const PRELUDE_TRAIT_NAMES: [&str; 6] = ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hash"];
+const PRELUDE_TRAIT_NAMES: [&str; 7] = ["PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Hash"];
 
 /// What a checked pattern definitively covers, for exhaustiveness.
 enum PatternCoverage {
@@ -965,21 +965,6 @@ impl<'a> InferCtx<'a> {
 
     fn current_pool(&self) -> Option<(PoolId, TypeId)> {
         self.pool_stack.last().copied()
-    }
-
-    /// D3b (docs/ARENA_STRINGS.md): if `ty` is an arena-tagged string (`&arena string`), the plain
-    /// string type; any other type comes back unchanged. For an operator that only reads its string
-    /// operands (`==`, `<`, `+`): the result is a `bool`, or a new string that is always allocated in
-    /// the GC heap (a copy), so it carries no borrow of the operand.
-    fn peel_arena_str(&mut self, ty: TypeId) -> TypeId {
-        let resolved = self.apply(ty);
-        if let SemaType::ArenaRef { inner, .. } = self.ctx.types.get(resolved).clone() {
-            let inner = self.apply(inner);
-            if matches!(self.ctx.types.get(inner), SemaType::Str) {
-                return inner;
-            }
-        }
-        ty
     }
 
     /// Wrap `inner_ty` as an ArenaRef if inside a `with arena` block.
@@ -2069,8 +2054,8 @@ impl<'a> InferCtx<'a> {
             | SemaType::U8 | SemaType::U16 | SemaType::U32 | SemaType::U64
             | SemaType::Isize | SemaType::Usize | SemaType::Str => Some(all_five),
             SemaType::Float | SemaType::Double | SemaType::F32 | SemaType::F64 =>
-                Some(matches!(name, "PartialEq" | "PartialOrd" | "Clone")),
-            SemaType::Bool | SemaType::Char => Some(eq_like),
+                Some(matches!(name, "PartialEq" | "PartialOrd" | "Clone" | "Display")),
+            SemaType::Bool | SemaType::Char => Some(eq_like || name == "Display"),
             SemaType::Tuple(elems) => {
                 if !eq_like { return Some(false); }
                 let mut all = Some(true);
@@ -2582,11 +2567,16 @@ impl<'a> InferCtx<'a> {
                 }
             }
         }
-        // A collection is compared, hashed and cloned by identity at run
-        // time, so a hand-written prelude impl for one would say something
-        // the operators do not do.
+        // A collection is compared, hashed and cloned by identity, and printed
+        // structurally, at run time, so a hand-written prelude impl for one
+        // would say something the operators and `println` do not do.
         if pattern.is_some_and(|p| p.builtin) && self.prelude_traits.contains_key(&trait_def) {
-            self.report_unsupported(impl_patterns::PRELUDE_ON_COLLECTION, i.span);
+            let what = if self.prelude_traits.get(&trait_def).copied() == Some("Display") {
+                impl_patterns::DISPLAY_ON_COLLECTION
+            } else {
+                impl_patterns::PRELUDE_ON_COLLECTION
+            };
+            self.report_unsupported(what, i.span);
             return;
         }
         let builtin = match pattern {
@@ -2634,6 +2624,12 @@ impl<'a> InferCtx<'a> {
                         note: Some("the built-in type already implements it".to_string()),
                         span: i.span,
                     });
+                    return;
+                }
+                // `Display` is shown by the runtime for a struct or an enum only;
+                // any other built-in type prints as it always does.
+                if pname == "Display" {
+                    self.report_unsupported(impl_patterns::DISPLAY_ON_BUILTIN, i.span);
                     return;
                 }
             }
@@ -5886,9 +5882,7 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                 }
-                // D3b: an interpolated string is allocated where it is written (docs/ARENA_STRINGS.md).
-                let str_ty = self.ctx.types.intern(SemaType::Str);
-                self.maybe_arena_ref(str_ty)
+                self.ctx.types.intern(SemaType::Str)
             }
         }
     }
@@ -6049,7 +6043,6 @@ impl<'a> InferCtx<'a> {
     // ── BinOp result type ─────────────────────────────────────────
 
     fn binop_result(&mut self, op: BinOp, lhs: TypeId, rhs: TypeId, span: Span) -> TypeId {
-        let (lhs, rhs) = (self.peel_arena_str(lhs), self.peel_arena_str(rhs));
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
             | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {

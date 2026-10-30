@@ -44,6 +44,8 @@ const BLANKET: &str = "a blanket impl (a type parameter as the impl target)";
 const NESTED_OR_REPEATED: &str = "an impl target that repeats a type parameter or nests one inside another type (`Pair<T, T>`, `Box<List<T>>`)";
 const UNUSED_PARAM: &str = "an impl type parameter that the target type does not use";
 pub(super) const DUPLICATE_METHOD: &str = "an inherent method with the name of one that another block already gives the same type (a call cannot tell `Box<int>` from `Box<string>`, or `int` from `long`, at run time)";
+pub(super) const DISPLAY_ON_BUILTIN: &str = "implementing `Display` by hand for a built-in type (only a struct or an enum can have a hand-written `Display`; a built-in type prints as it always does)";
+pub(super) const DISPLAY_ON_COLLECTION: &str = "implementing `Display` by hand for a collection (a collection is printed element by element at run time, and a user-written `to_string` for it would not be called)";
 pub(super) const PRELUDE_ON_COLLECTION: &str = "implementing a prelude trait by hand for a collection (a collection is compared, hashed and cloned by identity at run time)";
 
 // ── Data ─────────────────────────────────────────────────────────

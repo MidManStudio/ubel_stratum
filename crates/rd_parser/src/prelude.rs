@@ -12,6 +12,8 @@
 //! on is what its declaration says: its supertraits (`trait Ord: PartialOrd
 //! + Eq`) plus the types its signatures mention (`SIGNATURE_DEPS`).
 //!
+//! `Display` is not one of the `@derive` names: it is written by hand, and
+//! without it a type still prints structurally.
 //! The trait names are the ones `@derive` already uses. `Hasher` is the
 //! state `Hash.hash` writes into, and is `@tier(low)` (plain arithmetic on one
 //! `u64`) so that code at any tier can hash; `Hash.hash` itself is native. The six
@@ -79,6 +81,11 @@ trait Clone {
 }
 
 @tier(low)
+trait Display {
+    fn to_string(self) string
+}
+
+@tier(low)
 struct Hasher {
     state: u64,
     fn new() Hasher { return Hasher { state = 1469598103934665603u64 } }
@@ -95,7 +102,7 @@ trait Hash: Eq {
 /// it depends on, so one pass over this list in `kept_names` reaches a
 /// fixpoint.
 const NAMES: &[&str] = &[
-    "Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hasher", "Hash",
+    "Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Hasher", "Hash",
 ];
 
 /// What a prelude item needs besides its supertraits (those are read from
@@ -221,32 +228,32 @@ mod tests {
 
     #[test]
     fn nothing_declared_keeps_everything() {
-        assert_eq!(kept(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Hasher", "Hash"]);
+        assert_eq!(kept(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_ordering_takes_the_ordering_traits_with_it() {
-        assert_eq!(kept(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Display", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_partial_eq_takes_every_trait_built_on_it() {
-        assert_eq!(kept(&["PartialEq"]), vec!["Ordering", "Clone", "Hasher"]);
+        assert_eq!(kept(&["PartialEq"]), vec!["Ordering", "Clone", "Display", "Hasher"]);
     }
 
     #[test]
     fn a_user_clone_loses_only_clone() {
-        assert_eq!(kept(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Display", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_hasher_takes_hash_with_it() {
-        assert_eq!(kept(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone"]);
+        assert_eq!(kept(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display"]);
     }
 
     #[test]
     fn a_user_eq_takes_ord_and_hash_but_leaves_partial_eq() {
-        assert_eq!(kept(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Hasher"]);
+        assert_eq!(kept(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Display", "Hasher"]);
     }
 
     #[test]
@@ -268,6 +275,7 @@ mod tests {
         assert_eq!(deps("PartialOrd"), vec!["Ordering", "PartialEq"]);
         assert_eq!(deps("Ord"),        vec!["Ordering", "PartialOrd", "Eq"]);
         assert_eq!(deps("Clone"),      Vec::<&str>::new());
+        assert_eq!(deps("Display"),    Vec::<&str>::new());
         assert_eq!(deps("Hasher"),     Vec::<&str>::new());
         assert_eq!(deps("Hash"),       vec!["Hasher", "Eq"]);
     }

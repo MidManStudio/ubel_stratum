@@ -1,0 +1,76 @@
+// tests/fixtures/ok_display_combined.ubl
+// `Display` beside features shipped earlier: a generic function and a generic
+// struct bounded by it (satisfied by the scalar types and by a type with an
+// impl), a LOW tier block holding the type and its impl so that LOW code can
+// show it, a LOW generic function over the bound, Unique ownership, a derived
+// PartialEq on a type that also has a Display, and a HIGH `main`.
+// Expected: sema OK, interpret OK.
+
+@tier(low) {
+    struct Meters {
+        value: int,
+    }
+
+    impl Display for Meters {
+        fn to_string(self) string {
+            return $"{self.value}m"
+        }
+    }
+}
+
+@derive(PartialEq)
+struct Tag {
+    id: int,
+}
+
+impl Display for Tag {
+    fn to_string(self) string {
+        return $"#{self.id}"
+    }
+}
+
+struct Labeled<T: Display> {
+    label: string,
+    item:  T,
+
+    fn show(self) string {
+        return $"{self.label}: {self.item}"
+    }
+}
+
+fn describe<T: Display>(x: T) string {
+    return $"<{x.to_string()}>"
+}
+
+@tier(low)
+fn text<T: Display>(x: T) string {
+    return x.to_string()
+}
+
+@tier(low)
+fn walk(m: Unique<Meters>) string {
+    return text(m)
+}
+
+@tier(low)
+fn build_and_walk() string {
+    let m = Unique.new(Meters { value = 12 })
+    return walk(m)
+}
+
+fn main() void {
+    assert(describe(5) == "<5>", "int")
+    assert(describe(2.5) == "<2.5>", "float")
+    assert(describe(true) == "<true>", "bool")
+    assert(describe("s") == "<s>", "string")
+    assert(describe(Meters { value = 3 }) == "<3m>", "type with an impl")
+    let a = Labeled { label = "dist", item = Meters { value = 7 } }
+    assert(a.show() == "dist: 7m", "bounded struct")
+    let b = Labeled { label = "n", item = 9 }
+    assert(b.show() == "n: 9", "bounded struct over an int")
+    assert(text(Meters { value = 4 }) == "4m", "LOW generic function")
+    assert(build_and_walk() == "12m", "through Unique")
+    assert(Tag { id = 1 } == Tag { id = 1 }, "derived equality still works")
+    println(Tag { id = 5 })
+    println(a.show())
+}

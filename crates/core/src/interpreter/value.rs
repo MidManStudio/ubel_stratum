@@ -858,10 +858,10 @@ impl Value {
             Value::SyncShared(rc) => format!(
                 "SyncShared(refs={}, {})", Rc::strong_count(rc), rc.borrow().debug_string()
             ),
-            Value::Struct { type_name, fields, .. } => {
+            Value::Struct { type_name, fields, field_order, .. } => {
                 let fields = fields.borrow();
                 let mut out = format!("{} {{", type_name);
-                for (i, (k, v)) in fields.iter().enumerate() {
+                for (i, (k, v)) in ordered_fields(&fields, field_order).into_iter().enumerate() {
                     if i > 0 { out.push_str(", "); }
                     out.push_str(k);
                     out.push_str(": ");
@@ -883,7 +883,7 @@ impl Value {
                 }
                 EnumPayload::Struct(fields) => {
                     let mut out = format!("{}.{} {{", type_name, variant);
-                    for (i, (k, v)) in fields.iter().enumerate() {
+                    for (i, (k, v)) in ordered_fields(fields, &[]).into_iter().enumerate() {
                         if i > 0 { out.push_str(", "); }
                         out.push_str(k);
                         out.push_str(": ");
@@ -939,6 +939,26 @@ impl Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool { self.equals(other) }
+}
+
+/// The fields of a struct in a fixed order: the names in `order` first
+/// (declaration order for a named struct, the written order for an anonymous
+/// object), then any field `order` does not name, sorted by name. The map
+/// alone has no defined order, so printing it directly gave a different field
+/// order from one run to the next. An enum's struct variant keeps no order, so
+/// its fields are sorted by name.
+fn ordered_fields<'a>(map: &'a HashMap<String, Value>, order: &[String]) -> Vec<(&'a String, &'a Value)> {
+    let mut out: Vec<(&String, &Value)> = Vec::with_capacity(map.len());
+    for name in order {
+        if let Some(pair) = map.get_key_value(name) { out.push(pair); }
+    }
+    if out.len() < map.len() {
+        let mut rest: Vec<(&String, &Value)> =
+            map.iter().filter(|(k, _)| !order.contains(*k)).collect();
+        rest.sort_by(|a, b| a.0.cmp(b.0));
+        out.extend(rest);
+    }
+    out
 }
 
 impl fmt::Display for Value {
@@ -1024,10 +1044,10 @@ impl fmt::Display for Value {
             Value::Unique(v) => write!(f, "Unique({})", v),
             Value::Shared(rc) => write!(f, "Shared({})", rc.borrow()),
             Value::SyncShared(rc) => write!(f, "SyncShared({})", rc.borrow()),
-            Value::Struct { type_name, fields, .. } => {
+            Value::Struct { type_name, fields, field_order, .. } => {
                 let fields = fields.borrow();
                 write!(f, "{} {{", type_name)?;
-                for (i, (k, v)) in fields.iter().enumerate() {
+                for (i, (k, v)) in ordered_fields(&fields, field_order).into_iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "{}: {}", k, v)?;
                 }
@@ -1051,7 +1071,7 @@ impl fmt::Display for Value {
                     }
                     EnumPayload::Struct(fields) => {
                         write!(f, "{}.{} {{", type_name, variant)?;
-                        for (i, (k, v)) in fields.iter().enumerate() {
+                        for (i, (k, v)) in ordered_fields(fields, &[]).into_iter().enumerate() {
                             if i > 0 { write!(f, ", ")?; }
                             write!(f, "{}: {}", k, v)?;
                         }

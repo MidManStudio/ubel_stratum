@@ -137,9 +137,11 @@ verified safe.
   the tier written on it, on its `impl`, `extend`, struct or trait, or on a
   `@tier(...) { }` block around them. A trait method has a tier too, and an impl
   method has to equal it (a method that writes none takes the trait's). The prelude
-  traits are `@tier(low)`, so a hand-written `eq`, `hash` or `clone` is `LOW`. Next:
-  associated types, language-item traits (the operators then check their calls),
-  and `dyn Trait`
+  traits are `@tier(low)`, so a hand-written `eq`, `hash` or `clone` is `LOW`. A struct
+  or enum can implement `Display` (`fn to_string(self) string`) to decide how
+  `println`, `{x}` and `to_string` show it, at any depth; a struct prints its fields in
+  declaration order. Next: `for-in` over a user type (`Iterator<T>`), operator traits
+  (the operators then check their calls), associated types, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

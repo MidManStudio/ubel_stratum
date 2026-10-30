@@ -1,0 +1,38 @@
+// tests/fixtures/err_display_combined.ubl
+// `Display` as a bound and as a LOW prelude trait: a struct with no impl and a
+// collection do not satisfy the bound, a struct with no impl has no
+// `to_string`, `@derive(Display)` is not a derive, and an impl has to be at
+// the tier the trait declares (the prelude traits are LOW).
+// Expected: sema FAIL (UnknownDeriveTrait TYPE-116, TYPE-104, two TYPE-126, TIER-016).
+
+struct Plain {
+    n: int,
+}
+
+struct High {
+    n: int,
+}
+
+impl Display for High {
+    @tier(high)
+    fn to_string(self) string {
+        return "high"
+    }
+}
+
+@derive(Display)
+struct Derived {
+    n: int,
+}
+
+fn show<T: Display>(x: T) string {
+    return x.to_string()
+}
+
+fn main() void {
+    let p = Plain { n = 1 }
+    println(show(p))
+    let l = List.new()
+    println(show(l))
+    println(p.to_string())
+}

@@ -1,0 +1,59 @@
+// tests/fixtures/ok_display_isolated.ubl
+// `Display` is a prelude trait with one method, `fn to_string(self) string`.
+// A hand-written impl decides how a value is shown by `println`, an
+// interpolation hole `{x}` (with width and alignment) and `to_string`, at any
+// depth inside a struct, an enum, a tuple or a collection. `{x:?}` stays the
+// structural form, and a type with no impl still prints structurally.
+// Expected: sema OK, interpret OK.
+
+struct V {
+    x: int,
+    y: int,
+}
+
+impl Display for V {
+    fn to_string(self) string {
+        return $"({self.x}, {self.y})"
+    }
+}
+
+struct Plain {
+    a: int,
+    b: int,
+}
+
+struct Body {
+    name: string,
+    pos:  V,
+}
+
+enum Shape {
+    Dot(V),
+    Named { at: V },
+}
+
+fn main() void {
+    let v = V { x = 1, y = 2 }
+    assert($"{v}" == "(1, 2)", "interpolation")
+    assert($"[{v:>8}]" == "[  (1, 2)]", "width and alignment")
+    assert($"{v:?}" == "V {x: 1, y: 2}", "debug stays structural")
+    assert(v.to_string() == "(1, 2)", "method")
+    assert(to_string(v) == "(1, 2)", "function")
+    let plain = Plain { a = 1, b = 2 }
+    assert($"{plain}" == "Plain {a: 1, b: 2}", "no impl")
+    let body = Body { name = "rock", pos = v }
+    assert($"{body}" == "Body {name: rock, pos: (1, 2)}", "a field with an impl")
+    let dot = Shape.Dot(v)
+    assert($"{dot}" == "Shape.Dot((1, 2))", "tuple payload")
+    let named = Shape.Named { at = v }
+    assert($"{named}" == "Shape.Named {at: (1, 2)}", "struct payload")
+    let l = List.new()
+    l.push(v)
+    l.push(V { x = 3, y = 4 })
+    assert($"{l}" == "[(1, 2), (3, 4)]", "list")
+    let t = (v, 7)
+    assert($"{t}" == "((1, 2), 7)", "tuple")
+    println(v)
+    println(l)
+    println(1, v, "end")
+}

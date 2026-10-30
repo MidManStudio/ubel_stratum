@@ -341,6 +341,41 @@ condition was redundant and was removed instead of tested (a tier block merges i
 Two are equivalent mutants: the fallback tier of a trait method shape (every trait method
 shape carries a tier), and the tier on `Eq`, which has no methods.
 
+### `tests/display.rs`
+
+**What it does:** Integration tests for `Display` and the order a struct prints in, slice
+S5a (39 tests). Programs go through `check_source` for stage, codes and messages and through
+the interpreter for the printed output.
+
+**Decisions:**
+- Order: a struct prints its fields in declaration order, in `Display` and in `Debug`; an
+  anonymous object in the order written; an enum's struct variant sorted by name. Each of
+  these runs thirty values in one program, because every value owns a hash map with its own
+  seed and a single value could be in the right order by chance. The declared order is
+  chosen so that sorting would show.
+- Use of an impl: `println`, `print`, interpolation with width and alignment, `to_string` as
+  a method, as a function and qualified, several arguments, `assert` and `panic` messages;
+  `{x:?}` stays structural; a type with no impl, and every other type, prints as before.
+- Depth: a field of a struct with no impl, an enum's tuple and struct payload, a tuple, a
+  list, a dictionary key and value, a queue, a stack, an inline list, and the three ownership
+  wrappers. Two tests compare the same containers around a value with an impl and around the
+  text the impl returns and require identical output, which is what keeps the substitution
+  from changing any output shape.
+- The scalars satisfy `Display` natively (every scalar, sized integers included); a type with
+  no impl, a collection and a tuple do not satisfy the bound; a type with no impl has no
+  `to_string`.
+- Impl rules: an impl for a scalar is `TYPE-128`, for a collection or an array `TYPE-129`
+  (and a list prints as before); the method has to match the trait; `Display` is not a derive;
+  a program's own `Display` trait takes the name; the trait is `LOW` (a written higher tier is
+  `TIER-016`, the body is checked at `LOW`, every tier can call it through a bound).
+
+**Mutation pass:** 47 mutations over `interpreter/value.rs`, `interpreter/eval/expr.rs`,
+`interpreter/eval/mod.rs`, `interpreter/eval/display.rs`, `sema/type_infer.rs` and
+`prelude.rs`, 46 caught. Two were caught only after tests were added (the order of a struct's
+`Debug` form, and a qualified call on a scalar, which also found that call panicking at run
+time and led to the runtime fix). The survivor is an equivalent mutant (returning a copy of a
+value where nothing changed instead of nothing).
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in
@@ -398,8 +433,8 @@ and through the interpreter for run-time values.
 
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-`Clone`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the six traits are `@tier(low)`, so code at any tier can
-hash and call their methods through a bound: the prelude is ordinary source and its methods are `HIGH` unless a tier is written.
+`Clone`, `Display`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the seven traits are `@tier(low)`, so code at any tier can
+hash, show and call their methods through a bound: the prelude is ordinary source and its methods are `HIGH` unless a tier is written.
 `parse()` calls `prelude::inject` after parsing the
 program. `tests/prelude_traits.rs` (95 tests) covers what each kind of type
 satisfies, the methods, hashing, the `Dictionary` key requirement, the
