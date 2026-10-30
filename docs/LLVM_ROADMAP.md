@@ -34,7 +34,7 @@ can fail.
 
 | # | Slice | Needs first | Notes |
 |---|---|---|---|
-| A5 | GC large objects | nothing | The collector aborts above 64 pointer-words (512 bytes on 64-bit, 256 on 32-bit). Strings can exceed that. Two steps: pointer-free large objects first (strings), then large objects with a pointer map (arrays, lists), which the 64-bit mask cannot describe. |
+| A5 | GC large objects | nothing | **Done in the runtime, provisional** (`docs/GC_LARGE_OBJECTS.md`): size classes to 32 KiB, large objects as runs of spans, pointer-free objects of any size (`ubel_gc_alloc_noscan`), pointer-holding arrays of any size (`ubel_gc_alloc_array`). Tested in C at -O0, -O2 and under ASan+UBSan, 64- and 32-bit, with mutation checks. The emitter does not use it until A6. |
 | A6 | Strings as values | A5, decision D3 | `Var(string)`, `show`, `apply`, `==` on strings, printing a string value, interpolation that builds one. Where interpolation allocates follows the same site rules as a struct literal. |
 | A7 | Closures | decision D5 | Non-capturing first (code pointer plus a uniform closure object), then capturing ones. Completes `build_and_eval` and `compile_expression`. Sema already accepts closure calls from every tier (see B4), so the tier of a function type has to be settled before this is emitted. |
 | A8 | Target program compiles | A5, A6, A7 | The emitter output must equal `ast_builder.expected`; the program moves from the guard in `run_equiv.sh` into the equivalence suite. |
@@ -166,8 +166,8 @@ roots, one thread.
 
 Hardening that does not need a design decision, and gates everything after it:
 
-1. Global roots, large objects (A5), and a collect-on-every-allocation debug mode run over the whole
-   example suite.
+1. Global roots and a collect-on-every-allocation debug mode run over the whole example suite
+   (large objects, A5, are in the runtime).
 2. Stress tests that put objects in every place a pointer can live (struct and enum payloads,
    closures when they exist, scannable arenas) and check survival and reclamation.
 

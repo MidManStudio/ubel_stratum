@@ -5,6 +5,8 @@
  * GC design (deliberately Go-flavoured, deliberately simplified):
  *   - one reserved virtual heap, cut into 32 KiB spans, each span holding
  *     objects of a single size class (like Go's mspan);
+ *   - objects above 32 KiB are "large": each takes a run of whole spans to itself, still
+ *     inside the same reserved heap, so one range check and one pointer bitmap cover both;
  *   - non-moving, so pointers never change and no read barrier is needed;
  *   - tri-colour mark-sweep: white = unmarked, grey = marked and on the mark
  *     stack, black = marked and scanned;
@@ -63,22 +65,35 @@ _Static_assert(sizeof(void *) == 4 || sizeof(void *) == 8, "Stage 0 supports 32-
 #define WORD_SHIFT   (sizeof(void *) == 8 ? 3u : 2u)
 #define SPAN_SHIFT   15u
 #define SPAN_SIZE    (1u << SPAN_SHIFT) /* 32 KiB */
-#define NUM_CLASSES  10u
+#define NUM_CLASSES  27u
 #define MIN_TRIGGER  (4u * 1024u * 1024u)
 
-static const uint16_t class_size[NUM_CLASSES] = {16, 32, 48, 64, 96, 128, 192, 256, 384, 512};
-static uint8_t size_to_class[UBEL_GC_MAX_SMALL / 16 + 1];
+/* Up to 512 bytes the classes are the original ones (the benchmarks depend on them). Above
+ * that they grow by about a quarter per step, which keeps both the rounding waste and the
+ * unused tail of a 32 KiB span small, up to a single 32 KiB object per span. */
+static const uint16_t class_size[NUM_CLASSES] = {
+    16, 32, 48, 64, 96, 128, 192, 256, 384, 512,
+    640, 768, 896, 1024, 1280, 1536, 1792, 2048, 2560, 3072, 4096, 5120, 6144, 8192, 10240,
+    16384, 32768};
+static uint8_t size_to_class[UBEL_GC_MAX_CLASS / 16 + 1];
+
+enum { SPAN_FREE = 0, SPAN_SMALL = 1, SPAN_LARGE = 2, SPAN_CONT = 3 };
 
 typedef struct span {
-    uint8_t  state;      /* 0 = free, 1 = in use */
+    uint8_t  state;      /* SPAN_FREE, SPAN_SMALL (slots of one class), SPAN_LARGE (first span
+                            of a large object's run) or SPAN_CONT (any later span of that run) */
     uint8_t  cls;
     uint8_t  needzero;   /* memory may hold old data */
+    uint8_t  noscan;     /* large head: no pointers inside, so mark it but never scan it */
     uint16_t elem;       /* object size in bytes */
     uint16_t nelems;
     uint16_t freeindex;  /* allocation scan resumes here */
+    uint32_t run_len;    /* large head: number of spans in the run */
+    uint32_t head_idx;   /* large continuation: index of the head span */
+    uint64_t obj_bytes;  /* large head: the object's size in bytes */
     struct span *next;   /* link in the per-class partial list */
     uint64_t alloc_bits[32]; /* 1 = slot holds an allocated object */
-    uint64_t mark_bits[32];  /* 1 = reached in the current cycle */
+    uint64_t mark_bits[32];  /* 1 = reached in the current cycle (a large head uses bit 0) */
 } span;
 
 static char     *heap_base;
@@ -135,7 +150,7 @@ void ubel_gc_init(void *stack_base_) {
     heapbits   = (uint64_t *)meta_alloc((heap_bytes >> WORD_SHIFT) / 8 + 64);
     free_spans = (uint32_t *)meta_alloc(nspans_total * sizeof(uint32_t));
 
-    for (unsigned i = 0; i <= UBEL_GC_MAX_SMALL / 16; i++) {
+    for (unsigned i = 0; i <= UBEL_GC_MAX_CLASS / 16; i++) {
         unsigned need = i ? i * 16u : 16u;
         unsigned c = 0;
         while (class_size[c] < need) c++;
@@ -172,25 +187,41 @@ static inline uint64_t hb_read(size_t widx, unsigned nwords) {
     return (nwords == 64) ? v : (v & ((1ull << nwords) - 1ull));
 }
 
+/* Clear the pointer bits of `nwords` words starting at word `widx`, any length. */
+static void hb_clear_range(size_t widx, size_t nwords) {
+    size_t end = widx + nwords;
+    while (widx < end) {
+        unsigned off = (unsigned)(widx & 63);
+        size_t take = 64u - off;
+        if (take > end - widx) take = end - widx;
+        uint64_t m = (take == 64) ? ~0ull : (((1ull << take) - 1ull) << off);
+        heapbits[widx >> 6] &= ~m;
+        widx += take;
+    }
+}
+
 /* ---- allocation ------------------------------------------------------- */
 
 static span *new_span(unsigned cls) {
-    size_t idx;
-    int fresh;
-    if (n_free_spans) {
-        idx = free_spans[--n_free_spans];
-        fresh = 0;
-    } else if (next_fresh_span < nspans_total) {
-        idx = next_fresh_span++;
-        fresh = 1;
-    } else {
-        fprintf(stderr, "ubel_rt: GC heap exhausted (raise UBEL_HEAP_MB)\n");
-        abort();
+    size_t idx = 0;
+    int fresh = 0, have = 0;
+    while (n_free_spans) { /* an entry can be stale: a large run may have claimed that span */
+        size_t c = free_spans[--n_free_spans];
+        if (spans[c].state == SPAN_FREE) { idx = c; have = 1; break; }
+    }
+    if (!have) {
+        if (next_fresh_span < nspans_total) {
+            idx = next_fresh_span++;
+            fresh = 1;
+        } else {
+            fprintf(stderr, "ubel_rt: GC heap exhausted (raise UBEL_HEAP_MB)\n");
+            abort();
+        }
     }
     span *s = &spans[idx];
     memset(s->alloc_bits, 0, sizeof s->alloc_bits);
     memset(s->mark_bits, 0, sizeof s->mark_bits);
-    s->state = 1;
+    s->state = SPAN_SMALL;
     s->cls = (uint8_t)cls;
     s->elem = class_size[cls];
     s->nelems = (uint16_t)(SPAN_SIZE / s->elem);
@@ -220,15 +251,82 @@ static inline int span_next_free(span *s) {
     return -1;
 }
 
-void *ubel_gc_alloc(uint64_t size, uint64_t ptrmask) {
-    if (size > UBEL_GC_MAX_SMALL) {
-        fprintf(stderr, "ubel_rt: Stage 0 GC handles objects up to %u bytes (asked for %llu)\n",
-                UBEL_GC_MAX_SMALL, (unsigned long long)size);
+/* ---- large objects -------------------------------------------------------
+ * An object above UBEL_GC_MAX_CLASS bytes takes a run of whole spans: the first is marked
+ * SPAN_LARGE and keeps the size, the mark bit and the no-scan flag, the rest are SPAN_CONT
+ * and point back at it. A run comes from the lowest stretch of free spans that is long
+ * enough, else from fresh heap. The pointer bitmap needs nothing special: it covers the whole
+ * reserved heap, one bit per word. Interior pointers keep the object alive; a pointer one
+ * past the end does not. Free runs are not returned to the OS and not coalesced beyond what
+ * the sweep already does: they become free spans again. */
+
+static size_t find_free_run(size_t n) {
+    if (n_free_spans < n) return (size_t)-1; /* cheap exit: the stack holds every free span */
+    size_t run = 0;
+    for (size_t i = 0; i < next_fresh_span; i++) {
+        if (spans[i].state == SPAN_FREE) {
+            if (++run == n) return i + 1 - n;
+        } else {
+            run = 0;
+        }
+    }
+    return (size_t)-1;
+}
+
+static void *gc_alloc_large(uint64_t size, int noscan, size_t *nwords) {
+    if (size > (uint64_t)heap_bytes) {
+        fprintf(stderr, "ubel_rt: a %llu-byte object does not fit in the GC heap (raise UBEL_HEAP_MB)\n",
+                (unsigned long long)size);
         abort();
     }
-    unsigned cls = size_to_class[(size + 15) >> 4];
-    unsigned elem = class_size[cls];
+    size_t n = (size_t)((size + SPAN_SIZE - 1u) >> SPAN_SHIFT);
+    uint64_t rounded = (uint64_t)n << SPAN_SHIFT;
 
+    if (bytes_since_gc >= trigger_delta) ubel_gc_collect();
+    bytes_since_gc += rounded;
+    st.alloc_count++;
+    st.alloc_bytes += rounded;
+    st.large_allocs++;
+    st.large_bytes += rounded;
+
+    size_t idx = find_free_run(n);
+    int fresh = 0;
+    if (idx == (size_t)-1) {
+        if (next_fresh_span + n > nspans_total) {
+            fprintf(stderr, "ubel_rt: GC heap exhausted: no run of %zu free spans for a %llu-byte object "
+                            "(raise UBEL_HEAP_MB)\n", n, (unsigned long long)size);
+            abort();
+        }
+        idx = next_fresh_span;
+        next_fresh_span += n;
+        fresh = 1;
+    }
+
+    span *h = &spans[idx];
+    h->state = SPAN_LARGE;
+    h->noscan = (uint8_t)(noscan != 0);
+    h->needzero = 0;
+    h->run_len = (uint32_t)n;
+    h->obj_bytes = size;
+    h->mark_bits[0] = 0;
+    h->next = NULL;
+    for (size_t k = 1; k < n; k++) {
+        spans[idx + k].state = SPAN_CONT;
+        spans[idx + k].head_idx = (uint32_t)idx;
+    }
+    spans_in_use += n;
+    if ((uint64_t)spans_in_use * SPAN_SIZE > st.peak_heap_bytes)
+        st.peak_heap_bytes = (uint64_t)spans_in_use * SPAN_SIZE;
+
+    char *p = heap_base + (idx << SPAN_SHIFT);
+    if (!fresh) memset(p, 0, (size_t)size); /* fresh heap is already zero */
+    *nwords = (size_t)(size >> WORD_SHIFT);
+    return p;
+}
+
+/* A zeroed slot of class `cls`, counted and paced like any allocation. The one place that knows
+ * how to find a slot; the fast path below and the general path both use it. */
+static inline __attribute__((always_inline)) void *gc_slot(unsigned cls, unsigned elem) {
     if (bytes_since_gc >= trigger_delta) ubel_gc_collect();
     bytes_since_gc += elem;
     st.alloc_count++;
@@ -241,7 +339,6 @@ void *ubel_gc_alloc(uint64_t size, uint64_t ptrmask) {
             if (idx >= 0) {
                 char *p = heap_base + ((size_t)(s - spans) << SPAN_SHIFT) + (size_t)idx * elem;
                 if (s->needzero) memset(p, 0, elem);
-                hb_write((size_t)(p - heap_base) >> WORD_SHIFT, elem >> WORD_SHIFT, ptrmask);
                 return p;
             }
         }
@@ -250,6 +347,75 @@ void *ubel_gc_alloc(uint64_t size, uint64_t ptrmask) {
         else   { s = new_span(cls); }
         cur_span[cls] = s;
     }
+}
+
+/* Reserve a zeroed object of `size` bytes of any size, and report how many words of the pointer
+ * bitmap belong to it (the slot for a class, the object itself for a large one). The caller
+ * writes those bits. Out of line: the common case, an object a 64-bit mask describes, never
+ * comes through here. */
+static __attribute__((noinline)) void *gc_obj(uint64_t size, int noscan, size_t *nwords) {
+    if (size > UBEL_GC_MAX_CLASS) return gc_alloc_large(size, noscan, nwords);
+    unsigned cls = size_to_class[(size + 15) >> 4];
+    unsigned elem = class_size[cls];
+    void *p = gc_slot(cls, elem);
+    *nwords = elem >> WORD_SHIFT;
+    return p;
+}
+
+/* An object above UBEL_GC_MAX_SMALL can hold no pointers when allocated this way (a mask cannot
+ * describe it): a size class above 512 bytes or a large object, filled in by the caller. */
+static __attribute__((noinline)) void *gc_alloc_big(uint64_t size, uint64_t ptrmask) {
+    if (ptrmask) {
+        fprintf(stderr, "ubel_rt: a 64-bit pointer mask describes objects up to %u bytes (asked for %llu "
+                        "with pointers); use ubel_gc_alloc_array\n",
+                UBEL_GC_MAX_SMALL, (unsigned long long)size);
+        abort();
+    }
+    size_t nw;
+    void *p = gc_obj(size, 1, &nw);
+    hb_clear_range((size_t)((char *)p - heap_base) >> WORD_SHIFT, nw); /* more than 64 words here */
+    return p;
+}
+
+void *ubel_gc_alloc(uint64_t size, uint64_t ptrmask) {
+    if (__builtin_expect(size > UBEL_GC_MAX_SMALL, 0)) return gc_alloc_big(size, ptrmask);
+    unsigned cls = size_to_class[(size + 15) >> 4];
+    unsigned elem = class_size[cls];
+    void *p = gc_slot(cls, elem);
+    hb_write((size_t)((char *)p - heap_base) >> WORD_SHIFT, elem >> WORD_SHIFT, ptrmask);
+    return p;
+}
+
+void *ubel_gc_alloc_noscan(uint64_t size) { return ubel_gc_alloc(size, 0); }
+
+void *ubel_gc_alloc_array(uint64_t elem_size, uint64_t count, uint64_t elem_ptrmask) {
+    uint64_t total;
+    if (__builtin_mul_overflow(elem_size, count, &total)) {
+        fprintf(stderr, "ubel_rt: array of %llu elements of %llu bytes overflows\n",
+                (unsigned long long)count, (unsigned long long)elem_size);
+        abort();
+    }
+    unsigned ew = 0;
+    if (elem_ptrmask) {
+        if (elem_size == 0 || (elem_size & (sizeof(void *) - 1u)) || (elem_size >> WORD_SHIFT) > 64 ||
+            ((elem_size >> WORD_SHIFT) < 64 && (elem_ptrmask >> (elem_size >> WORD_SHIFT)) != 0)) {
+            fprintf(stderr, "ubel_rt: a pointer element must be a whole number of words (at most 64) "
+                            "and its mask must stay inside it (size %llu, mask %llx)\n",
+                    (unsigned long long)elem_size, (unsigned long long)elem_ptrmask);
+            abort();
+        }
+        ew = (unsigned)(elem_size >> WORD_SHIFT);
+    }
+    size_t nw;
+    void *p = gc_obj(total, elem_ptrmask == 0, &nw);
+    size_t widx = (size_t)((char *)p - heap_base) >> WORD_SHIFT;
+    if (!elem_ptrmask) {
+        hb_clear_range(widx, nw);
+    } else {
+        for (uint64_t i = 0; i < count; i++) hb_write(widx + (size_t)i * ew, ew, elem_ptrmask);
+        hb_clear_range(widx + (size_t)count * ew, nw - (size_t)count * ew); /* the slot's slack */
+    }
+    return p;
 }
 
 /* ---- marking ---------------------------------------------------------- */
@@ -263,12 +429,25 @@ static inline void mpush(uintptr_t a) {
     mstack[mtop++] = a;
 }
 
+/* A word that points into a large object's run (anywhere inside its bytes) greys the object. */
+static void __attribute__((noinline)) mark_large(size_t si, uintptr_t off) {
+    span *s = &spans[si];
+    if (s->state == SPAN_FREE) return;
+    size_t hi = (s->state == SPAN_CONT) ? s->head_idx : si;
+    span *h = &spans[hi];
+    uintptr_t hoff = (uintptr_t)hi << SPAN_SHIFT;
+    if (off - hoff >= h->obj_bytes) return; /* in the rounding slack after the object */
+    if (h->mark_bits[0] & 1) return;        /* already grey or black */
+    h->mark_bits[0] |= 1;
+    if (!h->noscan) mpush((uintptr_t)heap_base + hoff);
+}
+
 /* If `p` points into (or at) an allocated heap object, grey it. */
 static inline void mark_ptr(uintptr_t p) {
     uintptr_t off = p - (uintptr_t)heap_base; /* wraps for p < heap_base */
     if (off >= ((uintptr_t)next_fresh_span << SPAN_SHIFT)) return;
     span *s = &spans[off >> SPAN_SHIFT];
-    if (!s->state) return;
+    if (__builtin_expect(s->state != SPAN_SMALL, 0)) { mark_large((size_t)(off >> SPAN_SHIFT), off); return; }
     unsigned idx = (unsigned)((off & (SPAN_SIZE - 1u)) / s->elem);
     if (idx >= s->nelems) return;
     uint64_t bit = 1ull << (idx & 63);
@@ -278,10 +457,34 @@ static inline void mark_ptr(uintptr_t p) {
     mpush((uintptr_t)heap_base + ((uintptr_t)(s - spans) << SPAN_SHIFT) + (uintptr_t)idx * s->elem);
 }
 
+/* Grey every pointer word of an object longer than the single 64-bit read can cover. */
+static void scan_words(const uintptr_t *words, size_t widx, size_t nwords) {
+    size_t end = widx + nwords, w = widx;
+    while (w < end) {
+        unsigned off = (unsigned)(w & 63);
+        size_t take = 64u - off;
+        if (take > end - w) take = end - w;
+        uint64_t m = heapbits[w >> 6] >> off;
+        if (take < 64) m &= (1ull << take) - 1ull;
+        while (m) {
+            unsigned i = (unsigned)__builtin_ctzll(m);
+            m &= m - 1;
+            mark_ptr(words[(w - widx) + i]);
+        }
+        w += take;
+    }
+}
+
 static void scan_object(uintptr_t addr) { /* grey -> black */
     size_t off = addr - (uintptr_t)heap_base;
     span *s = &spans[off >> SPAN_SHIFT];
-    uint64_t m = hb_read(off >> WORD_SHIFT, s->elem >> WORD_SHIFT);
+    if (s->state == SPAN_LARGE) {
+        scan_words((const uintptr_t *)addr, off >> WORD_SHIFT, (size_t)(s->obj_bytes >> WORD_SHIFT));
+        return;
+    }
+    unsigned nw = s->elem >> WORD_SHIFT;
+    if (nw > 64) { scan_words((const uintptr_t *)addr, off >> WORD_SHIFT, nw); return; }
+    uint64_t m = hb_read(off >> WORD_SHIFT, nw);
     const uintptr_t *words = (const uintptr_t *)addr;
     while (m) {
         unsigned i = (unsigned)__builtin_ctzll(m);
@@ -328,7 +531,21 @@ static uint64_t sweep(void) {
     n_free_spans = 0;
     for (size_t i = 0; i < next_fresh_span; i++) {
         span *s = &spans[i];
-        if (!s->state) { free_spans[n_free_spans++] = (uint32_t)i; continue; }
+        if (s->state == SPAN_CONT) continue; /* settled with its head */
+        if (s->state == SPAN_FREE) { free_spans[n_free_spans++] = (uint32_t)i; continue; }
+        if (s->state == SPAN_LARGE) {
+            size_t n = s->run_len;
+            if (s->mark_bits[0] & 1) {
+                s->mark_bits[0] = 0;
+                live += (uint64_t)n << SPAN_SHIFT;
+            } else {
+                s->state = SPAN_FREE;
+                spans_in_use -= n;
+                free_spans[n_free_spans++] = (uint32_t)i;
+                for (size_t k = 1; k < n; k++) spans[i + k].state = SPAN_FREE; /* listed when reached */
+            }
+            continue;
+        }
         unsigned nw = ((unsigned)s->nelems + 63u) >> 6;
         unsigned n = 0;
         for (unsigned w = 0; w < nw; w++) {
@@ -337,7 +554,7 @@ static uint64_t sweep(void) {
             s->mark_bits[w] = 0;
         }
         if (n == 0) {
-            s->state = 0;
+            s->state = SPAN_FREE;
             spans_in_use--;
             free_spans[n_free_spans++] = (uint32_t)i;
         } else {

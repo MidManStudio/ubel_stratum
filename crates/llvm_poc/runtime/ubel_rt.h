@@ -42,9 +42,15 @@ uint64_t ubel_arena_live(void);
 
 /* Pointer-width note: the collector works in pointer-sized words (4 bytes on
  * 32-bit targets, 8 on 64-bit). `ptrmask` bit i refers to pointer-word i, and
- * the mask is 64 bits wide, so the largest object is 64 pointer-words:
- * 512 bytes on 64-bit, 256 bytes on 32-bit. Bigger requests abort. */
+ * the mask is 64 bits wide, so the largest object a single mask can describe is
+ * 64 pointer-words: 512 bytes on 64-bit, 256 bytes on 32-bit. A bigger object that
+ * holds pointers is allocated with ubel_gc_alloc_array, which repeats a per-element
+ * mask; a bigger object without pointers (a string) needs no mask at all.
+ *
+ * Objects up to UBEL_GC_MAX_CLASS bytes live in size-class spans. Larger ones take a run
+ * of whole 32 KiB spans each (a "large" object); the only limit is the heap size. */
 #define UBEL_GC_MAX_SMALL (64u * (unsigned)sizeof(void *))
+#define UBEL_GC_MAX_CLASS (32u * 1024u)
 
 typedef struct {
     uint64_t collections;
@@ -55,6 +61,8 @@ typedef struct {
     uint64_t max_pause_ns;      /* stop-the-world: whole collection */
     uint64_t peak_heap_bytes;   /* spans handed out x span size */
     uint64_t live_bytes_last;   /* live bytes found by the last collection */
+    uint64_t large_allocs;      /* objects above UBEL_GC_MAX_CLASS (counted in alloc_count too) */
+    uint64_t large_bytes;       /* their size rounded up to whole spans (in alloc_bytes too) */
 } ubel_gc_stats;
 
 /* Call once, early, from the outermost frame that can hold GC pointers.
@@ -62,11 +70,22 @@ typedef struct {
  * __builtin_frame_address(0) taken in main(). */
 void  ubel_gc_init(void *stack_base);
 
-/* Allocate `size` bytes (<= UBEL_GC_MAX_SMALL), zeroed. Bit i of `ptrmask`
- * says pointer-word i of the object (offset i * sizeof(void*)) holds a
- * pointer. A compiler derives the mask from the target's data layout.
- * Interior pointers keep an object alive. */
+/* Allocate `size` bytes, zeroed. Bit i of `ptrmask` says pointer-word i of the object
+ * (offset i * sizeof(void*)) holds a pointer. A compiler derives the mask from the target's
+ * data layout. With a non-zero mask `size` must be <= UBEL_GC_MAX_SMALL (the call aborts
+ * otherwise); with mask 0 it can be anything the heap can hold. Interior pointers keep an
+ * object alive; for a large object a pointer one past its end does not. */
 void *ubel_gc_alloc(uint64_t size, uint64_t ptrmask);
+
+/* An object with no pointers inside, of any size (strings, byte buffers). Large ones are
+ * marked but never scanned. Same as ubel_gc_alloc(size, 0). */
+void *ubel_gc_alloc_noscan(uint64_t size);
+
+/* `count` elements of `elem_size` bytes, zeroed, each with the pointer layout `elem_ptrmask`
+ * (bit i = pointer-word i of one element). With a non-zero mask `elem_size` must be a whole
+ * number of words, at most 64 of them, and the mask must stay inside the element. The total
+ * size is unlimited. A mask of 0 makes it pointer-free. */
+void *ubel_gc_alloc_array(uint64_t elem_size, uint64_t count, uint64_t elem_ptrmask);
 
 void  ubel_gc_collect(void);
 void  ubel_gc_get_stats(ubel_gc_stats *out);
