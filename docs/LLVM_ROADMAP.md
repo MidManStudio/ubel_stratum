@@ -232,7 +232,7 @@ place sema and the calculus disagree.
 |---|---|---|---|
 | D1 | Can an arena value cross a call (a borrowed-reference parameter), or is copy-out the only way? | B4, B2, A7 | Allow a borrowed `&L` parameter with a lifetime tied to the caller's arena, because the callback pattern is the design's main selling point and copy-out costs 1.2x to 1.3x. |
 | D2 | Does a function type carry a tier, and is calling a closure checked against it? | B4, B3, A7 | Yes, to close the hole above. |
-| D3 | String representation: GC object `{length, bytes}`, literals static, interpolation allocates by site | A6 | As stated. |
+| D3 | String representation: GC object `{length, bytes}`, literals static, interpolation allocates by site. DECIDED as D3b (chat 4): sema tracks arena strings, a run-time `+` always allocates in the GC heap, see docs/ARENA_STRINGS.md | A6 | Sema half delivered; emitter half is A6. |
 | D4 | Enum payload-free variants: uniform heap object (today) or plain integer | A4 | Keep the uniform object for now, revisit once strings and closures exist. |
 | D5 | Capturing closures: closure object holds captured values, in the GC heap or the arena by site | A7 | By site, like every other literal. |
 | D6 | Recursive arena structures: optional references, arena-capable enums, or arena lists | B2, A8 | Needs your call; the target program does not depend on it. |

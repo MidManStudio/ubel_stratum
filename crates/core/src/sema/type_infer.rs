@@ -967,6 +967,21 @@ impl<'a> InferCtx<'a> {
         self.pool_stack.last().copied()
     }
 
+    /// D3b (docs/ARENA_STRINGS.md): if `ty` is an arena-tagged string (`&arena string`), the plain
+    /// string type; any other type comes back unchanged. For an operator that only reads its string
+    /// operands (`==`, `<`, `+`): the result is a `bool`, or a new string that is always allocated in
+    /// the GC heap (a copy), so it carries no borrow of the operand.
+    fn peel_arena_str(&mut self, ty: TypeId) -> TypeId {
+        let resolved = self.apply(ty);
+        if let SemaType::ArenaRef { inner, .. } = self.ctx.types.get(resolved).clone() {
+            let inner = self.apply(inner);
+            if matches!(self.ctx.types.get(inner), SemaType::Str) {
+                return inner;
+            }
+        }
+        ty
+    }
+
     /// Wrap `inner_ty` as an ArenaRef if inside a `with arena` block.
     /// Called on freshly *constructed* values only.
     fn maybe_arena_ref(&mut self, inner_ty: TypeId) -> TypeId {
@@ -5871,7 +5886,9 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                 }
-                self.ctx.types.intern(SemaType::Str)
+                // D3b: an interpolated string is allocated where it is written (docs/ARENA_STRINGS.md).
+                let str_ty = self.ctx.types.intern(SemaType::Str);
+                self.maybe_arena_ref(str_ty)
             }
         }
     }
@@ -6032,6 +6049,7 @@ impl<'a> InferCtx<'a> {
     // ── BinOp result type ─────────────────────────────────────────
 
     fn binop_result(&mut self, op: BinOp, lhs: TypeId, rhs: TypeId, span: Span) -> TypeId {
+        let (lhs, rhs) = (self.peel_arena_str(lhs), self.peel_arena_str(rhs));
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
             | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
