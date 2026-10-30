@@ -22,11 +22,13 @@ int main(void) {
         ubel_gc_get_stats(&st);
         fprintf(stderr,
                 "ubel_stats: collections=%llu alloc_count=%llu alloc_bytes=%llu mark_ns=%llu "
-                "sweep_ns=%llu max_pause_ns=%llu peak_heap_bytes=%llu live_bytes_last=%llu\n",
+                "sweep_ns=%llu max_pause_ns=%llu peak_heap_bytes=%llu live_bytes_last=%llu "
+                "large_allocs=%llu large_bytes=%llu\n",
                 (unsigned long long)st.collections, (unsigned long long)st.alloc_count,
                 (unsigned long long)st.alloc_bytes, (unsigned long long)st.mark_ns,
                 (unsigned long long)st.sweep_ns, (unsigned long long)st.max_pause_ns,
-                (unsigned long long)st.peak_heap_bytes, (unsigned long long)st.live_bytes_last);
+                (unsigned long long)st.peak_heap_bytes, (unsigned long long)st.live_bytes_last,
+                (unsigned long long)st.large_allocs, (unsigned long long)st.large_bytes);
     }
     if (getenv("UBEL_CHECK_LEAKS") && ubel_arena_live() != 0) {
         fprintf(stderr, "arena leak: %llu arena(s) still live at exit\n",
