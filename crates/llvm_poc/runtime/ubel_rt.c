@@ -45,6 +45,34 @@ void ubel_print_bool(int32_t b)           { fputs(b ? "true" : "false", stdout);
 void ubel_print_str(const char *s, int64_t len) { fwrite(s, 1, (size_t)len, stdout); }
 void ubel_print_nl(void)                  { fputc('\n', stdout); }
 
+/* Strings (D3b, docs/ARENA_STRINGS.md). A string value is a pointer to { int64 length, bytes }:
+ * UTF-8, no terminator, immutable. The emitter builds them (interpolation) with the helpers below. */
+
+int32_t ubel_str_eq(const void *a, const void *b) {
+    if (a == b) return 1;
+    int64_t la = *(const int64_t *)a;
+    if (la != *(const int64_t *)b) return 0;
+    return memcmp((const char *)a + 8, (const char *)b + 8, (size_t)la) == 0;
+}
+
+/* Number of characters `v` takes in decimal, minus sign included. */
+int64_t ubel_i64_len(int64_t v) {
+    uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
+    int64_t n = v < 0 ? 2 : 1;
+    while (u >= 10) { u /= 10; n++; }
+    return n;
+}
+
+/* Writes exactly ubel_i64_len(v) characters at dst, no terminator. */
+void ubel_i64_write(char *dst, int64_t v) {
+    uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
+    int64_t first = v < 0 ? 1 : 0;
+    if (v < 0) dst[0] = '-';
+    for (int64_t i = ubel_i64_len(v) - 1; i >= first; i--) { dst[i] = (char)('0' + (int)(u % 10)); u /= 10; }
+}
+
+void ubel_put(char *dst, const char *src, int64_t n) { memcpy(dst, src, (size_t)n); }
+
 void ubel_trap_div_zero(void) {
     fflush(stdout);
     fprintf(stderr, "runtime error: division by zero\n");

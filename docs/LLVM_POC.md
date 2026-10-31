@@ -411,14 +411,36 @@ a discriminant is treated as payload-free (sema validates the value and nothing 
 exhaustiveness check cannot become undefined behaviour. Patterns supported: `Enum.Variant(a, _)`,
 bare payload-free variant names, `_`, and a plain name that binds the whole value. Refused by
 name: struct-style variants and patterns, `where` guards, nested patterns, `mut` bindings,
-generic enums, string payloads (until strings exist), printing an enum value and `==` on enums
+generic enums, printing an enum value and `==` on enums
 (the interpreter prints `C.Red` and compares by variant; the emitter does neither yet). At most 31
 payload fields per variant. An arm such as `=> return n,` is parsed as a one-statement block (the
 parser treats `return`, `break`, `continue` and `fail` as statements), so arm bodies are lowered as
 blocks or expressions, and a `match` used as a value skips the arms that leave the function or loop.
 
+**Strings (A6, provisional).** `string` works as a parameter, result, local, struct field and enum
+payload type. A string value is a pointer to `{ i64 length, bytes }` (UTF-8, no terminator,
+immutable). A literal is a static constant outside the heap, so the collector ignores pointers to it
+and nothing ever frees it. `$"..."` builds a string (decision D3b, `docs/ARENA_STRINGS.md`): every
+hole is evaluated first, in order; then one object of `8 + length` bytes is allocated where the
+literal is written, and the pieces are copied in. Holes may be ints (decimal), bools (`true` or
+`false`) or strings; format specifiers are refused. In a HIGH function the object is a GC object with
+mask 0, so the collector never scans it. Inside `with arena` it is bump-allocated, but only when sema
+tracks arena strings (the D3b sema patch); without that the emitter refuses, because nothing would stop
+the string leaving the block. Refused as for struct literals: LOW, and MID outside an arena.
+`==` and `!=` compare length and then bytes; `<` and friends and `+` are refused (sema allows `+`,
+whose result will always be a GC string). `println` prints a string value. A string field of a GC
+struct or enum is a pointer in the collector mask. Refused by name: a string field in a struct or enum
+allocated in an arena, because the emitter only creates plain arenas, which the collector does not
+scan, so a GC string kept only there could be freed (needs scannable arenas chosen from the stored
+types). Runtime helpers: `ubel_str_eq`, `ubel_i64_len`, `ubel_i64_write`, `ubel_put`.
+`examples/19_strings` mirrors the target's `show` and `apply` and then builds about 20 MB of garbage
+strings, so strings held only by a struct field and an enum payload must be kept by the collector. To
+check that it can fail, `Ty::Str` was taken out of the pointer mask: the output came back as
+`label-71(label-72)` instead of `fn7(v1)` (freed and reused memory). Mutants of `ubel_str_eq` and of
+the minus sign in `ubel_i64_len` are caught too.
+
 Everything else is **refused with a located "not supported yet" error** instead of being
-guessed at: strings as values, collections, closures, generics, struct methods,
+guessed at: collections, closures, generics, struct methods,
 `edge struct`, `match`, sized integers and floats; also printing or comparing a struct value. The test suite checks that each refusal names the right
 feature, so unsupported code cannot be silently miscompiled.
 
@@ -537,7 +559,8 @@ and leaves the arena from inside `match` arms with `return`, `break` and `contin
 that `16_enum_gc` can fail, the per-variant pointer masks were forced to zero: the first line of
 output still matched, but the surviving tree evaluated to 246 instead of 7 (freed and reused
 memory, no crash), so the test catches silent corruption as well as crashes. The target
-program's first refusal is now its `string` payload (`Var(string)`).
+program's first refusal is now its closure parameter `cb: fn(int) string` (line 108), after A6 made
+the `Var(string)` payload compile.
 
 ### Known differences from the interpreter
 
@@ -748,10 +771,11 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    compile and match the interpreter.
 2. ~~Enums with payloads and `match`.~~ Done (slice 4, see above), with the provisional
    uniform-object layout.
-3. **Strings as values** (interpolation that builds one, `==`, printing one). Needs a string
-   representation decision, and **large-object support in the collector first**: a string
-   can exceed 512 bytes. The runtime handles that now (`ubel_gc_alloc_noscan`, see
-   `docs/GC_LARGE_OBJECTS.md`); the emitter will use it once strings exist.
+3. ~~**Strings as values** (interpolation that builds one, `==`, printing one).~~ Done (A6, see
+   "Strings" above), after deciding D3b and after large-object support in the collector
+   (`docs/GC_LARGE_OBJECTS.md`: a string can exceed 512 bytes, and the GC path uses the same
+   allocator). Open: strings built in arenas need the D3b sema patch to be applied, string `+` and
+   ordering, and a string field in an arena object.
 4. **Non-capturing closures** passed to a MID function and called there (`cb(result)`),
    using the Stage 1A closure proposal (GC object, code pointer in the first word) with zero
    captures at first. This completes `build_and_eval` and `compile_expression`.
@@ -788,6 +812,11 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-10-31: A6 (strings as values), provisional. `string` as a type, static literals, `$"..."` that
+  builds a string by site, `==` and `!=`, printing a string value. 44 of 44 locally at 64-bit and
+  32-bit; mutants of the pointer mask and of two runtime helpers are caught. The target program
+  now stops at its closure parameter (A7). Strings built in an arena were tested with the D3b sema
+  patch applied (45 of 45) and are refused without it.
 - 2026-10-25: Stage 1B slice 4: enums with tuple payloads and `match` (uniform heap object per
   value, per-variant pointer masks, `switch` on the tag), 36 of 36 locally at 64-bit and 32-bit,
   not yet on CI. CI summaries moved into scripts and expanded (run info, feature table,

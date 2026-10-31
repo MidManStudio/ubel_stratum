@@ -110,6 +110,9 @@ enum Ty {
     /// An enum value: a pointer to an object (tag word, then payload slots), `usize` indexes
     /// `Emitter::enums`. Every enum value is an object, payload-free variants included.
     Enum(usize),
+    /// A string value: a pointer to `{ i64 length, bytes }` (UTF-8, no terminator, immutable). A literal
+    /// is a static constant outside the heap; a string built at run time lives where it was written (D3b).
+    Str,
 }
 
 impl Ty {
@@ -118,13 +121,13 @@ impl Ty {
             Ty::I64 => "i64",
             Ty::I1 => "i1",
             Ty::Void => "void",
-            Ty::Struct(_) | Ty::Enum(_) => "ptr",
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Str => "ptr",
         }
     }
 
     /// Values that are pointers to objects, and so need a collector mask bit.
     fn is_ptr(self) -> bool {
-        matches!(self, Ty::Struct(_) | Ty::Enum(_))
+        matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str)
     }
 }
 
@@ -141,6 +144,10 @@ struct EnumInfo {
     /// Payload slots every value of this enum carries: the arity of its widest variant.
     slots: usize,
 }
+
+/// Why a string-typed field cannot live in an arena object yet: the emitter only creates plain arenas,
+/// which the collector does not scan, so a GC string stored there could be freed while still in use.
+const STR_IN_ARENA: &str = "a string field in a struct or enum allocated in an arena (the collector does not scan plain arenas yet)";
 
 /// Payload fields per variant. One slot is 8 bytes, a GC object is at most 64 pointer-words
 /// (256 bytes on a 32-bit target) and the tag takes one slot, so 31 always fits.
@@ -274,6 +281,8 @@ struct Emitter<'a> {
     masked: BTreeSet<usize>,
     uses_gc: bool,
     uses_bump: bool,
+    /// Any string operation was emitted, so the runtime's string helpers are declared.
+    uses_str: bool,
 
     funcs: String,
     strings: String,
@@ -342,6 +351,7 @@ impl<'a> Emitter<'a> {
             masked: BTreeSet::new(),
             uses_gc: false,
             uses_bump: false,
+            uses_str: false,
             funcs: String::new(),
             strings: String::new(),
             str_n: 0,
@@ -377,7 +387,13 @@ impl<'a> Emitter<'a> {
         if self.uses_bump {
             out.push_str("declare ptr  @ubel_arena_grow(ptr, i64)\n");
         }
-        if self.uses_gc || self.uses_bump {
+        if self.uses_str {
+            out.push_str("declare i32  @ubel_str_eq(ptr, ptr)\n");
+            out.push_str("declare i64  @ubel_i64_len(i64)\n");
+            out.push_str("declare void @ubel_i64_write(ptr, i64)\n");
+            out.push_str("declare void @ubel_put(ptr, ptr, i64)\n");
+        }
+        if self.uses_gc || self.uses_bump || self.uses_str {
             out.push('\n');
         }
         if !self.strings.is_empty() {
@@ -612,6 +628,7 @@ impl<'a> Emitter<'a> {
             TypeKind::Int => Ok(Ty::I64),
             TypeKind::Bool => Ok(Ty::I1),
             TypeKind::Void => Ok(Ty::Void),
+            TypeKind::Str => Ok(Ty::Str),
             TypeKind::Reference { mutable, inner, .. } => {
                 if mutable {
                     return unsupported(t.span, "`&mut` references");
@@ -629,12 +646,12 @@ impl<'a> Emitter<'a> {
                     [name] => match (self.struct_ids.get(*name), self.enum_ids.get(*name)) {
                         (Some(&sid), _) => Ok(Ty::Struct(sid)),
                         (None, Some(&eid)) => Ok(Ty::Enum(eid)),
-                        (None, None) => unsupported(t.span, format!("the type `{name}` (only int, bool, void, plain structs and enums so far)")),
+                        (None, None) => unsupported(t.span, format!("the type `{name}` (only int, bool, string, void, plain structs and enums so far)")),
                     },
                     _ => unsupported(t.span, "qualified type names"),
                 }
             }
-            _ => unsupported(t.span, "this type (only `int`, `bool`, `void`, plain structs and enums so far)"),
+            _ => unsupported(t.span, "this type (only `int`, `bool`, `string`, `void`, plain structs and enums so far)"),
         }
     }
 
@@ -802,7 +819,7 @@ impl<'a> Emitter<'a> {
                     }
                     _ => {
                         let shown = self.ctx.types.get(start).display(&self.ctx.types, &self.ctx.symbols);
-                        return unsupported(e.span, format!("values of type `{shown}` (only int, bool, void, plain structs and enums so far)"));
+                        return unsupported(e.span, format!("values of type `{shown}` (only int, bool, string, void, plain structs and enums so far)"));
                     }
                 }
             }
@@ -1257,7 +1274,10 @@ impl<'a> Emitter<'a> {
                 Ok(Val { v: n.to_string(), ty: Ty::I64 })
             }
             ExprKind::Lit(Literal::Bool(b)) => Ok(Val { v: b.to_string(), ty: Ty::I1 }),
-            ExprKind::Lit(_) => unsupported(e.span, "this literal as a value (only int and bool, and strings inside `println`)"),
+            ExprKind::Lit(Literal::Str(s)) | ExprKind::Lit(Literal::VerbatimStr(s)) => Ok(self.static_str(s)),
+            ExprKind::Lit(Literal::InterpolatedStr(parts))
+            | ExprKind::Lit(Literal::InterpolatedVerbatimStr(parts)) => self.interp_string(e, parts),
+            ExprKind::Lit(_) => unsupported(e.span, "this literal as a value (only int, bool and string literals so far)"),
             ExprKind::Ident(name) => {
                 let local = self
                     .lookup(name)
@@ -1403,6 +1423,9 @@ impl<'a> Emitter<'a> {
             None => return unsupported(e.span, format!("struct literals of `{name}` (only plain structs declared in this file)")),
         };
         let arena = self.alloc_site(e.span, "a struct literal")?;
+        if arena.is_some() && self.structs[sid].fields.iter().any(|f| f.ty == Ty::Str) {
+            return unsupported(e.span, STR_IN_ARENA);
+        }
 
         let n = self.structs[sid].fields.len();
         let mut vals: Vec<Option<Val>> = vec![None; n];
@@ -1511,6 +1534,9 @@ impl<'a> Emitter<'a> {
             ));
         }
         let arena = self.alloc_site(e.span, "an enum value")?;
+        if arena.is_some() && fields.iter().any(|f| *f == Ty::Str) {
+            return unsupported(e.span, STR_IN_ARENA);
+        }
         let mut vals = Vec::new();
         for (i, a) in args.iter().enumerate() {
             let ae = match a.kind {
@@ -1780,6 +1806,20 @@ impl<'a> Emitter<'a> {
         if l.ty != r.ty || l.ty == Ty::Void {
             return Err(CompileError::at(span, "the operands of this operator have different types"));
         }
+        if l.ty == Ty::Str {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    self.uses_str = true;
+                    let c = self.fresh();
+                    self.inst(&format!("{c} = call i32 @ubel_str_eq(ptr {}, ptr {})", l.v, r.v));
+                    let t = self.fresh();
+                    let pred = if op == BinOp::Eq { "ne" } else { "eq" };
+                    self.inst(&format!("{t} = icmp {pred} i32 {c}, 0"));
+                    Ok(Val { v: t, ty: Ty::I1 })
+                }
+                _ => unsupported(span, "this operator on strings (only `==` and `!=` so far)"),
+            };
+        }
         if l.ty.is_ptr() {
             return unsupported(span, "operators on struct or enum values (compare fields, or `match`, instead)");
         }
@@ -1907,18 +1947,141 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// A string literal used as a value: a static `{ i64 length, bytes }` constant. It sits outside
+    /// the GC heap, so the collector ignores pointers to it and nothing ever frees it.
+    fn static_str(&mut self, s: &str) -> Val {
+        let name = format!("@.strv.{}", self.str_n);
+        self.str_n += 1;
+        let bytes = s.as_bytes();
+        let n = bytes.len();
+        let _ = writeln!(
+            self.strings,
+            "{name} = private unnamed_addr constant {{ i64, [{n} x i8] }} {{ i64 {n}, [{n} x i8] c\"{}\" }}, align 8",
+            ir_escape(bytes)
+        );
+        Val { v: name, ty: Ty::Str }
+    }
+
+    /// Inside `with arena` an interpolated string is allocated in the arena, which is only safe when
+    /// sema tracks it as an arena value (D3b, docs/ARENA_STRINGS.md); sema types such a literal
+    /// `&arena string`. Without that, a string could be returned out of the block with nothing to stop it.
+    fn sema_tags_arena_string(&self, e: &Expr) -> bool {
+        match self.ctx.expr_types.get(&e.span) {
+            Some(&id) => matches!(self.ctx.types.get(id), SemaType::ArenaRef { .. }),
+            None => false,
+        }
+    }
+
+    /// `$"text {a} text {b}"` as a value (D3b). Every hole is evaluated first, in order. Then the total
+    /// length is computed, one object of `8 + length` bytes is allocated where the literal is written
+    /// (arena inside `with arena`, GC heap in a HIGH function, refused elsewhere, exactly like a struct
+    /// literal) and the pieces are copied in. A string holds no pointers, so the GC object has mask 0.
+    /// ints print in decimal and bools as `true` / `false`, like `println`.
+    fn interp_string(&mut self, e: &Expr, parts: &[InterpolationPart]) -> R<Val> {
+        enum Piece {
+            Text(String),
+            Val(Val),
+        }
+        let arena = self.alloc_site(e.span, "an interpolated string")?;
+        if arena.is_some() && !self.sema_tags_arena_string(e) {
+            return unsupported(
+                e.span,
+                "building a string inside `with arena` while sema does not track arena strings (apply the D3b sema patch, docs/ARENA_STRINGS.md)",
+            );
+        }
+        let mut pieces: Vec<Piece> = Vec::new();
+        for part in parts {
+            match *part {
+                InterpolationPart::Text(t) => {
+                    if !t.is_empty() {
+                        pieces.push(Piece::Text(t.to_string()));
+                    }
+                }
+                InterpolationPart::Expr { expr, spec: None } => {
+                    let v = self.expr(expr)?;
+                    self.need_printable(&v, expr.span)?;
+                    pieces.push(Piece::Val(v));
+                }
+                InterpolationPart::Expr { expr, spec: Some(_) } => {
+                    return unsupported(expr.span, "format specifiers in interpolated strings");
+                }
+            }
+        }
+        self.uses_str = true;
+
+        // Length of every piece, then the total.
+        let mut lens: Vec<String> = Vec::new();
+        let mut const_len = 0usize;
+        let mut dyn_lens: Vec<String> = Vec::new();
+        for piece in &pieces {
+            match piece {
+                Piece::Text(t) => {
+                    const_len += t.len();
+                    lens.push(t.len().to_string());
+                }
+                Piece::Val(v) => {
+                    let l = self.fresh();
+                    match v.ty {
+                        Ty::I64 => self.inst(&format!("{l} = call i64 @ubel_i64_len(i64 {})", v.v)),
+                        Ty::I1 => self.inst(&format!("{l} = select i1 {}, i64 4, i64 5", v.v)),
+                        Ty::Str => self.inst(&format!("{l} = load i64, ptr {}", v.v)),
+                        _ => unreachable!("void, struct and enum values are rejected by need_printable"),
+                    }
+                    dyn_lens.push(l.clone());
+                    lens.push(l);
+                }
+            }
+        }
+        let mut total = const_len.to_string();
+        for d in &dyn_lens {
+            let sum = self.fresh();
+            self.inst(&format!("{sum} = add i64 {total}, {d}"));
+            total = sum;
+        }
+        let size = self.fresh();
+        self.inst(&format!("{size} = add i64 {total}, 8"));
+        let p = self.alloc_obj(arena, &size, "0", "string");
+        self.inst(&format!("store i64 {total}, ptr {p}"));
+
+        let mut dst = self.fresh();
+        self.inst(&format!("{dst} = getelementptr inbounds i8, ptr {p}, i64 8"));
+        for (i, piece) in pieces.iter().enumerate() {
+            let len = lens[i].clone();
+            match piece {
+                Piece::Text(t) => {
+                    let (name, n) = self.string_const(t);
+                    self.inst(&format!("call void @ubel_put(ptr {dst}, ptr {name}, i64 {n})"));
+                }
+                Piece::Val(v) => match v.ty {
+                    Ty::I64 => self.inst(&format!("call void @ubel_i64_write(ptr {dst}, i64 {})", v.v)),
+                    Ty::I1 => {
+                        let (tn, _) = self.string_const("true");
+                        let (fnm, _) = self.string_const("false");
+                        let sel = self.fresh();
+                        self.inst(&format!("{sel} = select i1 {}, ptr {tn}, ptr {fnm}", v.v));
+                        self.inst(&format!("call void @ubel_put(ptr {dst}, ptr {sel}, i64 {len})"));
+                    }
+                    _ => {
+                        let bytes = self.fresh();
+                        self.inst(&format!("{bytes} = getelementptr inbounds i8, ptr {}, i64 8", v.v));
+                        self.inst(&format!("call void @ubel_put(ptr {dst}, ptr {bytes}, i64 {len})"));
+                    }
+                },
+            }
+            if i + 1 < pieces.len() {
+                let next = self.fresh();
+                self.inst(&format!("{next} = getelementptr inbounds i8, ptr {dst}, i64 {len}"));
+                dst = next;
+            }
+        }
+        Ok(Val { v: p, ty: Ty::Str })
+    }
+
     fn string_const(&mut self, s: &str) -> (String, usize) {
         let name = format!("@.str.{}", self.str_n);
         self.str_n += 1;
         let bytes = s.as_bytes();
-        let mut esc = String::new();
-        for &b in bytes {
-            if (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\' {
-                esc.push(b as char);
-            } else {
-                let _ = write!(esc, "\\{:02X}", b);
-            }
-        }
+        let esc = ir_escape(bytes);
         let _ = writeln!(
             self.strings,
             "{name} = private unnamed_addr constant [{} x i8] c\"{esc}\"",
@@ -1962,6 +2125,13 @@ impl<'a> Emitter<'a> {
                         let z = self.fresh();
                         self.inst(&format!("{z} = zext i1 {} to i32", v.v));
                         self.inst(&format!("call void @ubel_print_bool(i32 {z})"));
+                    }
+                    Ty::Str => {
+                        let len = self.fresh();
+                        self.inst(&format!("{len} = load i64, ptr {}", v.v));
+                        let bytes = self.fresh();
+                        self.inst(&format!("{bytes} = getelementptr inbounds i8, ptr {}, i64 8", v.v));
+                        self.inst(&format!("call void @ubel_print_str(ptr {bytes}, i64 {len})"));
                     }
                     Ty::Void => unreachable!("void values are rejected when collected"),
                     Ty::Struct(_) | Ty::Enum(_) => unreachable!("struct and enum values are rejected when collected"),
@@ -2007,6 +2177,19 @@ impl<'a> Emitter<'a> {
 enum PItem {
     Text(String),
     Val(Val),
+}
+
+/// The bytes of a string as the body of an LLVM `c"..."` constant.
+fn ir_escape(bytes: &[u8]) -> String {
+    let mut esc = String::new();
+    for &b in bytes {
+        if (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\' {
+            esc.push(b as char);
+        } else {
+            let _ = write!(esc, "\\{:02X}", b);
+        }
+    }
+    esc
 }
 
 fn assign_binop(op: AssignOp) -> Option<BinOp> {

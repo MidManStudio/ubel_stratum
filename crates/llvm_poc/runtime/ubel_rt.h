@@ -30,6 +30,10 @@ void ubel_print_i64(int64_t v);
 void ubel_print_bool(int32_t b);
 void ubel_print_str(const char *s, int64_t len);
 void ubel_print_nl(void);
+int32_t ubel_str_eq(const void *a, const void *b);
+int64_t ubel_i64_len(int64_t v);
+void ubel_i64_write(char *dst, int64_t v);
+void ubel_put(char *dst, const char *src, int64_t n);
 
 /* Runtime errors the interpreter would report; here they print to stderr and exit(1). */
 void ubel_trap_div_zero(void);

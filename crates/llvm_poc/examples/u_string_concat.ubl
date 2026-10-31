@@ -1,0 +1,8 @@
+// Not supported yet: `+` on strings. Sema allows it (the result is always a GC string, see
+// docs/ARENA_STRINGS.md); the emitter does not build it yet, so it must refuse, not guess.
+// expect-refusal: this operator on strings
+fn main() void {
+    let a = "ab"
+    let b = a + "cd"
+    println(b)
+}

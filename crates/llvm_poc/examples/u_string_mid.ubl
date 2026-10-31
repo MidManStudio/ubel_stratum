@@ -1,0 +1,12 @@
+// Not supported yet: building a string in a MID function outside `with arena`. Where it would be
+// allocated is the same open question as for a struct literal there, so the emitter must refuse.
+// expect-refusal: outside `with arena`
+@tier(mid)
+fn tag(n: int) int {
+    let s = $"n={n}"
+    return n
+}
+
+fn main() void {
+    println(tag(1))
+}

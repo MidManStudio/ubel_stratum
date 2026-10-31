@@ -1,0 +1,12 @@
+// Not supported yet: building a string in a LOW function. A string would be allocated, and how LOW
+// allocates is undecided; LOW must stay free of GC allocation.
+// expect-refusal: @tier(low)
+@tier(low)
+fn tag(n: int) int {
+    let s = $"n={n}"
+    return n
+}
+
+fn main() void {
+    println(tag(1))
+}

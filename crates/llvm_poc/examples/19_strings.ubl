@@ -1,0 +1,113 @@
+// Strings as values (A6, D3b). A literal is a static constant outside the heap. `$"..."` builds a
+// string where it is written; every function here is HIGH, so each one lives in the GC heap.
+// Strings travel through parameters and returns, sit in struct fields and enum payloads, print as
+// values, and compare with == and !=. The loop at the end builds a lot of garbage strings, so a
+// string held only by a struct field or an enum payload must be kept alive by the collector.
+// (Strings built inside `with arena` come with the D3b sema patch: docs/ARENA_STRINGS.md.)
+enum Expr {
+    Num(int),
+    Var(string),
+    Add(Expr, Expr),
+    Mul(Expr, Expr),
+    Neg(Expr),
+    Call(string, Expr),
+}
+
+struct Label {
+    text: string
+    n:    int
+}
+
+fn show(e: Expr) string {
+    match e {
+        Expr.Num(n) => return $"{n}",
+        Expr.Var(name) => return name,
+        Expr.Add(a, b) => return $"({show(a)} + {show(b)})",
+        Expr.Mul(a, b) => return $"({show(a)} * {show(b)})",
+        Expr.Neg(a) => return $"-{show(a)}",
+        Expr.Call(name, arg) => return $"{name}({show(arg)})",
+    }
+}
+
+fn apply(name: string, v: int) int {
+    if name == "square" {
+        return v * v
+    }
+    if name == "double" {
+        return v + v
+    }
+    return v
+}
+
+fn eval(e: Expr, x: int) int {
+    match e {
+        Expr.Num(n) => return n,
+        Expr.Var(name) => return x,
+        Expr.Add(a, b) => return eval(a, x) + eval(b, x),
+        Expr.Mul(a, b) => return eval(a, x) * eval(b, x),
+        Expr.Neg(a) => return 0 - eval(a, x),
+        Expr.Call(name, arg) => return apply(name, eval(arg, x)),
+    }
+}
+
+fn greet(name: string, times: int) string {
+    return $"hello {name} x{times}"
+}
+
+fn pick(flag: bool) string {
+    if flag {
+        return "yes"
+    }
+    return "no"
+}
+
+// Builds two equal strings per round and compares them; the garbage forces collections.
+fn churn(rounds: int) int {
+    let mut ok = 0
+    let mut i = 0
+    while i < rounds {
+        let a = $"round {i}: {i * i} {i < 10}"
+        let b = $"round {i}: {i * i} {i < 10}"
+        if a == b {
+            ok += 1
+        }
+        i += 1
+    }
+    return ok
+}
+
+fn main() void {
+    // literals and interpolation as values
+    let lit = "plain"
+    println(lit)
+    println("value:", lit, 5, true)
+    let n = 42
+    let neg = -7
+    let lo = -9223372036854775807 - 1
+    let s = $"n={n} neg={neg} lo={lo} zero={0} big={9223372036854775807} t={n > 1} f={n < 1}"
+    println(s)
+    println($"[{s}]")
+    let empty = ""
+    let e2 = $""
+    println($"<{empty}><{e2}>")
+    println(empty == e2, lit == "plain", lit != "plain", s == s, "a" == "b", "ab" == "a")
+    println(greet("world", 3))
+    println(pick(true), pick(false))
+
+    // the target program's shapes: a tree with string payloads, printed and evaluated
+    let t = Expr.Add(Expr.Call("square", Expr.Var("x")), Expr.Mul(Expr.Num(3), Expr.Neg(Expr.Var("y"))))
+    println(show(t), eval(t, 5))
+    println(apply("square", 9), apply("double", 9), apply("other", 9))
+
+    // strings held only by an enum payload and a struct field must survive the churn
+    let keep = Expr.Call($"fn{7}", Expr.Var($"v{1}"))
+    let lab = Label { text = $"label-{n}", n = 1 }
+    let mut total = 0
+    for k in 1 ..= 200 {
+        lab.text = $"label-{k}"
+        total += churn(1000)
+        lab.n += 1
+    }
+    println(total, lab.text, lab.n)
+    println(show(keep))
+}

@@ -1,10 +1,23 @@
-// Not supported yet: a string payload (strings are not values yet).
-// expect-refusal: this type
+// Not supported yet: a string payload in an enum allocated in an arena. The emitter only creates
+// plain arenas, which the collector does not scan, so a GC string kept only there could be freed.
+// expect-refusal: a string field in a struct or enum allocated in an arena
 enum Tok {
     Word(string),
     End,
 }
 
+@tier(mid)
+fn run() int {
+    with arena(1KB) {
+        let t = Tok.Word("hi")
+        let r = match t {
+            Tok.Word(w) => 1,
+            Tok.End => 0,
+        }
+        return r
+    }
+}
+
 fn main() void {
-    println(1)
+    println(run())
 }

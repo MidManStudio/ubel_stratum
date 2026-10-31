@@ -1,6 +1,7 @@
-// Not supported yet: strings as values (they work only directly inside println).
-// expect-refusal: this literal as a value
+// Not supported yet: ordering comparisons on strings (only == and != so far).
+// expect-refusal: this operator on strings
 fn main() void {
-    let s = "hello"
-    println(s)
+    let a = "apple"
+    let b = "pear"
+    println(a < b)
 }
