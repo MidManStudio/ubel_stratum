@@ -156,7 +156,7 @@ FEATURES
 
   echo "### Target program: \`examples/arena_demo/ast_builder.ubl\`"
   echo
-  echo "$(awk -F'\t' '$3=="target" && ($1=="PASS" || $1=="FAIL") { printf "Interpreter reference output: **%s**. ", $1 }' "$res")$(awk -F'\t' '$1=="NOTE" && $2=="target_emit" { if ($4 == "compiles") print "The emitter **compiles it now**: move it into the equivalence suite."; else print "The emitter does not compile it yet. First thing it refuses: " $4 }' "$res")"
+  echo "$(awk -F'\t' '$3=="target" && ($1=="PASS" || $1=="FAIL") { printf "Interpreter reference output: **%s**. ", $1 }' "$res")$(awk -F'\t' '$1=="NOTE" && $2=="target_emit" { if ($4 == "compiles") print "The emitter **compiles it**, and it runs in the equivalence suite above (identical to the interpreter at -O0, -O2 and under the sanitizers)."; else print "The emitter does not compile it yet. First thing it refuses: " $4 }' "$res")"
   echo
   echo "The roadmap to this program is in \`docs/LLVM_ROADMAP.md\`."
   echo

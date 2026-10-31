@@ -247,6 +247,10 @@ still has to confirm against real Ubel closures (capture layout, generics, callb
 outlive their scope, statically known calls); the PoC only shows it works across the
 boundary, including captured GC data, while collections run inside the callback.
 
+Update (A7): the non-capturing case is implemented as proposed, except that the object is a
+static constant rather than a GC object, because there are no captured values to hold. The
+capturing case (a GC or arena object by site, D5) is not implemented.
+
 ### Safety across the boundary
 
 - **GC pointers on MID and LOW frames are safe.** Stack and register scanning is
@@ -439,8 +443,28 @@ check that it can fail, `Ty::Str` was taken out of the pointer mask: the output 
 `label-71(label-72)` instead of `fn7(v1)` (freed and reused memory). Mutants of `ubel_str_eq` and of
 the minus sign in `ubel_i64_len` are caught too.
 
+**Closures that capture nothing (A7, provisional).** A function type (`fn(int) string`) works as a
+parameter, result, local and struct field type, and `fn(v: int) body` is a value of it. A closure is a
+pointer to a static object `{ ptr code }` outside the heap: creating one allocates nothing, and the
+collector ignores pointers to it. Its body is emitted as its own function whose first, hidden
+parameter is the closure object; calling a local of function type loads the code pointer from the
+object's first word and calls it indirectly (the Stage 1A proposal, without captured values). The body
+is emitted in the tier of the function it is written in, so a closure written in HIGH code allocates in
+the GC heap whatever tier calls it, and one written in MID code outside `with arena` is refused if it
+allocates. Parameter types must be written (`fn(x) ...` is refused). The result type is sema's when it
+resolved; otherwise it is taken from the first value the body returns, because sema records a lambda's
+type before an integer literal in the body has been defaulted to `int` (a block body that returns such
+a local has an open result type there). Refused by name: a closure that captures a local of the
+enclosing function (decision D5, where the captured values live); calling a closure in a LOW function
+(sema does not check a closure's tier, decision D2, and LOW must not run code that can allocate);
+calling one that is not a plain local (read it out of a struct field first); printing or comparing
+closures. `examples/21_closures` covers two parameters, block bodies, nesting, closures returned and
+kept in a struct field, a callback called from MID inside `with arena`, and 100,000 calls whose bodies
+build strings while the collector runs. Mutants that reversed the arguments, did not restore the temp
+counter or did not restore the enclosing scopes are all caught.
+
 Everything else is **refused with a located "not supported yet" error** instead of being
-guessed at: collections, closures, generics, struct methods,
+guessed at: collections, capturing closures, generics, struct methods,
 `edge struct`, `match`, sized integers and floats; also printing or comparing a struct value. The test suite checks that each refusal names the right
 feature, so unsupported code cannot be silently miscompiled.
 
@@ -530,8 +554,9 @@ The wasm demo skips the three allocating examples instead of failing them (10 pa
 3 skipped), because the wasm runtime has no GC and no arena memory.
 The harness also guards the target program: the interpreter must run
 `examples/arena_demo/ast_builder.ubl` and print `ast_builder.expected` (checked by hand),
-and the run reports whether the emitter compiles it yet (22 checks in all). Corrupting the
-expected file turns the run red. CI run #3 at 0d5079d: 22 of 22 on both runners.
+and, since A8, the native build runs in the equivalence loop like every example (22 checks in all
+when CI run #3 at 0d5079d passed on both runners; the count has grown since). Corrupting the
+expected file turns the run red.
 
 **Slice 3, edge structs and references (local only, not yet on CI).** 27 checks: fourteen
 runnable programs (two new), one failing, eleven refusals (three new), and the target-program
@@ -559,8 +584,7 @@ and leaves the arena from inside `match` arms with `return`, `break` and `contin
 that `16_enum_gc` can fail, the per-variant pointer masks were forced to zero: the first line of
 output still matched, but the surviving tree evaluated to 246 instead of 7 (freed and reused
 memory, no crash), so the test catches silent corruption as well as crashes. The target
-program's first refusal is now its closure parameter `cb: fn(int) string` (line 108), after A6 made
-the `Var(string)` payload compile.
+program compiles now (A7, A8: see "The target program").
 
 ### Known differences from the interpreter
 
@@ -760,8 +784,9 @@ the arithmetic in it was checked by hand). It builds `square(a + b)` two ways an
 that they agree: a recursive GC enum tree (`Expr`, with `show` and `eval`, in HIGH) and a
 fixed-shape arena graph of edge structs (in MID, evaluated through `&L` references, with
 the result handed to HIGH as a string by a callback). It also runs a thousand short-lived
-arenas. It is the program the native emitter is grown toward, and it is **not compilable
-yet**: the emitter now stops at its first `enum`.
+arenas. It is the program the native emitter was grown toward, and since A7 **it compiles**: its
+native output is identical to `ast_builder.expected` at -O0, -O2 and under ASan+UBSan, at 64 and 32
+bits, and it runs in the equivalence loop like every example (A8).
 
 What it needs, by part, in the order I would build it (reasoned, not yet measured):
 
@@ -776,9 +801,9 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    (`docs/GC_LARGE_OBJECTS.md`: a string can exceed 512 bytes, and the GC path uses the same
    allocator). Open: strings built in arenas need the D3b sema patch to be applied, string `+` and
    ordering, and a string field in an arena object.
-4. **Non-capturing closures** passed to a MID function and called there (`cb(result)`),
-   using the Stage 1A closure proposal (GC object, code pointer in the first word) with zero
-   captures at first. This completes `build_and_eval` and `compile_expression`.
+4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
+   (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
+   it the target program (A8). Open: capturing closures (D5) and the tier of a function type (D2).
 
 Parallel track that does not block the above: run the slice 3 CI workflows, and the GC
 hardening items in `docs/GC_RESEARCH.md` (global roots, a collect-on-every-
@@ -812,6 +837,11 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-10-31: A7 (closures that capture nothing) and A8 (the target program compiles), provisional.
+  `fn(...)` types and `fn(v: int) ...` values, static closure objects, indirect calls. The target
+  program's native output is identical to `ast_builder.expected`, and it now runs in the equivalence
+  loop. 49 of 49 locally at 64-bit and 32-bit; three mutants of the closure lowering are caught.
+  Open: capturing closures (D5) and the tier of a closure (D2).
 - 2026-10-31: A6 (strings as values), provisional. `string` as a type, static literals, `$"..."` that
   builds a string by site, `==` and `!=`, printing a string value. 44 of 44 locally at 64-bit and
   32-bit; mutants of the pointer mask and of two runtime helpers are caught. The target program

@@ -1,0 +1,11 @@
+// Not supported yet: calling a closure that is not a plain local, here one read from a struct field.
+// Read it into a local first (see 21_closures).
+// expect-refusal: calling anything but a named function
+struct Handler {
+    run: fn(int) int
+}
+
+fn main() void {
+    let h = Handler { run = fn(x: int) x + 1 }
+    println(h.run(4))
+}

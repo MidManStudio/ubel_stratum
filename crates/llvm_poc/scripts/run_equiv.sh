@@ -131,7 +131,10 @@ fi
 printf 'META\thave_san\t-\t%s\n' "$have_san" >> "$out/results.tsv"
 printf 'META\textra_flags\t-\t%s\n' "${EXTRA_FLAGS:-}" >> "$out/results.tsv"
 
-for src in "$here"/examples/*.ubl; do
+# The examples, then the target program (examples/arena_demo/ast_builder.ubl): since A8 the emitter
+# compiles it, so it is held to the same standard as every example, at -O0, -O2 and under the sanitizers.
+for src in "$here"/examples/*.ubl "$here/../../examples/arena_demo/ast_builder.ubl"; do
+  [ -f "$src" ] || continue
   name="$(basename "$src" .ubl)"
   ll="$out/$name.ll"
 
@@ -204,11 +207,11 @@ for src in "$here"/examples/*.ubl; do
   fi
 done
 
-# The target program (examples/arena_demo/ast_builder.ubl). The emitter cannot compile it yet,
-# so it is not part of the equivalence loop above. What IS checked: the interpreter still
-# accepts it and prints the output that was checked by hand (ast_builder.expected), so the file
-# cannot go stale again. Whether the emitter compiles it is reported, never failed on: it is
-# the thing the emitter is being grown toward.
+# The target program (examples/arena_demo/ast_builder.ubl). The equivalence loop above checks that the
+# native build prints what the interpreter prints. Here the interpreter's output is checked against
+# the output that was verified by hand (ast_builder.expected), so the two together pin the native
+# output to it, and the file cannot go stale. Whether the emitter still compiles it is also reported
+# (a failure to compile already shows up as a FAIL in the loop above).
 target="$here/../../examples/arena_demo/ast_builder.ubl"
 golden="$here/../../examples/arena_demo/ast_builder.expected"
 if [ -f "$target" ] && [ -f "$golden" ]; then
@@ -218,7 +221,7 @@ if [ -f "$target" ] && [ -f "$golden" ]; then
     bad "ast_builder (target)" "the interpreter no longer runs it or its output changed: $(head -n 2 "$out/ast_builder.err" | tr '\n' ' ')$(diff "$golden" "$out/ast_builder.actual" 2>/dev/null | head -n 3 | tr '\n' ' ')"
   fi
   if "$bin" emit "$target" -o "$out/ast_builder.ll" >/dev/null 2>"$out/ast_builder.emit.err"; then
-    echo "  note  ast_builder: the emitter COMPILES it now. Move it into the equivalence suite."
+    echo "  note  ast_builder: the emitter compiles it; it runs in the equivalence loop above."
     printf 'NOTE\ttarget_emit\ttarget\tcompiles\n' >> "$out/results.tsv"
   else
     echo "  note  ast_builder: not compilable yet:$(sed -n 2p "$out/ast_builder.emit.err")"

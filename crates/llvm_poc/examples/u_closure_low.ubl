@@ -1,0 +1,11 @@
+// Not supported yet: calling a closure in a LOW function. Sema accepts it and does not check a
+// closure's tier (decision D2), and LOW must not run code that can allocate.
+// expect-refusal: calling a closure in `@tier(low)`
+@tier(low)
+fn run(f: fn(int) int, x: int) int {
+    return f(x)
+}
+
+fn main() void {
+    println(run(fn(v: int) v + 1, 2))
+}

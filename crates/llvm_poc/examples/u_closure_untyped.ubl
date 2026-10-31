@@ -1,0 +1,7 @@
+// Not supported yet: a closure whose parameters have no written type. Sema infers them; the
+// emitter wants them written so the closure's signature is known where it is created.
+// expect-refusal: untyped closure parameters
+fn main() void {
+    let f = fn(x) x + 1
+    println(f(4))
+}

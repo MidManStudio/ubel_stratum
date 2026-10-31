@@ -40,6 +40,7 @@
 //! (exit 1, message on stderr). Shifts by 64 or more are undefined. The test programs avoid
 //! overflow and over-wide shifts; the differences are documented in `docs/LLVM_POC.md`.
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::fmt::Write as _;
@@ -49,9 +50,9 @@ use ubel_stratum::ast::{
     EnumDecl, EnumVariantPayload, FieldInit, FunctionDecl, IfBranchBody, IfExpr, InterpolationPart, Item, Literal, ParamKind, Program,
     SizeExpr, Span, Stmt, StmtKind, StructDecl, StructMember, TierAnnotation, TypeKind, UnaryOp,
 };
-use ubel_stratum::ast::expressions::{MatchArm, MatchArmBody};
+use ubel_stratum::ast::expressions::{Lambda, LambdaBody, MatchArm, MatchArmBody};
 use ubel_stratum::ast::patterns::{EnumPatternPayload, PatternKind};
-use ubel_stratum::sema::{SemaContext, SemaType};
+use ubel_stratum::sema::{SemaContext, SemaType, TypeId};
 
 // ── errors ───────────────────────────────────────────────────────
 
@@ -113,6 +114,16 @@ enum Ty {
     /// A string value: a pointer to `{ i64 length, bytes }` (UTF-8, no terminator, immutable). A literal
     /// is a static constant outside the heap; a string built at run time lives where it was written (D3b).
     Str,
+    /// A closure value (A7): a pointer to a closure object whose first word is the code pointer, `usize`
+    /// indexes `Emitter::fn_tys`. A closure that captures nothing is a static constant outside the heap.
+    Fn(usize),
+}
+
+/// The shape of a function type: parameter types and result.
+#[derive(Clone, PartialEq, Eq)]
+struct FnTy {
+    params: Vec<Ty>,
+    ret: Ty,
 }
 
 impl Ty {
@@ -121,13 +132,13 @@ impl Ty {
             Ty::I64 => "i64",
             Ty::I1 => "i1",
             Ty::Void => "void",
-            Ty::Struct(_) | Ty::Enum(_) | Ty::Str => "ptr",
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) => "ptr",
         }
     }
 
     /// Values that are pointers to objects, and so need a collector mask bit.
     fn is_ptr(self) -> bool {
-        matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str)
+        matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_))
     }
 }
 
@@ -283,6 +294,17 @@ struct Emitter<'a> {
     uses_bump: bool,
     /// Any string operation was emitted, so the runtime's string helpers are declared.
     uses_str: bool,
+    /// Function types seen so far (interned, so equal shapes have equal `Ty::Fn` indexes).
+    fn_tys: RefCell<Vec<FnTy>>,
+    /// Closures emitted so far, for unique names.
+    lam_n: usize,
+    /// While a closure body is emitted and sema left its result type open (an integer literal not yet
+    /// defaulted, say): the result type is taken from the first value the body returns.
+    ret_infer: bool,
+    ret_seen: Option<Ty>,
+    /// While a closure body is emitted: every name visible in the enclosing code, so a use of one of
+    /// them is reported as a capture instead of as an unknown name.
+    outer_names: Vec<BTreeSet<String>>,
 
     funcs: String,
     strings: String,
@@ -352,6 +374,11 @@ impl<'a> Emitter<'a> {
             uses_gc: false,
             uses_bump: false,
             uses_str: false,
+            fn_tys: RefCell::new(Vec::new()),
+            lam_n: 0,
+            ret_infer: false,
+            ret_seen: None,
+            outer_names: Vec::new(),
             funcs: String::new(),
             strings: String::new(),
             str_n: 0,
@@ -608,6 +635,7 @@ impl<'a> Emitter<'a> {
         match got.ty {
             Ty::Struct(_) => return unsupported(span, "printing a struct value (print its fields)"),
             Ty::Enum(_) => return unsupported(span, "printing an enum value (match on it and print the payload)"),
+            Ty::Fn(_) => return unsupported(span, "printing a closure"),
             _ => {}
         }
         Ok(())
@@ -629,6 +657,24 @@ impl<'a> Emitter<'a> {
             TypeKind::Bool => Ok(Ty::I1),
             TypeKind::Void => Ok(Ty::Void),
             TypeKind::Str => Ok(Ty::Str),
+            TypeKind::Function(ft) => {
+                if ft.is_fallible {
+                    return unsupported(t.span, "fallible function types");
+                }
+                let mut params = Vec::new();
+                for p in ft.params {
+                    let ty = self.ty_of_type(p)?;
+                    if ty == Ty::Void {
+                        return unsupported(p.span, "`void` parameters");
+                    }
+                    params.push(ty);
+                }
+                let ret = match ft.return_type {
+                    None => Ty::Void,
+                    Some(r) => self.ty_of_type(r)?,
+                };
+                Ok(self.fn_ty(params, ret))
+            }
             TypeKind::Reference { mutable, inner, .. } => {
                 if mutable {
                     return unsupported(t.span, "`&mut` references");
@@ -800,12 +846,14 @@ impl<'a> Emitter<'a> {
                     | ExprKind::ShortDecl { .. }
                     | ExprKind::Borrow { .. }
                     | ExprKind::Match(_)
+                    | ExprKind::Lambda(_)
             );
             let mut id = start;
             loop {
                 match self.ctx.types.get(id) {
                     SemaType::Int | SemaType::Bool | SemaType::Void | SemaType::Str | SemaType::Var(_) => return Ok(()),
                     SemaType::Unknown if own_type_is_authoritative => return Ok(()),
+                    SemaType::Function { is_fallible: false, .. } => return Ok(()),
                     SemaType::GcRef(inner) => id = *inner,
                     SemaType::ArenaRef { inner, .. } => id = *inner,
                     SemaType::OwnedRef { mutable: false, inner } => id = *inner,
@@ -885,10 +933,41 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        let n = f.body.stmts.len();
-        for (i, s) in f.body.stmts.iter().enumerate() {
+        self.lower_body(f.body.stmts)?;
+        self.end_body();
+
+        let _ = writeln!(self.funcs, "; tier: {}", tier_name(f.tier));
+        let _ = writeln!(
+            self.funcs,
+            "define {} @ubel_{}({}) {{\nentry:\n{}{}}}\n",
+            self.ret.ir(),
+            f.name,
+            header_params.join(", "),
+            self.allocas,
+            self.body
+        );
+        Ok(())
+    }
+
+    /// The statements of a function or closure body. The last expression of a non-void body is its result.
+    fn lower_body(&mut self, stmts: &[Stmt]) -> R<()> {
+        let n = stmts.len();
+        for (i, s) in stmts.iter().enumerate() {
+            if i + 1 == n && self.ret_infer && self.ret_seen.is_none() {
+                // A closure whose result type is still open: a non-void last expression is its result.
+                if let StmtKind::Expr(e) = s.kind {
+                    let v = if let ExprKind::Match(m) = e.kind {
+                        self.match_lower(m.scrutinee, m.arms, e.span, true)?
+                    } else {
+                        self.expr(e)?
+                    };
+                    if v.ty != Ty::Void {
+                        self.do_return(Some(v), s.span)?;
+                    }
+                    continue;
+                }
+            }
             if i + 1 == n && self.ret != Ty::Void {
-                // The last expression of a non-void function is its result.
                 if let StmtKind::Expr(e) = s.kind {
                     if let ExprKind::Match(m) = e.kind {
                         let v = self.match_lower(m.scrutinee, m.arms, e.span, true)?;
@@ -906,7 +985,11 @@ impl<'a> Emitter<'a> {
             }
             self.stmt(s)?;
         }
+        Ok(())
+    }
 
+    /// Falling off the end: a void body returns, any other traps (sema should have caught it).
+    fn end_body(&mut self) {
         if !self.terminated {
             if self.ret == Ty::Void {
                 self.term("ret void");
@@ -915,18 +998,6 @@ impl<'a> Emitter<'a> {
                 self.term("unreachable");
             }
         }
-
-        let _ = writeln!(self.funcs, "; tier: {}", tier_name(f.tier));
-        let _ = writeln!(
-            self.funcs,
-            "define {} @ubel_{}({}) {{\nentry:\n{}{}}}\n",
-            self.ret.ir(),
-            f.name,
-            header_params.join(", "),
-            self.allocas,
-            self.body
-        );
-        Ok(())
     }
 
     // ── statements ───────────────────────────────────────────────
@@ -941,6 +1012,17 @@ impl<'a> Emitter<'a> {
     }
 
     fn do_return(&mut self, v: Option<Val>, span: Span) -> R<()> {
+        if self.ret_infer {
+            let ty = v.as_ref().map(|x| x.ty).unwrap_or(Ty::Void);
+            match self.ret_seen {
+                None => {
+                    self.ret_seen = Some(ty);
+                    self.ret = ty;
+                }
+                Some(t) if t == ty => {}
+                Some(_) => return Err(CompileError::at(span, "the values this closure returns have different types")),
+            }
+        }
         match (v, self.ret) {
             (None, Ty::Void) => {
                 self.destroy_arenas_from(0);
@@ -1281,7 +1363,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Ident(name) => {
                 let local = self
                     .lookup(name)
-                    .ok_or_else(|| CompileError::at(e.span, format!("not supported yet: the name `{name}` (only local variables so far)")))?;
+                    .ok_or_else(|| self.unknown_name(name, e.span, format!("not supported yet: the name `{name}` (only local variables so far)")))?;
                 let t = self.fresh();
                 self.inst(&format!("{t} = load {}, ptr {}", local.ty.ir(), local.slot));
                 Ok(Val { v: t, ty: local.ty })
@@ -1324,7 +1406,7 @@ impl<'a> Emitter<'a> {
                     ExprKind::Ident(name) => {
                         let local = self
                             .lookup(name)
-                            .ok_or_else(|| CompileError::at(target.span, format!("not supported yet: assignment to `{name}` (only local variables and struct fields so far)")))?;
+                            .ok_or_else(|| self.unknown_name(name, target.span, format!("not supported yet: assignment to `{name}` (only local variables and struct fields so far)")))?;
                         (local.slot, local.ty)
                     }
                     ExprKind::Field { target: obj, field } => self.field_addr(obj, field, target.span)?,
@@ -1354,6 +1436,7 @@ impl<'a> Emitter<'a> {
                 Ok(Val::void())
             }
             ExprKind::Call { callee, args } => self.call(e, callee, args),
+            ExprKind::Lambda(lam) => self.lambda(e, lam),
             ExprKind::If(ife) => self.if_value(ife, e.span),
             ExprKind::StructLit { path, fields } => self.struct_lit(e, path, fields),
             // `&x` of a struct is the struct's own pointer: the interpreter's reference to a
@@ -1820,6 +1903,9 @@ impl<'a> Emitter<'a> {
                 _ => unsupported(span, "this operator on strings (only `==` and `!=` so far)"),
             };
         }
+        if matches!(l.ty, Ty::Fn(_)) {
+            return unsupported(span, "operators on closure values");
+        }
         if l.ty.is_ptr() {
             return unsupported(span, "operators on struct or enum values (compare fields, or `match`, instead)");
         }
@@ -1915,6 +2001,11 @@ impl<'a> Emitter<'a> {
             "print" => return self.print_call(args, false),
             _ => {}
         }
+        if let Some(local) = self.lookup(name) {
+            if let Ty::Fn(idx) = local.ty {
+                return self.call_closure(e, &local, idx, args);
+            }
+        }
         let sig = match self.sigs.get(name) {
             Some(s) => s.clone(),
             None => return unsupported(e.span, format!("the call to `{name}` (only your own functions, `println` and `print` so far)")),
@@ -1943,6 +2034,235 @@ impl<'a> Emitter<'a> {
         } else {
             let t = self.fresh();
             self.inst(&format!("{t} = call {} @ubel_{name}({}){boundary}", sig.ret.ir(), ops.join(", ")));
+            Ok(Val { v: t, ty: sig.ret })
+        }
+    }
+
+    // ── closures (A7) ────────────────────────────────────────────
+
+    /// Intern a function type: equal shapes get equal `Ty::Fn` indexes.
+    fn fn_ty(&self, params: Vec<Ty>, ret: Ty) -> Ty {
+        let want = FnTy { params, ret };
+        let mut tys = self.fn_tys.borrow_mut();
+        if let Some(i) = tys.iter().position(|t| *t == want) {
+            return Ty::Fn(i);
+        }
+        tys.push(want);
+        Ty::Fn(tys.len() - 1)
+    }
+
+    fn fn_sig(&self, idx: usize) -> FnTy {
+        self.fn_tys.borrow()[idx].clone()
+    }
+
+    /// The emitter's type for a sema type, when it is one the emitter lowers.
+    fn ty_of_sema(&self, start: TypeId) -> Option<Ty> {
+        let mut id = start;
+        loop {
+            match self.ctx.types.get(id) {
+                SemaType::Int => return Some(Ty::I64),
+                SemaType::Bool => return Some(Ty::I1),
+                SemaType::Void => return Some(Ty::Void),
+                SemaType::Str => return Some(Ty::Str),
+                SemaType::GcRef(inner) => id = *inner,
+                SemaType::ArenaRef { inner, .. } => id = *inner,
+                SemaType::OwnedRef { mutable: false, inner } => id = *inner,
+                SemaType::Reference { mutable: false, inner, .. } => id = *inner,
+                SemaType::Named { def, args } if args.is_empty() => {
+                    let name = &self.ctx.symbols.lookup(*def).name;
+                    if let Some(&sid) = self.struct_ids.get(name) {
+                        return Some(Ty::Struct(sid));
+                    }
+                    if let Some(&eid) = self.enum_ids.get(name) {
+                        return Some(Ty::Enum(eid));
+                    }
+                    return None;
+                }
+                SemaType::Function { params, return_type, is_fallible: false, .. } => {
+                    let ps: Option<Vec<Ty>> = params.iter().map(|p| self.ty_of_sema(*p)).collect();
+                    let ret = self.ty_of_sema(*return_type)?;
+                    return Some(self.fn_ty(ps?, ret));
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// The result type of a function type, looking through the arena and GC wrappers sema puts around a
+    /// closure value.
+    fn sema_fn_ret(&self, start: TypeId) -> Option<TypeId> {
+        let mut id = start;
+        loop {
+            match self.ctx.types.get(id) {
+                SemaType::Function { return_type, is_fallible: false, .. } => return Some(*return_type),
+                SemaType::GcRef(inner) => id = *inner,
+                SemaType::ArenaRef { inner, .. } => id = *inner,
+                _ => return None,
+            }
+        }
+    }
+
+    /// A name that is not a local: a capture when an enclosing function has it, otherwise `other`.
+    fn unknown_name(&self, name: &str, span: Span, other: String) -> CompileError {
+        if self.outer_names.iter().any(|s| s.contains(name)) {
+            CompileError::at(
+                span,
+                format!("not supported yet: a closure that captures `{name}` (capturing closures are not emitted yet, decision D5)"),
+            )
+        } else {
+            CompileError::at(span, other)
+        }
+    }
+
+    /// `fn(v: int) body`, a closure that captures nothing. The body becomes its own function whose
+    /// first, hidden parameter is the closure object, so a call is one indirect call through the code
+    /// pointer in the object's first word (the Stage 1A closure ABI). The object is a static constant
+    /// outside the heap: nothing is allocated, and the collector ignores pointers to it. The body is
+    /// emitted in the tier of the function it is written in, and allocation sites inside it follow the
+    /// usual rules from there (a closure written in HIGH code allocates in the GC heap wherever it is
+    /// called from). Parameter types must be written; the result type comes from sema.
+    fn lambda(&mut self, e: &Expr, lam: &Lambda) -> R<Val> {
+        let mut ptys: Vec<Ty> = Vec::new();
+        for p in lam.params {
+            match p.ty {
+                Some(t) => {
+                    let ty = self.ty_of_type(t)?;
+                    if ty == Ty::Void {
+                        return unsupported(p.span, "`void` parameters");
+                    }
+                    ptys.push(ty);
+                }
+                None => return unsupported(p.span, "untyped closure parameters (write the type: `fn(v: int) ...`)"),
+            }
+        }
+        // The result type: sema's when it resolved to one the emitter lowers, otherwise worked out from
+        // the body while it is emitted (sema records a lambda's type when it meets it, so an integer
+        // literal in the body may not be defaulted to `int` yet).
+        let sema_ret: Option<Ty> = self
+            .ctx
+            .expr_types
+            .get(&e.span)
+            .and_then(|&id| self.sema_fn_ret(id))
+            .and_then(|r| self.ty_of_sema(r));
+
+        // Everything visible here, so a use of it inside the body is reported as a capture.
+        let mut visible: BTreeSet<String> = self.outer_names.last().cloned().unwrap_or_default();
+        for sc in &self.scopes {
+            for k in sc.keys() {
+                visible.insert(k.clone());
+            }
+        }
+
+        // Emit the body as its own function: save the state of the one being emitted.
+        let saved_body = std::mem::take(&mut self.body);
+        let saved_allocas = std::mem::take(&mut self.allocas);
+        let saved_scopes = std::mem::replace(&mut self.scopes, vec![HashMap::new()]);
+        let saved_loops = std::mem::take(&mut self.loops);
+        let saved_arenas = std::mem::take(&mut self.arenas);
+        let (saved_tmp, saved_lbl, saved_term, saved_ret) = (self.tmp, self.lbl, self.terminated, self.ret);
+        let (saved_infer, saved_seen) = (self.ret_infer, self.ret_seen);
+        self.tmp = 0;
+        self.lbl = 0;
+        self.terminated = false;
+        self.ret = sema_ret.unwrap_or(Ty::Void);
+        self.ret_infer = sema_ret.is_none();
+        self.ret_seen = None;
+        self.outer_names.push(visible);
+
+        let lowered = self.lambda_body(lam, &ptys);
+        let ret = self.ret;
+
+        self.outer_names.pop();
+        let body = std::mem::replace(&mut self.body, saved_body);
+        let allocas = std::mem::replace(&mut self.allocas, saved_allocas);
+        self.scopes = saved_scopes;
+        self.loops = saved_loops;
+        self.arenas = saved_arenas;
+        self.tmp = saved_tmp;
+        self.lbl = saved_lbl;
+        self.terminated = saved_term;
+        self.ret = saved_ret;
+        self.ret_infer = saved_infer;
+        self.ret_seen = saved_seen;
+        let header = lowered?;
+        let fnty = self.fn_ty(ptys.clone(), ret);
+
+        let n = self.lam_n;
+        self.lam_n += 1;
+        let code = format!("@ubel_lambda.{n}");
+        let obj = format!("@ubel_closure.{n}");
+        let _ = writeln!(self.funcs, "; tier: {} (closure)", tier_name(self.cur_tier));
+        let _ = writeln!(self.funcs, "define internal {} {code}({header}) {{\nentry:\n{allocas}{body}}}\n", ret.ir());
+        let _ = writeln!(self.strings, "{obj} = private unnamed_addr constant {{ ptr }} {{ ptr {code} }}, align 8");
+        Ok(Val { v: obj, ty: fnty })
+    }
+
+    /// The parameters and statements of a closure body; returns the function header's parameter list.
+    fn lambda_body(&mut self, lam: &Lambda, ptys: &[Ty]) -> R<String> {
+        let mut header = vec!["ptr %.clo".to_string()];
+        for (i, p) in lam.params.iter().enumerate() {
+            let reg = format!("%.arg{i}");
+            header.push(format!("{} {}", ptys[i].ir(), reg));
+            let slot = self.declare(p.name, ptys[i]);
+            self.inst(&format!("store {} {}, ptr {}", ptys[i].ir(), reg, slot));
+        }
+        match lam.body {
+            LambdaBody::Expr(be) => {
+                let v = self.expr(be)?;
+                if v.ty == Ty::Void {
+                    // Nothing to return: the closure's result is void (and so is a declared one).
+                    if self.ret_infer {
+                        self.ret = Ty::Void;
+                    }
+                    self.destroy_arenas_from(0);
+                    self.term("ret void");
+                } else {
+                    self.do_return(Some(v), be.span)?;
+                }
+            }
+            LambdaBody::Block(b) => {
+                self.lower_body(b.stmts)?;
+                self.end_body();
+            }
+        }
+        Ok(header.join(", "))
+    }
+
+    /// `f(args)` where `f` is a local of function type: load the code pointer from the closure object
+    /// and call it with the object as the hidden first argument.
+    fn call_closure(&mut self, e: &Expr, local: &Local, idx: usize, args: &[Arg]) -> R<Val> {
+        if self.cur_tier == TierAnnotation::Low {
+            return unsupported(
+                e.span,
+                "calling a closure in `@tier(low)` (sema does not check a closure's tier yet, decision D2, and LOW must not run code that can allocate)",
+            );
+        }
+        let sig = self.fn_sig(idx);
+        if args.len() != sig.params.len() {
+            return Err(CompileError::at(e.span, "wrong number of arguments"));
+        }
+        let mut ops = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            let ae = match a.kind {
+                ArgKind::Positional(x) => x,
+                ArgKind::Named { .. } => return unsupported(a.span, "named arguments"),
+            };
+            let v = self.expr(ae)?;
+            self.need(sig.params[i], &v, ae.span)?;
+            ops.push(format!("{} {}", sig.params[i].ir(), v.v));
+        }
+        let clo = self.fresh();
+        self.inst(&format!("{clo} = load ptr, ptr {}", local.slot));
+        let code = self.fresh();
+        self.inst(&format!("{code} = load ptr, ptr {clo}"));
+        let mut all = vec![format!("ptr {clo}")];
+        all.extend(ops);
+        if sig.ret == Ty::Void {
+            self.inst(&format!("call void {code}({}) ; closure call", all.join(", ")));
+            Ok(Val::void())
+        } else {
+            let t = self.fresh();
+            self.inst(&format!("{t} = call {} {code}({}) ; closure call", sig.ret.ir(), all.join(", ")));
             Ok(Val { v: t, ty: sig.ret })
         }
     }
@@ -2134,7 +2454,7 @@ impl<'a> Emitter<'a> {
                         self.inst(&format!("call void @ubel_print_str(ptr {bytes}, i64 {len})"));
                     }
                     Ty::Void => unreachable!("void values are rejected when collected"),
-                    Ty::Struct(_) | Ty::Enum(_) => unreachable!("struct and enum values are rejected when collected"),
+                    Ty::Struct(_) | Ty::Enum(_) | Ty::Fn(_) => unreachable!("struct, enum and closure values are rejected when collected"),
                 },
             }
         }

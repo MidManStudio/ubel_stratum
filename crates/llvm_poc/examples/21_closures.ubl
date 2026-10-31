@@ -1,0 +1,87 @@
+// Closures that capture nothing (A7). A closure value is a pointer to a static object whose first
+// word is the code pointer; its body is its own function and a call is one indirect call. They are
+// passed down, returned, stored in a struct field, nested, and called from a MID function inside
+// `with arena` (the callback shape of the target program). The closure bodies here allocate
+// strings, so the collector runs while closures are active.
+struct Handler {
+    name: string
+    run:  fn(int) int
+}
+
+fn apply_twice(f: fn(int) int, x: int) int {
+    return f(f(x))
+}
+
+fn combine(f: fn(int) int, g: fn(int) int, x: int) int {
+    return f(x) + g(x)
+}
+
+fn make_doubler() fn(int) int {
+    return fn(x: int) x * 2
+}
+
+fn shout(f: fn(string) string, s: string) string {
+    return f(s)
+}
+
+@tier(mid)
+fn mid_callback(a: int, cb: fn(int) string) string {
+    with arena(1KB) {
+        let n = a * 3
+        return cb(n)
+    }
+}
+
+fn main() void {
+    let inc = fn(x: int) x + 1
+    println(inc(4))
+
+    // two parameters, in order
+    let sub = fn(a: int, b: int) a - b
+    println(sub(10, 3), sub(3, 10))
+
+    // a block body with a loop and a local
+    let triangle = fn(n: int) {
+        let mut total = 0
+        for i in 0 .. n {
+            total += i
+        }
+        return total
+    }
+    println(triangle(10))
+
+    println(apply_twice(inc, 5), apply_twice(fn(x: int) x * x, 3))
+    println(combine(inc, fn(x: int) x * 10, 2))
+
+    let dbl = make_doubler()
+    println(dbl(21))
+
+    // a closure kept in a struct field, read back and called
+    let h = Handler { name = "inc", run = inc }
+    let f = h.run
+    println(h.name, f(9))
+
+    println(shout(fn(s: string) $"{s}!", "hey"))
+
+    // called from MID inside `with arena`; the body is HIGH code, so its string is a GC string
+    println(mid_callback(7, fn(v: int) $"mid got {v}"))
+
+    // a closure defined inside a closure body
+    let outer = fn(k: int) {
+        let inner = fn(m: int) m + 100
+        return inner(k) * 2
+    }
+    println(outer(5))
+
+    // many calls, each building a string in the closure body: the collector runs in between
+    let mk = fn(i: int) $"item-{i}-{i * i}"
+    let mut hits = 0
+    let mut i = 0
+    while i < 100000 {
+        if mk(i) == $"item-{i}-{i * i}" {
+            hits += 1
+        }
+        i += 1
+    }
+    println(hits)
+}

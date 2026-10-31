@@ -1,5 +1,6 @@
-// Not supported yet: closures.
-// expect-refusal: fn(int)
+// Not supported yet: a closure that captures a local of the enclosing function. Closures that
+// capture nothing compile (A7); capturing ones need decision D5 (where the captured values live).
+// expect-refusal: a closure that captures `k`
 fn main() void {
     let k = 3
     let f = fn(x: int) x + k
