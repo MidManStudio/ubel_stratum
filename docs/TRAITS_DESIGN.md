@@ -46,7 +46,7 @@
 | **S4a** | **Built** | The tier of a method is the tier written for it (its own, its `impl`, `extend` or struct, or a tier block), and a call on a receiver (`value.method()`, `Type.assoc()`) is checked against it with the cross-tier rule (`TIER-005`). The prelude's `Hasher` is `@tier(low)`. See `docs/TRAITS_TIERS_SPEC.md`. |
 | **S4b** | **Built** | Tiers on traits: a trait, a trait method signature and a default method carry a tier (`@tier` on the method, else on the trait or a block around it, else `HIGH`); an impl method must equal it (`TIER-016`) and one that writes no tier takes it; a call through a bound, a qualified call and a default method call are checked (`TIER-005`); the six prelude traits are `@tier(low)`, so a hand-written impl of one is `LOW`. See `docs/TRAITS_TIERS_SPEC.md`. |
 | **S5a** | **Built** | `Display`: a prelude trait (`@tier(low)`, `fn to_string(self) string`) that a struct or enum can implement by hand to decide how `println`, `print`, `log`, `to_string`, `{x}` and the messages of `assert` and `panic` show it, at any depth; a struct prints its fields in declaration order. See \"What S5a settled\" below. |
-| S5b | Planned | `Iterator<T>` with `next(self) T?`, so `for x in value` works on a user type (it passes sema and panics at run time today). |
+| **S5b** | **Built** | `Iterator<T>`: a prelude trait (`@tier(low)`, `fn next(self) T?`) that a struct or enum can implement so that `for x in value` calls `next` until it returns `null`. `Queue`, `Stack` and `Dictionary` become iterable, and a `for` over anything that cannot be walked is `TYPE-135`. See "What S5b settled" below. |
 | S5c | Planned | Operator traits (`Add`, `Sub`, `Mul`, `Neg`, `Index` and similar), so `a + b`, `-a` and `a[i]` on a user type work (they pass sema and panic at run time today); the implicit calls then get their tier check. |
 | S6 | Planned | `dyn Trait`. As in section 4. |
 
@@ -650,6 +650,55 @@ traits: `@tier(low)`, exact-match impls, so the feature works at any tier.
 - **Tier.** The trait is `LOW`, so an impl that writes no tier is `LOW`, a written
   `@tier(high)` is `TIER-016`, and the body may call only `LOW` code, read no `static` and
   build no collection, the same cost as the other prelude impls.
+
+### What S5b settled
+
+Decided 2026-11-01.
+
+- **`Iterator<T>` is a generic prelude trait with one method, `fn next(self) T?`**, `@tier(low)`
+  like the other language-item traits. Nothing satisfies it natively (a `List` is iterable,
+  not an iterator), so to bounds and impls it is an ordinary generic trait (`I: Iterator<int>`,
+  `impl Iterator<int> for Counter`, `impl<T> Iterator<T> for Once<T>`) and only a `for` loop
+  knows it by name. Type inference finds it as the prelude's `Iterator` (`iterator_trait`), so a
+  program's own trait named `Iterator` takes the name and the loop then ignores it.
+- **The loop.** `for x in value` over a struct or enum with the impl calls `next` until it
+  returns `null`, binding each item. It is lazy, so an endless iterator is stopped by `break`,
+  and it advances the value itself: a struct is shared, so after the loop (or after a `break`)
+  it stands where `next` left it, and a later loop resumes. No `Clone` is needed. An enum value
+  cannot change, so an enum iterator can only end at once or never. The loop calls the trait's
+  `next`, not an inherent method of the same name.
+- **Only a struct or an enum can have a hand-written `Iterator`.** An impl for any built-in
+  type, a scalar included, is `TYPE-129`: a loop walks a built-in value itself and would never
+  call the impl. No scalar satisfies `Iterator` natively, so unlike `Display` there is no
+  `TYPE-128` case.
+- **An optional item type is `TYPE-129`** (chosen over letting `null` end the loop anyway). `null`
+  is the end marker and an optional is transparent at run time, so `Iterator<int?>` could not
+  tell a `null` item from the end. It is reported at the impl, and at the loop when an item
+  becomes optional through a generic argument (`Once<int?>`) or a bound (`I: Iterator<int?>`);
+  an impl already reported at its own line is not reported a second time at the loop.
+- **`Queue`, `Stack` and `Dictionary` become iterable** (chosen over rejecting them). A queue is
+  walked front to back, a stack bottom to top (the order it prints in; C# enumerates a stack
+  top first), and a dictionary as `(key, value)` pairs in insertion order, so `for (k, v) in d`
+  works. Each loop walks a snapshot, so changing the collection inside the loop does not change
+  what it visits. A single loop variable over a dictionary is typed as a pair, `(K, V)`, but the
+  names in `(k, v)` are not typed one by one (the gap described on `record_binding`), so sema
+  does not check `k` and `v`.
+- **A `for` over anything that cannot be walked is `TYPE-135`.** The run time can walk a `List`
+  or array, a `Queue`, a `Stack`, a `Dictionary`, an `InlineList`, a `Pool`, a string, a tuple,
+  a range and a struct or enum with the impl. Ownership and reference wrappers, `T?` and `T!`
+  are looked through, and a type parameter can be looped over when it has an `Iterator` bound.
+  Everything else (a scalar, an integer literal, a function, a `Linqerizer`, a struct or enum
+  with no impl, an unbounded type parameter) used to pass sema and panic when the loop ran. A
+  value whose type is not known yet is not an error, and a loop over an expression that already
+  failed adds no diagnostic (it used to panic the type checker).
+- **Tier.** `next` is `LOW`, so an impl that writes no tier is `LOW`, a written `@tier(high)` is
+  `TIER-016`, and the body may call only `LOW` code, read no `static` and build no collection,
+  the cost already noted for the other prelude traits. The implicit `next` call needs no tier
+  check: every `next` is `LOW` and a `LOW` method can be called from any tier.
+- **Not built.** An `Iterable` trait (a collection that hands out an iterator) needs associated
+  types. The items of a string and of a tuple in a `for` stay untyped. A loop over a `null`
+  optional collection panics at run time, as a method call on `null` does. `Set` has no
+  constructor, so a loop over one never runs.
 
 ### D7: what has to be specified before S4
 

@@ -1,0 +1,131 @@
+// tests/fixtures/ok_iterator_combined.ubl
+// `Iterator<T>` beside features shipped earlier: a LOW tier block holding an
+// iterator and its impl, a struct item with a `Display` impl and a derived
+// PartialEq, a generic struct that implements the trait, generic functions
+// bounded by it (one with a second type parameter in the bound's argument),
+// a LOW function that loops over a `Unique` iterator, a HIGH `main`, and the
+// built-in loops over a `Queue`, a `Stack` and a `Dictionary` next to the
+// user-written ones.
+// Expected: sema OK, interpret OK.
+
+@tier(low) {
+    struct Wave {
+        spawned: int,
+        size:    int,
+    }
+
+    impl Iterator<int> for Wave {
+        fn next(self) int? {
+            if self.spawned >= self.size {
+                return null
+            }
+            self.spawned = self.spawned + 1
+            return self.spawned * 10
+        }
+    }
+}
+
+@derive(PartialEq)
+struct Loot {
+    id: int,
+}
+
+impl Display for Loot {
+    fn to_string(self) string {
+        return $"loot#{self.id}"
+    }
+}
+
+struct LootRoll {
+    next_id: int,
+    last_id: int,
+}
+
+impl Iterator<Loot> for LootRoll {
+    fn next(self) Loot? {
+        if self.next_id > self.last_id {
+            return null
+        }
+        let found = Loot { id = self.next_id }
+        self.next_id = self.next_id + 1
+        return found
+    }
+}
+
+struct Once<T> {
+    value: T,
+    done:  bool,
+}
+
+impl<T> Iterator<T> for Once<T> {
+    fn next(self) T? {
+        if self.done {
+            return null
+        }
+        self.done = true
+        return self.value
+    }
+}
+
+fn total<I: Iterator<int>>(it: I) int {
+    let sum = 0
+    for x in it {
+        sum = sum + x
+    }
+    return sum
+}
+
+fn count_items<T, I: Iterator<T>>(it: I) int {
+    let n = 0
+    for item in it {
+        n = n + 1
+    }
+    return n
+}
+
+@tier(low)
+fn low_total() int {
+    let w = Unique.new(Wave { spawned = 0, size = 3 })
+    let sum = 0
+    for x in w {
+        sum = sum + x
+    }
+    return sum
+}
+
+fn main() void {
+    println(total(Wave { spawned = 0, size = 4 }))
+    println(low_total())
+
+    let roll = LootRoll { next_id = 1, last_id = 3 }
+    for item in roll {
+        println(item)
+    }
+    println(count_items(LootRoll { next_id = 5, last_id = 9 }))
+
+    let once = Once { value = "shield", done = false }
+    for gear in once {
+        println($"equipped {gear}")
+    }
+
+    let q = Queue.new()
+    q.enqueue("a")
+    q.enqueue("b")
+    for step in q {
+        println($"step {step}")
+    }
+
+    let stack = Stack.new()
+    stack.push(1)
+    stack.push(2)
+    for layer in stack {
+        println($"layer {layer}")
+    }
+
+    let stock = Dictionary.new()
+    stock.set("potion", 3)
+    stock.set("arrow", 40)
+    for (name, count) in stock {
+        println($"{name} x{count}")
+    }
+}

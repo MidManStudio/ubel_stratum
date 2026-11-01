@@ -525,6 +525,9 @@ back into it.
   `lt`, `le`, `gt` and `ge`, so an override is honored; a derived struct field by
   field). `contains_value`, `dict_position` and `dict_op_user` serve list, queue,
   stack and inline-list `contains` and the dictionary methods and indexing.
+- `iterator_next` finds the `next` of the `Iterator` impl a struct or an enum has, for a
+  `for` loop (S5b); a built-in value has none, since an impl of `Iterator` for one is
+  `TYPE-129`.
 - `values_clone` and `hash_value` do the same for a derived `Clone` and a derived
   `Hash`. `mix_into_hasher` folds one hash into a `Hasher` (rotate, xor,
   multiply), so hashing is order-sensitive. A derived struct folds its type name,
@@ -565,6 +568,31 @@ prints as its own text, so the output keeps the shape it always had.
 `ok_print_order_isolated`, `ok_display_isolated`, `ok_display_combined`,
 `err_display_isolated` and `err_display_combined`. Mutation-checked, see
 `ubel_stratum_rd.md`.
+
+### `interpreter/eval/stmt.rs`, `for` loops
+
+**What it does:** Runs `for binding in iterable { body }`. The iterable is evaluated, its
+`Unique`, `Shared` and `SyncShared` wrappers are removed, and the loop then takes one of two
+routes.
+
+**Decisions:**
+- A struct or an enum with an `impl Iterator<T>` (found by `iterator_next`) is walked lazily:
+  `next` is called until it returns `null`, each item is bound in a fresh scope, and `break`,
+  `continue` and a `return` from the body keep their meaning. The call is made on the value
+  itself, so a struct (which is shared) is advanced in place and a later loop resumes where
+  this one stopped. Nothing is copied, so no `Clone` is needed.
+- Every other value goes through `value_to_iter_vec`, which makes a snapshot: a `List` or
+  array, a tuple, a string (chars), a `Pool` (occupied slots), an `InlineList`, a `Queue`
+  (front to back), a `Stack` (bottom to top, the order it prints in) and a `Dictionary` (a
+  `(key, value)` tuple per entry, in insertion order). Changing the collection inside the
+  loop does not change what the loop visits. A range is a `List` by the time it gets here.
+- Sema rejects a `for` over anything else (`TYPE-135`), so the panic at the end of
+  `value_to_iter_vec` is for a value sema could not see.
+
+**Tests:** `crates/rd_parser/tests/iterator.rs` (53 tests) and the fixtures
+`ok_iterator_isolated`, `ok_iterator_combined`, `err_iterator_isolated`,
+`err_iterator_combined`, `ok_iterate_builtin_isolated` and `err_iterate_builtin_isolated`.
+Mutation-checked, see `ubel_stratum_rd.md`.
 
 ### `builtins/instance.rs`
 
@@ -1649,4 +1677,30 @@ fixture whose output differs (`ok_derive_partial_eq_combined`) printed a struct 
 field order on each run before. The mutation pass is described under `tests/display.rs` in
 `docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes and first or second
 person.
+
+A twenty-sixth delivery (traits slice S5b) touched `interpreter/eval/stmt.rs` (the `for` loop and
+`value_to_iter_vec`), `interpreter/eval/user_ops.rs` (`iterator_next`), `interpreter/eval/expr.rs`
+(`unwrap_ownership` is shared), `sema/type_infer.rs` (`iteration_item`, `iterator_trait` and the
+impl checks), `sema/type_infer/impl_patterns.rs`, `error_management/errors/types/mod.rs` (the new
+`NotIterable` and `NotIterableKind`), `error_management/errors/mod.rs` and `rd_parser/src/prelude.rs`.
+`Iterator<T>` is a generic prelude trait (`@tier(low)`, `fn next(self) T?`): a struct or enum that
+implements it can be the iterable of a `for` loop, which calls `next` until it returns `null`,
+lazily and advancing the value itself, so an endless iterator is stopped by `break` and a loop
+after a `break` resumes. A type parameter with an `Iterator` bound can be looped over. `Queue`
+(front to back), `Stack` (bottom to top) and `Dictionary` (`(key, value)` pairs in insertion
+order) are now iterable. A `for` over anything that cannot be walked is the new `TYPE-135`
+`NotIterable` (a scalar, an integer literal, a function, a `Linqerizer`, a struct or enum with no
+impl, an unbounded type parameter) instead of a panic when the loop runs, and a loop over an
+expression that already failed adds nothing (it panicked the type checker). An impl of `Iterator`
+for a built-in type, and an `Iterator` over optional items, are `TYPE-129`. It added
+`tests/iterator.rs` (53 tests), one prelude unit test and six fixtures
+(`ok_iterator_isolated`, `ok_iterator_combined`, `err_iterator_isolated`,
+`err_iterator_combined`, `ok_iterate_builtin_isolated`, `err_iterate_builtin_isolated`). The
+workspace has 1067 passing tests in 32 suites. The fixture sweep covered 370 `.ubl` files on a
+baseline built from the same live commit: 364 existed before, and none of them changed stage,
+diagnostics, exit code or output (2 fail lexing, 8 fail parsing, 139 stop at sema and 215 are
+clean and run); the six new ones behave as their headers say (on the baseline two of the `ok_` ones do not
+compile and the third panics when run, and two of the `err_` ones are accepted and panic when run). The mutation pass is described under
+`tests/iterator.rs` in `docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes
+and first or second person.
 

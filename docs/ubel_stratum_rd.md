@@ -376,6 +376,46 @@ the interpreter for the printed output.
 time and led to the runtime fix). The survivor is an equivalent mutant (returning a copy of a
 value where nothing changed instead of nothing).
 
+### `tests/iterator.rs`
+
+**What it does:** Integration tests for `Iterator<T>` and for what a `for` loop can walk, slice
+S5b (53 tests). Programs go through `check_source` for stage, codes, messages, suggestions and
+spans, and through the interpreter for the printed output.
+
+**Decisions:**
+- A user iterator: the loop runs until `next` returns `null`; it advances the struct itself
+  (the field read after the loop, and a second loop that resumes after a `break`); an empty
+  iterator never runs the body; `continue`, `break` and a `return` from inside the loop;
+  nested loops over separate iterators; an endless iterator stopped by `break` (which only
+  works because the loop is lazy); string and struct items; a generic struct
+  (`impl<T> Iterator<T> for Once<T>`); an enum; a bound (`I: Iterator<int>`), whose item type
+  is the loop variable's type; a `Unique` or `Shared` wrapper and a borrowed value; the trait's
+  `next` winning over an inherent one of the same name; a loop in a `HIGH`, `MID` and `LOW`
+  function.
+- Built-in loops: a `Queue` front to back, a `Stack` bottom to top with its printed form and
+  `peek` beside it, a `Dictionary` as pairs in insertion order (destructured, and as one
+  variable typed as a pair), the element types of a queue and a stack, a snapshot (the
+  collection changed inside the loop), the other iterables unchanged, and a `T?` or `T!`
+  collection.
+- `TYPE-135`: a scalar of each kind, an integer literal, an optional scalar, a struct and an
+  enum with no impl (with the message and the suggestion), a `Linqerizer`, a function, an
+  unbounded type parameter (named in the message), a bound that is not `Iterator`, a program's
+  own trait named `Iterator`; not reported for a value of unknown type, after an earlier error,
+  or for an expression that already failed (a dereference of a non-reference and an `await` on
+  a non-task, which crashed the type checker before); where it points.
+- `TYPE-129`: an optional item type, reported once at the impl, and at the loop when an item
+  becomes optional through a generic argument or a bound; an impl for each kind of built-in
+  type. Also `TYPE-125`, `TYPE-123` and `TYPE-128` for a wrong signature, a missing `next` and a
+  second impl, and `TIER-016`, `TIER-009` and `TIER-015` for the `LOW` rules on `next`.
+
+**Mutation pass:** 40 mutations over `sema/type_infer.rs`,
+`error_management/errors/types/mod.rs`, `interpreter/eval/stmt.rs`,
+`interpreter/eval/user_ops.rs` and `rd_parser/src/prelude.rs`, 39 caught (three of them by the
+test run timing out, because the mutated loop never ends). Two were caught only after tests were
+added: a loop over an expression that already failed (which found the type-checker crash above
+and led to the fix) and where `TYPE-135` points. The survivor is an equivalent mutant (reading
+the last type argument of an `Iterator` impl instead of the first, when `Iterator` has one).
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in
@@ -433,7 +473,7 @@ and through the interpreter for run-time values.
 
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-`Clone`, `Display`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the seven traits are `@tier(low)`, so code at any tier can
+`Clone`, `Display`, `Iterator`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the eight traits are `@tier(low)`, so code at any tier can
 hash, show and call their methods through a bound: the prelude is ordinary source and its methods are `HIGH` unless a tier is written.
 `parse()` calls `prelude::inject` after parsing the
 program. `tests/prelude_traits.rs` (95 tests) covers what each kind of type

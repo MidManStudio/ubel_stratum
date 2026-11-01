@@ -423,13 +423,11 @@ already:
   from a nested loop, which is exactly the kind of code this project's
   own fixtures already lean toward (see the diagonal-grid scan above).
 - **Range-based `for`** (`for i in 0..100`, no backing list allocated) —
-  half true. `0..100` already parses fine as its own expression
-  (`BinOp::Range`/`RangeIncl`, real binding-power table entries) — but
-  it is not wired up as something a `for`-loop knows how to iterate;
-  no fixture does this, and nothing in the interpreter's iteration
-  logic mentions `Range`. Probably the cheapest of the four to close,
-  since the expression-level piece already exists; what's missing is
-  purely the iterator-protocol side.
+  half true. A range is a real expression (`BinOp::Range`/`RangeIncl`, real
+  binding-power table entries) and `for i in 0 .. 100` runs, but eagerly: the
+  interpreter evaluates the range to a `List` first, so the "no backing list"
+  part is missing, and `0..100` written without spaces does not parse.
+  Probably the cheapest of the four to close.
 - **Loop expressions** (`let x = loop { ... break 42 }`, the loop
   itself evaluating to the `break` value) — not present.
   `StmtKind::Loop` exists (bare `loop { }` already parses) and `break
@@ -513,9 +511,19 @@ it actually turned up:
 - A tier error found in type inference (a call on a receiver, a call through a
   trait, a `TIER-016`) stops the pipeline before the tier pass runs, so a by-name
   `TIER-005` in a method body is reported only once those are fixed.
-- `for x in value` over a user type and arithmetic operators on user types
-  are accepted by sema and panic at runtime. The language-item traits of
-  slice S5 give them a type error (S5b iteration, S5c operators).
+- Arithmetic operators and indexing on user types are accepted by sema and
+  panic at runtime. The operator traits of slice S5c give them a type error.
+  (`for x in value` over a user type was the same until S5b, which added
+  `Iterator<T>` and `TYPE-135`.)
+- A `for` loop over a `null` optional collection (a `List<int>?` that holds
+  `null`) panics at run time, as a method call on `null` does; sema looks
+  through `T?` and `T!` and cannot know the value.
+- In a `for`, the items of a string and of a tuple are untyped, and the names
+  of a destructured loop variable (`for (k, v) in d`) are not typed one by one,
+  so sema checks neither the loop variable's parts nor, over a dictionary, `k`
+  and `v`. Both predate S5b.
+- `for i in 0..3` with no spaces is `PARSE-001`; `0 .. 3` works. The range
+  evaluates to a `List`, so a large range allocates.
 - `Display` (S5a) has no formatter argument: `to_string` returns the whole
   text, and a width, alignment or precision in a hole applies to that text,
   not to the fields inside it. An enum's struct variant prints its fields

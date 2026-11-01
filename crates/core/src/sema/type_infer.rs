@@ -118,7 +118,7 @@ use crate::ast::root::{Item, Program};
 use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
 use crate::ast::types::{Type, TypeKind};
 use crate::builtins::instance::{self, MethodReturn, ReceiverWrap};
-use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
+use crate::error_management::{ErrorManager, errors::{NotIterableKind, TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::tier_check;
 use crate::ast::common::Visibility;
@@ -541,6 +541,11 @@ struct InferCtx<'a> {
     /// program did not shadow with its own.
     prelude_traits:   HashMap<DefId, &'static str>,
     prelude_defs:     HashMap<&'static str, DefId>,
+    /// The prelude's `Iterator<T>`, when the program did not shadow it with
+    /// its own. It is kept apart from `prelude_traits` because it is generic
+    /// and nothing satisfies it natively: it is an ordinary trait to bounds
+    /// and impls, and only a `for` loop treats it specially.
+    iterator_trait:   Option<DefId>,
     /// Each trait's declared supertraits (`trait B: A + C`), resolved, in
     /// the order written and without repeats. Filled by
     /// `register_trait_supertraits` before any bound is registered. A name
@@ -692,6 +697,7 @@ impl<'a> InferCtx<'a> {
             reported_dict_keys: HashSet::new(),
             prelude_traits:    HashMap::new(),
             prelude_defs:      HashMap::new(),
+            iterator_trait:    None,
             trait_supers:      HashMap::new(),
             trait_super_args:  HashMap::new(),
             trait_arity:       HashMap::new(),
@@ -1662,6 +1668,10 @@ impl<'a> InferCtx<'a> {
         for item in program.items {
             let Item::Trait(t) = item else { continue; };
             if !t.span.is_prelude() { continue; }
+            if t.name == "Iterator" {
+                self.iterator_trait = self.ctx.top_level_def(t.name);
+                continue;
+            }
             let Some(name) = PRELUDE_TRAIT_NAMES.iter().find(|n| **n == t.name).copied() else { continue; };
             if let Some(def_id) = self.ctx.top_level_def(t.name) {
                 self.prelude_traits.insert(def_id, name);
@@ -2567,6 +2577,18 @@ impl<'a> InferCtx<'a> {
                 return;
             }
         };
+        // The prelude's `Iterator<T>` is what a `for` loop calls on a struct or
+        // an enum. A built-in type is walked by the loop itself, so an impl
+        // for one would never be called.
+        let is_iterator = self.iterator_trait == Some(trait_def);
+        if is_iterator {
+            let builtin_target = pattern.is_some_and(|p| p.builtin)
+                || (pattern.is_none() && self.builtin_target(i.target_type).is_some());
+            if builtin_target {
+                self.report_unsupported(impl_patterns::ITERATOR_ON_BUILTIN, i.span);
+                return;
+            }
+        }
         // `@derive(X)` and `impl X for T` are two sources of the same impl.
         if let Some(pname) = self.prelude_traits.get(&trait_def).copied() {
             if let Some(td) = self.target_type_def_id(i.target_type) {
@@ -2618,6 +2640,16 @@ impl<'a> InferCtx<'a> {
         let written = TraitBound { name: trait_name, args: i.trait_args, span: i.span };
         self.check_trait_arg_count(&written, info.arity);
         let impl_args = self.trait_arg_types(i.trait_args, info.arity);
+        if is_iterator {
+            // Reported, and the impl still registered, so a loop over the type
+            // does not add a second error about the same mistake.
+            if let Some(first) = impl_args.first().copied() {
+                let first = self.apply(first);
+                if matches!(self.ctx.types.get(first), SemaType::Optional(_)) {
+                    self.report_unsupported(impl_patterns::ITERATOR_OPTIONAL_ITEM, i.span);
+                }
+            }
+        }
 
         if self.trait_impls.contains_key(&(trait_def, target_def)) {
             // Generics are erased at run time, so one impl covers every
@@ -4405,7 +4437,7 @@ impl<'a> InferCtx<'a> {
             }
             StmtKind::For { binding, iter, body } => {
                 let iter_ty = self.infer_expr(iter);
-                let elem_ty = self.element_type_of(iter_ty);
+                let elem_ty = self.iteration_item(iter_ty, iter.span);
                 self.record_binding(binding, elem_ty, stmt.span);
                 self.infer_block(body);
                 self.void_ty()
@@ -4509,6 +4541,91 @@ impl<'a> InferCtx<'a> {
             }
             _ => self.fresh_var(),
         }
+    }
+
+    /// The type a `for` loop binds, from what it iterates.
+    ///
+    /// What the run time can walk is what is accepted: a `List` or array, a
+    /// `Queue` (front to back), a `Stack` (bottom to top, as it prints), a
+    /// `Dictionary` (`(key, value)` pairs in insertion order), an
+    /// `InlineList`, a `Pool`, a string, a tuple, a range, and a struct or
+    /// enum that implements the prelude's `Iterator<T>` (the loop calls
+    /// `next` until it returns `null`). Ownership and reference wrappers and
+    /// the transparent `T?` and `T!` are looked through. Anything else is
+    /// `TYPE-135`. A value whose type is not known yet is not an error.
+    ///
+    /// The items of a string and of a tuple stay untyped, as they were.
+    fn iteration_item(&mut self, iterable: TypeId, span: Span) -> TypeId {
+        // The expression already failed and was reported where it arose, and
+        // its type is the error sentinel, which the type table cannot look up.
+        if iterable.is_error() { return self.unknown(); }
+        let mut ty = self.peel_wrappers(iterable);
+        while let SemaType::Optional(inner) | SemaType::Fallible(inner) = self.ctx.types.get(ty).clone() {
+            ty = self.peel_wrappers(inner);
+        }
+        match self.ctx.types.get(ty).clone() {
+            SemaType::List(e)
+            | SemaType::Set(e)
+            | SemaType::Queue(e)
+            | SemaType::Stack(e)
+            | SemaType::Slice(e)
+            | SemaType::InlineList(e)
+            | SemaType::Pool(e)          => e,
+            SemaType::Array { elem, .. } => elem,
+            SemaType::Dictionary(k, v)   => self.ctx.types.insert(SemaType::Tuple(vec![k, v])),
+            SemaType::Str | SemaType::Tuple(_) | SemaType::Unknown => self.fresh_var(),
+            SemaType::Var(n) if !self.int_lit_vars.contains_key(&n) => self.fresh_var(),
+            SemaType::Named { .. } | SemaType::Param(_) => self.user_iteration_item(ty, span),
+            _ => {
+                self.report_not_iterable(ty, NotIterableKind::Other, span);
+                self.unknown()
+            }
+        }
+    }
+
+    /// The item type of a struct, enum or type parameter in a `for` loop:
+    /// the `T` of its `Iterator<T>` impl (or bound). Without one the loop is
+    /// `TYPE-135`. An optional item type is `TYPE-129`: `null` is what ends
+    /// the loop, so an item could not be told from the end. Reached through
+    /// an impl for `Iterator<int?>` that is already reported where it is
+    /// written, so only an item that became optional through a generic
+    /// argument or a bound is reported here.
+    fn user_iteration_item(&mut self, ty: TypeId, span: Span) -> TypeId {
+        let kind = if matches!(self.ctx.types.get(ty), SemaType::Param(_)) {
+            NotIterableKind::Param
+        } else {
+            NotIterableKind::UserType
+        };
+        let Some(iterator) = self.iterator_trait else {
+            self.report_not_iterable(ty, kind, span);
+            return self.unknown();
+        };
+        if !self.type_implements(ty, iterator) {
+            self.report_not_iterable(ty, kind, span);
+            return self.unknown();
+        }
+        let item = self.trait_args_of(ty, iterator).first().copied().unwrap_or_else(|| self.unknown());
+        let written_optional = match self.ctx.types.get(ty).clone() {
+            SemaType::Named { def, .. } => self.trait_impl_args.get(&(iterator, def))
+                .and_then(|a| a.first().copied())
+                .is_some_and(|t| { let t = self.apply(t); matches!(self.ctx.types.get(t), SemaType::Optional(_)) }),
+            _ => false,
+        };
+        let resolved = self.apply(item);
+        if !written_optional && matches!(self.ctx.types.get(resolved), SemaType::Optional(_)) {
+            self.report_unsupported(impl_patterns::ITERATOR_OPTIONAL_ITEM, span);
+            return self.unknown();
+        }
+        item
+    }
+
+    fn report_not_iterable(&mut self, ty: TypeId, kind: NotIterableKind, span: Span) {
+        let type_name = if kind == NotIterableKind::Param {
+            self.param_display_name(ty)
+        } else {
+            self.display_type(ty)
+        };
+        self.errors.add_type_error(TypeError::NotIterable { type_name, kind, span });
     }
 
     // ── Expressions ───────────────────────────────────────────────

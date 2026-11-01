@@ -1,0 +1,16 @@
+// tests/fixtures/err_iterator_isolated.ubl
+// A `for` loop over a struct that has no `impl Iterator` for it: the run time
+// would panic ("cannot iterate over value of type 'struct'"), so sema rejects
+// the loop instead.
+// Expected: sema FAIL (NotIterable, TYPE-135).
+
+struct Inventory {
+    count: int,
+}
+
+fn main() void {
+    let inv = Inventory { count = 3 }
+    for item in inv {
+        println(item)
+    }
+}

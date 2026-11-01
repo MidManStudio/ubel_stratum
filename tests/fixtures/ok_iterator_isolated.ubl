@@ -1,0 +1,70 @@
+// tests/fixtures/ok_iterator_isolated.ubl
+// `Iterator<T>` on its own: a struct implements the prelude trait and a `for`
+// loop walks it by calling `next` until it returns `null`. Covers the plain
+// loop, `continue`, `break`, a `return` from inside the loop, an iterator
+// resumed after a `break` (the loop advances the iterator itself), and an
+// endless iterator that only `break` can stop.
+// Expected: sema OK, interpret OK.
+
+struct Counter {
+    n:     int,
+    limit: int,
+}
+
+impl Iterator<int> for Counter {
+    fn next(self) int? {
+        if self.n >= self.limit {
+            return null
+        }
+        self.n = self.n + 1
+        return self.n
+    }
+}
+
+struct Naturals {
+    n: int,
+}
+
+impl Iterator<int> for Naturals {
+    fn next(self) int? {
+        self.n = self.n + 1
+        return self.n
+    }
+}
+
+fn first_even(c: Counter) int {
+    for x in c {
+        if x % 2 == 0 {
+            return x
+        }
+    }
+    return -1
+}
+
+fn main() void {
+    let c = Counter { n = 0, limit = 6 }
+    for x in c {
+        if x == 2 {
+            continue
+        }
+        if x == 4 {
+            break
+        }
+        println(x)
+    }
+
+    for y in c {
+        println($"resumed {y}")
+    }
+
+    println(first_even(Counter { n = 0, limit = 9 }))
+
+    let nat = Naturals { n = 0 }
+    for k in nat {
+        if k > 3 {
+            break
+        }
+        println($"natural {k}")
+    }
+    println(nat.n)
+}

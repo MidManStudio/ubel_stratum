@@ -197,7 +197,33 @@ pub fn eval_stmt<'ast>(
         // The loop variable lives in the same scope as the body stmts
         // (no double-push). `eval_block_in_scope` is used for the body.
         StmtKind::For { binding, iter, body } => {
-            let coll  = expr::eval_expr(interp, iter)?;
+            let coll = expr::unwrap_ownership(expr::eval_expr(interp, iter)?);
+
+            // A struct or an enum with an `impl Iterator<T>` is walked by
+            // calling its `next` until that returns `null`, so the loop is
+            // lazy (an endless iterator is stopped by `break`) and advances
+            // the value itself: a struct is shared, so after the loop it
+            // stands where `next` left it. Sema accepts no other value here
+            // that is not a built-in one.
+            if let Some(next) = interp.iterator_next(&coll) {
+                loop {
+                    let item = interp.call_method(next, coll.clone(), &[])?;
+                    if matches!(item, Value::Null) { break; }
+
+                    interp.env.push();
+                    bind_target(interp, binding, item);
+                    let res = eval_block_in_scope(interp, body);
+                    interp.env.pop();
+
+                    match res {
+                        Ok(_) | Err(Signal::Continue) => {}
+                        Err(Signal::Break(v)) => return Ok(v.unwrap_or(Value::Void)),
+                        Err(sig)              => return Err(sig),
+                    }
+                }
+                return Ok(Value::Void);
+            }
+
             let items = value_to_iter_vec(coll)?;
 
             for item in items {
@@ -358,13 +384,13 @@ pub fn bind_target<'ast>(
 /// "process every live entry" case; handle-per-item is a genuine
 /// follow-up once destructure-binding typing exists for real.
 ///
-/// Note for whoever eventually wires up `Value::Queue`/`Value::Stack`/
-/// `Value::Set`/arrays here too: `element_type_of` (sema) already treats
-/// all of those as directly iterable, but this function doesn't handle
-/// any of them yet — a pre-existing gap, found while adding the `Pool`
-/// arm, not introduced by it and not fixed here (out of scope for this
-/// change; every current fixture that iterates only ever iterates a
-/// `List`/`Tuple`/`Str`).
+/// `Value::Queue` is walked front to back (the order `dequeue` returns
+/// and the order it prints in), `Value::Stack` bottom to top (the order it
+/// prints in, so `Stack[1, 2, 3]` yields 1, 2, 3 and `peek` is the last
+/// item), and `Value::Dict` as `(key, value)` tuples in insertion order.
+/// Each is a snapshot: changing the collection inside the loop does not
+/// change what the loop visits. Sema rejects a `for` over any other value
+/// (`TYPE-135`), so the panic below is for a value sema could not see.
 fn value_to_iter_vec(val: Value) -> Result<Vec<Value>, Signal> {
     match val {
         Value::List(rc)  => Ok(rc.borrow().clone()),
@@ -372,6 +398,11 @@ fn value_to_iter_vec(val: Value) -> Result<Vec<Value>, Signal> {
         Value::Str(s)    => Ok(s.chars().map(Value::Char).collect()),
         Value::Pool(rc)  => Ok(rc.borrow().iter_occupied().cloned().collect()),
         Value::InlineList(rc) => Ok(rc.borrow().items.clone()),
+        Value::Queue(rc) => Ok(rc.borrow().iter().cloned().collect()),
+        Value::Stack(rc) => Ok(rc.borrow().clone()),
+        Value::Dict(rc)  => Ok(rc.borrow().iter()
+            .map(|(k, v)| Value::Tuple(vec![k.clone(), v.clone()]))
+            .collect()),
         other => Err(Signal::Panic(format!(
             "cannot iterate over value of type '{}'", other.type_name()
         ))),

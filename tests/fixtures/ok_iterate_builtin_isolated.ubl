@@ -1,0 +1,39 @@
+// tests/fixtures/ok_iterate_builtin_isolated.ubl
+// `Queue`, `Stack` and `Dictionary` in a `for` loop. A queue is walked front
+// to back, a stack bottom to top (the order it prints in), a dictionary as
+// `(key, value)` pairs in insertion order. Each loop walks a snapshot, so
+// changing the collection inside the loop does not change what it visits.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let q = Queue.new()
+    q.enqueue(10)
+    q.enqueue(20)
+    q.enqueue(30)
+    println(q)
+    for x in q {
+        println(x)
+    }
+
+    let s = Stack.new()
+    s.push(1)
+    s.push(2)
+    s.push(3)
+    println(s)
+    for y in s {
+        println(y)
+    }
+
+    let d = Dictionary.new()
+    d.set("gold", 5)
+    d.set("iron", 2)
+    d.set("wood", 9)
+    for (name, amount) in d {
+        println(name, amount)
+    }
+
+    for z in q {
+        q.enqueue(99)
+    }
+    println(q.len())
+}

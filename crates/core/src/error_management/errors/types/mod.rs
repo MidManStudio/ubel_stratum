@@ -13,6 +13,18 @@
 use crate::lexer::Span;
 use std::fmt;
 
+/// What a `for` loop was given when it could not be iterated, which decides
+/// the suggestion that goes with `NotIterable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotIterableKind {
+    /// A type parameter with no `Iterator` bound.
+    Param,
+    /// A struct or enum with no `Iterator` impl.
+    UserType,
+    /// Anything else: a scalar, a function, a `Handle`, and so on.
+    Other,
+}
+
 /// Every error that can be raised during ordinary type checking
 /// (not tier/arena enforcement — see `TierError` for that).
 #[derive(Debug, Clone)]
@@ -284,6 +296,16 @@ pub enum TypeError {
         span:       Span,
     },
 
+    /// A `for` loop over a value with nothing to iterate: a type that is not a
+    /// collection, a string, a tuple or a range, and has no `Iterator<T>` impl
+    /// (or, for a type parameter, no `Iterator<T>` bound). The run time has no
+    /// way to walk such a value and would panic.
+    NotIterable {
+        type_name: String,
+        kind:      NotIterableKind,
+        span:      Span,
+    },
+
     /// A trait that is its own supertrait, directly (`trait A: A`) or
     /// through others (`trait A: B  trait B: A`). `path` is the cycle as
     /// written, `A -> B -> A`, starting and ending at `trait_name`.
@@ -396,6 +418,7 @@ impl TypeError {
             TypeError::MissingSupertraitImpl       { span, .. } => *span,
             TypeError::SupertraitCycle             { span, .. } => *span,
             TypeError::ConflictingBounds           { span, .. } => *span,
+            TypeError::NotIterable                 { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -492,6 +515,12 @@ impl TypeError {
 
             TypeError::ConflictingBounds { param, first, second, .. } =>
                 format!("`{}` is bounded by both `{}` and `{}`, and no type implements both", param, first, second),
+
+            TypeError::NotIterable { type_name, kind: NotIterableKind::Param, .. } =>
+                format!("cannot iterate over a value of type parameter `{}`: it has no `Iterator` bound", type_name),
+
+            TypeError::NotIterable { type_name, .. } =>
+                format!("cannot iterate over a value of type `{}`", type_name),
 
             TypeError::SupertraitCycle { trait_name, path, .. } =>
                 format!("trait `{}` is its own supertrait: {}", trait_name, path),
@@ -617,6 +646,15 @@ impl TypeError {
             TypeError::ConflictingBounds { trait_name, .. } =>
                 Some(format!("a type has one impl of `{}`, so a parameter can be bounded by it once; keep one of the two", trait_name)),
 
+            TypeError::NotIterable { type_name, kind: NotIterableKind::Param, .. } =>
+                Some(format!("declare a bound, as in `<{}: Iterator<Item>>`, or take a List", type_name)),
+
+            TypeError::NotIterable { type_name, kind: NotIterableKind::UserType, .. } =>
+                Some(format!("add `impl Iterator<Item> for {} {{ fn next(self) Item? {{ .. }} }}`, or iterate one of its collection fields", type_name)),
+
+            TypeError::NotIterable { .. } =>
+                Some("a `for` loop walks a List, an array, a Queue, a Stack, a Dictionary, an InlineList, a Pool, a string, a tuple, a range, or a struct or enum that implements `Iterator<T>`".to_string()),
+
             TypeError::SupertraitCycle { .. } =>
                 Some("a supertrait is required by the trait that builds on it, so the chain of `: ...` links must end; remove one of them".to_string()),
 
@@ -683,6 +721,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::MissingSupertraitImpl { .. }         => "TYPE-132",
             TypeError::SupertraitCycle { .. }               => "TYPE-133",
             TypeError::ConflictingBounds { .. }             => "TYPE-134",
+            TypeError::NotIterable { .. }                   => "TYPE-135",
         }
     }
     fn span(&self) -> Span { self.span() }

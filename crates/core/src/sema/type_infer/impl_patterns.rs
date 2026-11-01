@@ -46,6 +46,8 @@ const UNUSED_PARAM: &str = "an impl type parameter that the target type does not
 pub(super) const DUPLICATE_METHOD: &str = "an inherent method with the name of one that another block already gives the same type (a call cannot tell `Box<int>` from `Box<string>`, or `int` from `long`, at run time)";
 pub(super) const DISPLAY_ON_BUILTIN: &str = "implementing `Display` by hand for a built-in type (only a struct or an enum can have a hand-written `Display`; a built-in type prints as it always does)";
 pub(super) const DISPLAY_ON_COLLECTION: &str = "implementing `Display` by hand for a collection (a collection is printed element by element at run time, and a user-written `to_string` for it would not be called)";
+pub(super) const ITERATOR_ON_BUILTIN: &str = "implementing `Iterator` by hand for a built-in type (only a struct or an enum can have a hand-written `Iterator`; a `for` loop walks a built-in type itself, so the impl would never be called)";
+pub(super) const ITERATOR_OPTIONAL_ITEM: &str = "an `Iterator` over optional items (`Iterator<int?>`): a `for` loop ends when `next` returns `null`, so a `null` item could not be told from the end";
 pub(super) const PRELUDE_ON_COLLECTION: &str = "implementing a prelude trait by hand for a collection (a collection is compared, hashed and cloned by identity at run time)";
 
 // ── Data ─────────────────────────────────────────────────────────

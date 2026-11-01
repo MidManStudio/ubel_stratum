@@ -1223,7 +1223,7 @@ pub(crate) fn is_prelude_trait(name: &str) -> bool {
 
 /// Strip the ownership wrappers (`Unique`, `Shared`, `SyncShared`) so a
 /// value is compared, ordered and cloned as the value it holds.
-fn unwrap_ownership(value: Value) -> Value {
+pub(crate) fn unwrap_ownership(value: Value) -> Value {
     match value {
         Value::Unique(inner)                      => unwrap_ownership((*inner).clone()),
         Value::Shared(rc) | Value::SyncShared(rc) => unwrap_ownership(rc.borrow().clone()),

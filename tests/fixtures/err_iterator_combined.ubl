@@ -1,0 +1,95 @@
+// tests/fixtures/err_iterator_combined.ubl
+// The rules around `Iterator<T>` met together: a type parameter with no
+// `Iterator` bound, a loop over a struct that implements only a trait of its
+// own with the same shape, an impl for a built-in type (never called, since
+// a loop walks a built-in value itself), an impl whose item type is optional
+// (`null` ends a loop, so an item could not be told from the end), an item
+// that becomes optional through a generic argument, an impl at the wrong tier
+// (the prelude trait's methods are LOW), and an impl with the wrong signature.
+// Expected: sema FAIL (two TYPE-129 for the impls, TYPE-125, two TYPE-135, TYPE-129
+// at the loop over the generic struct, TIER-016).
+
+trait Walker<T> {
+    fn next(self) T?
+}
+
+struct Path {
+    n: int,
+}
+
+impl Walker<int> for Path {
+    fn next(self) int? {
+        return null
+    }
+}
+
+impl Iterator<int> for int {
+    fn next(self) int? {
+        return null
+    }
+}
+
+struct Holes {
+    n: int,
+}
+
+impl Iterator<int?> for Holes {
+    fn next(self) int?? {
+        return null
+    }
+}
+
+struct Loud {
+    n: int,
+}
+
+impl Iterator<int> for Loud {
+    @tier(high)
+    fn next(self) int? {
+        return null
+    }
+}
+
+struct Wrong {
+    n: int,
+}
+
+impl Iterator<int> for Wrong {
+    fn next(self) int {
+        return 1
+    }
+}
+
+struct Once<T> {
+    value: T,
+    done:  bool,
+}
+
+impl<T> Iterator<T> for Once<T> {
+    fn next(self) T? {
+        if self.done {
+            return null
+        }
+        self.done = true
+        return self.value
+    }
+}
+
+fn show_all<T>(items: T) void {
+    for item in items {
+        println(item)
+    }
+}
+
+fn main() void {
+    let p = Path { n = 1 }
+    for step in p {
+        println(step)
+    }
+
+    let maybe: int? = 5
+    let once = Once { value = maybe, done = false }
+    for x in once {
+        println(x)
+    }
+}

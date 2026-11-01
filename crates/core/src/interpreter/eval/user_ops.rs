@@ -86,6 +86,16 @@ impl<'ast> Interpreter<'ast> {
             .copied()
     }
 
+    /// The `next` of the `Iterator` impl a struct or an enum has, which a
+    /// `for` loop calls. A built-in value has none (sema rejects an impl of
+    /// `Iterator` for one), so only these two are asked.
+    pub(crate) fn iterator_next(&self, value: &Value) -> Option<FunctionId> {
+        match value {
+            Value::Struct { .. } | Value::Enum { .. } => self.user_trait_fn(value, "Iterator", "next"),
+            _ => None,
+        }
+    }
+
     fn call_user_bool(&mut self, f: FunctionId, a: &Value, b: &Value) -> Result<bool, Signal> {
         Ok(matches!(self.call_method(f, a.clone(), &[b.clone()])?, Value::Bool(true)))
     }

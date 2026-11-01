@@ -140,8 +140,11 @@ verified safe.
   traits are `@tier(low)`, so a hand-written `eq`, `hash` or `clone` is `LOW`. A struct
   or enum can implement `Display` (`fn to_string(self) string`) to decide how
   `println`, `{x}` and `to_string` show it, at any depth; a struct prints its fields in
-  declaration order. Next: `for-in` over a user type (`Iterator<T>`), operator traits
-  (the operators then check their calls), associated types, and `dyn Trait`
+  declaration order. A struct or enum can implement `Iterator<T>` (`fn next(self) T?`)
+  so that `for x in value` calls `next` until it returns `null`; `Queue`, `Stack` and
+  `Dictionary` can be looped over too, and a `for` over anything that cannot be walked is
+  a compile error instead of a run-time panic. Next: operator traits (the operators then
+  check their calls), associated types, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

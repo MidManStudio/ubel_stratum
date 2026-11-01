@@ -1,0 +1,26 @@
+// tests/fixtures/err_iterate_builtin_isolated.ubl
+// A `for` loop over values the run time cannot walk: an integer, a function
+// and the lazy `Linqerizer` that `query()` returns. Each used to pass sema and
+// panic when the loop ran.
+// Expected: sema FAIL (NotIterable, three TYPE-135).
+
+fn five() int {
+    return 5
+}
+
+fn main() void {
+    let n = 5
+    for a in n {
+        println(a)
+    }
+
+    for b in five {
+        println(b)
+    }
+
+    let l = [1, 2, 3]
+    let q = l.query()
+    for c in q {
+        println(c)
+    }
+}
