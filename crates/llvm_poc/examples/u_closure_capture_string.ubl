@@ -1,0 +1,8 @@
+// Not supported yet: a closure that captures anything but an int or a bool. A string, struct, enum or
+// closure captured into an arena-allocated closure object would be invisible to the collector.
+// expect-refusal: which is not an int or a bool
+fn main() void {
+    let name = "ann"
+    let f = fn(x: int) $"{name}{x}"
+    println(f(1))
+}

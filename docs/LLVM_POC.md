@@ -249,7 +249,9 @@ boundary, including captured GC data, while collections run inside the callback.
 
 Update (A7): the non-capturing case is implemented as proposed, except that the object is a
 static constant rather than a GC object, because there are no captured values to hold. The
-capturing case (a GC or arena object by site, D5) is not implemented.
+capturing case is implemented too (A7b): the object is allocated where the closure is written,
+in the arena inside `with arena` and in the GC heap in a HIGH function, and holds the code
+pointer and a copy of each captured int or bool, 8 bytes apiece.
 
 ### Safety across the boundary
 
@@ -454,17 +456,41 @@ the GC heap whatever tier calls it, and one written in MID code outside `with ar
 allocates. Parameter types must be written (`fn(x) ...` is refused). The result type is sema's when it
 resolved; otherwise it is taken from the first value the body returns, because sema records a lambda's
 type before an integer literal in the body has been defaulted to `int` (a block body that returns such
-a local has an open result type there). Refused by name: a closure that captures a local of the
-enclosing function (decision D5, where the captured values live); calling a closure in a LOW function
-(sema does not check a closure's tier, decision D2, and LOW must not run code that can allocate);
-calling one that is not a plain local (read it out of a struct field first); printing or comparing
-closures. `examples/21_closures` covers two parameters, block bodies, nesting, closures returned and
+a local has an open result type there). Refused by name: calling a closure in a LOW function
+(sema does not check a closure's tier, and LOW must not run code that can allocate); calling one
+that is not a plain local (read it out of a struct field first); printing or comparing closures. `examples/21_closures` covers two parameters, block bodies, nesting, closures returned and
 kept in a struct field, a callback called from MID inside `with arena`, and 100,000 calls whose bodies
 build strings while the collector runs. Mutants that reversed the arguments, did not restore the temp
 counter or did not restore the enclosing scopes are all caught.
 
+**Closures that capture (A7b, provisional; decisions D2 and D5, taken by the project owner on
+2026-10-31).** D2: a closure's tier is the tier of the function it is created in; its body is
+compiled in that tier, which is how the emitter already worked. D5: a capturing closure's object
+lives in the arena of the block it is written in and dies with it. Read as "by site", like a struct
+literal: inside `with arena` it is bump allocated in the arena; in a HIGH function, where there is no
+arena, it is a GC object (mask 0, since only ints and bools are captured). **That second case is my
+reading of D5, not something that was stated: confirm or reverse it.** MID outside an arena and LOW are
+refused, as for a struct literal. A capture is a copy of the value taken when the closure is created;
+the body copies it out of the object at entry (a prologue after the allocas). Captures are found while
+the body is emitted: a name that is not a local of the closure but is one of the frame it is written
+in becomes a capture. Only a variable that never changes can be captured, so `let mut` variables, `for`
+variables and `:=` bindings are refused, and only ints and bools (a string, struct, enum or closure in
+an arena-allocated object would be invisible to the collector, which does not scan plain arenas).
+Refused by name as well: a capture from more than one level out (a closure in a closure that uses a
+variable of the outer function), and any closure written inside a closure written inside `with arena`
+(the inner body does not hold the arena, so there is nowhere to allocate it). Sema needed two fixes
+(patch `type_infer.rs`, tests/fixtures `*_arena_closure_*`): a closure written inside `with arena` is
+typed `&arena fn(...)` and could not be called at all ("no method `<call>`"), and the error then
+panicked the type checker, because the error sentinel reached `apply` and `unify`. The tag still stops
+the closure from being returned, assigned outward or passed to a function. `examples/22_closure_capture`
+(GC-heap closures, no sema patch needed) and `examples/23_closure_arena` (needs the patch) cover
+captured ints and bools, if-expression and block bodies, closures made in a loop, nesting, closures
+returned and kept in a struct field, and 300,000 rounds of same-size GC closure objects. Mutants of the
+capture offset, the object size, the `mut` check and the collector's pointer mask are all caught (the
+last one only after the churn was made the same size as the object it must not free).
+
 Everything else is **refused with a located "not supported yet" error** instead of being
-guessed at: collections, capturing closures, generics, struct methods,
+guessed at: collections, generics, struct methods,
 `edge struct`, `match`, sized integers and floats; also printing or comparing a struct value. The test suite checks that each refusal names the right
 feature, so unsupported code cannot be silently miscompiled.
 
@@ -803,7 +829,9 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    ordering, and a string field in an arena object.
 4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
    (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
-   it the target program (A8). Open: capturing closures (D5) and the tier of a function type (D2).
+   it the target program (A8). Capturing closures followed (A7b). Open: captures of strings, structs,
+   enums and closures, `mut` captures, captures from more than one level out, and a sema check of a
+   closure's tier at its call sites.
 
 Parallel track that does not block the above: run the slice 3 CI workflows, and the GC
 hardening items in `docs/GC_RESEARCH.md` (global roots, a collect-on-every-
@@ -837,6 +865,10 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-10-31: A7b (closures that capture), provisional, with decisions D2 (a closure's tier is that of the
+  function it is created in) and D5 (the object lives in the arena of its block). Ints and bools only,
+  copied at creation. Found and fixed in sema: arena closures could not be called, and the error
+  panicked the checker. 55 of 55 locally; mutants of the capture code are caught.
 - 2026-10-31: A7 (closures that capture nothing) and A8 (the target program compiles), provisional.
   `fn(...)` types and `fn(v: int) ...` values, static closure objects, indirect calls. The target
   program's native output is identical to `ast_builder.expected`, and it now runs in the equivalence

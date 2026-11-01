@@ -1,0 +1,11 @@
+// Not supported yet: a closure inside a closure that captures a variable from outside the outer one.
+// Only a variable of the function or closure it is written in is captured so far.
+// expect-refusal: from more than one level out
+fn main() void {
+    let k = 3
+    let outer = fn(x: int) {
+        let inner = fn(y: int) y + k
+        return inner(x)
+    }
+    println(outer(1))
+}

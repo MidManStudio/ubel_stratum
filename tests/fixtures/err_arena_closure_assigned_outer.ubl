@@ -1,0 +1,19 @@
+// tests/fixtures/err_arena_closure_assigned_outer.ubl
+// D5 (closures): assigning an arena closure to a variable declared outside the block would leave that
+// variable pointing into an arena that has ended. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn run(base: int) int {
+    let mut keep = fn(x: int) x
+    with arena(256) {
+        let k = base + 1
+        keep = fn(x: int) x + k
+    }
+    return keep(1)
+}
+
+fn main() void {
+    println(run(2))
+}

@@ -1,0 +1,19 @@
+// tests/fixtures/ok_arena_closure_call.ubl
+// D5 (closures): a closure written inside `with arena` is an arena value, and calling it inside the
+// block is fine: the call only reads the closure object, which lives as long as the block.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(mid)
+fn run(base: int) int {
+    with arena(256) {
+        let k = base * 2
+        let add = fn(x: int) x + k
+        let twice = fn(x: int) add(add(x))
+        return twice(1)
+    }
+}
+
+fn main() void {
+    assert(run(3) == 13, "an arena closure can be called, and can call another one, inside the block")
+}

@@ -1,0 +1,13 @@
+// tests/fixtures/err_call_non_function.ubl
+// Calling something that is not a function is a sema error. It used to panic the type checker
+// (the error type reached `unify` through the `return`), so this also guards against that.
+//
+// Expected: sema FAIL (NoSuchMethod).
+
+fn f(x: int) int {
+    return x(1)
+}
+
+fn main() void {
+    println(f(3))
+}

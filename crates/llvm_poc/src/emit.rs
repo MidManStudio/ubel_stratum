@@ -203,6 +203,17 @@ struct Sig {
 struct Local {
     slot: String,
     ty: Ty,
+    /// Declared `mut`, a `for` variable or a `:=` binding: it can change after a closure copied it, so a
+    /// closure may not capture it.
+    mutable: bool,
+}
+
+/// A value a closure copies from the frame it is written in when it is created.
+struct Capture {
+    name: String,
+    ty: Ty,
+    /// The stack slot of the variable in the enclosing function.
+    outer_slot: String,
 }
 
 #[derive(Clone)]
@@ -305,6 +316,17 @@ struct Emitter<'a> {
     /// While a closure body is emitted: every name visible in the enclosing code, so a use of one of
     /// them is reported as a capture instead of as an unknown name.
     outer_names: Vec<BTreeSet<String>>,
+    /// While a closure body is emitted: the scopes of the frame it is written in (one per closure being
+    /// emitted, innermost last), where its captures are looked up.
+    enclosing: Vec<Vec<HashMap<String, Local>>>,
+    /// The captures found so far in each closure being emitted.
+    captures: Vec<Vec<Capture>>,
+    /// Instructions that run first in the closure being emitted (they copy its captures out of the closure
+    /// object); they come after the allocas and before the body.
+    prologue: String,
+    /// For each closure being emitted: was it written, directly or through other closures, inside `with arena`?
+    /// Its body is a separate function that does not hold that arena, so nothing in it can be allocated there.
+    in_arena_closure: Vec<bool>,
 
     funcs: String,
     strings: String,
@@ -379,6 +401,10 @@ impl<'a> Emitter<'a> {
             ret_infer: false,
             ret_seen: None,
             outer_names: Vec::new(),
+            enclosing: Vec::new(),
+            captures: Vec::new(),
+            prologue: String::new(),
+            in_arena_closure: Vec::new(),
             funcs: String::new(),
             strings: String::new(),
             str_n: 0,
@@ -603,9 +629,16 @@ impl<'a> Emitter<'a> {
     fn declare(&mut self, name: &str, ty: Ty) -> String {
         let slot = self.alloca(ty, name);
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), Local { slot: slot.clone(), ty });
+            scope.insert(name.to_string(), Local { slot: slot.clone(), ty, mutable: false });
         }
         slot
+    }
+
+    /// Mark the local just declared in the innermost scope as one that can change.
+    fn mark_mutable(&mut self, name: &str) {
+        if let Some(l) = self.scopes.last_mut().and_then(|sc| sc.get_mut(name)) {
+            l.mutable = true;
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<Local> {
@@ -922,13 +955,16 @@ impl<'a> Emitter<'a> {
 
         let mut header_params = Vec::new();
         for (i, p) in f.params.iter().enumerate() {
-            if let ParamKind::Named { name, .. } = p.kind {
+            if let ParamKind::Named { name, mutable, .. } = p.kind {
                 let ty = sig.params[i];
                 // A name no Ubel identifier can produce (it starts with a dot), so a parameter
                 // register never collides with the stack slot of a local named `p`, `arg`, ...
                 let reg = format!("%.arg{i}");
                 header_params.push(format!("{} {}", ty.ir(), reg));
                 let slot = self.declare(name, ty);
+                if mutable {
+                    self.mark_mutable(name);
+                }
                 self.inst(&format!("store {} {}, ptr {}", ty.ir(), reg, slot));
             }
         }
@@ -1040,7 +1076,7 @@ impl<'a> Emitter<'a> {
 
     fn stmt(&mut self, s: &Stmt) -> R<()> {
         match s.kind {
-            StmtKind::Let { binding, value, .. } => {
+            StmtKind::Let { mutable, binding, value, .. } => {
                 let name = match binding {
                     BindingTarget::Ident(n) => n,
                     BindingTarget::Destructure(_) => return unsupported(s.span, "destructuring `let`"),
@@ -1048,6 +1084,9 @@ impl<'a> Emitter<'a> {
                 let v = self.expr(value)?;
                 self.need_value(&v, value.span)?;
                 let slot = self.declare(name, v.ty);
+                if mutable {
+                    self.mark_mutable(name);
+                }
                 self.inst(&format!("store {} {}, ptr {}", v.ty.ir(), v.v, slot));
                 Ok(())
             }
@@ -1194,6 +1233,7 @@ impl<'a> Emitter<'a> {
         self.loops.push(LoopCtx { cont: inc_l.clone(), brk: end_l.clone(), arena_depth: self.arenas.len() });
         self.scopes.push(HashMap::new());
         let slot = self.declare(name, Ty::I64);
+        self.mark_mutable(name);
         let cur = self.fresh();
         self.inst(&format!("{cur} = load i64, ptr {counter}"));
         self.inst(&format!("store i64 {cur}, ptr {slot}"));
@@ -1361,9 +1401,13 @@ impl<'a> Emitter<'a> {
             | ExprKind::Lit(Literal::InterpolatedVerbatimStr(parts)) => self.interp_string(e, parts),
             ExprKind::Lit(_) => unsupported(e.span, "this literal as a value (only int, bool and string literals so far)"),
             ExprKind::Ident(name) => {
-                let local = self
-                    .lookup(name)
-                    .ok_or_else(|| self.unknown_name(name, e.span, format!("not supported yet: the name `{name}` (only local variables so far)")))?;
+                let local = match self.lookup(name) {
+                    Some(l) => l,
+                    None => match self.capture_local(name, e.span)? {
+                        Some(l) => l,
+                        None => return Err(self.unknown_name(name, e.span, format!("not supported yet: the name `{name}` (only local variables so far)"))),
+                    },
+                };
                 let t = self.fresh();
                 self.inst(&format!("{t} = load {}, ptr {}", local.ty.ir(), local.slot));
                 Ok(Val { v: t, ty: local.ty })
@@ -1432,6 +1476,7 @@ impl<'a> Emitter<'a> {
                 let v = self.expr(value)?;
                 self.need_value(&v, value.span)?;
                 let slot = self.declare(name, v.ty);
+                self.mark_mutable(name);
                 self.inst(&format!("store {} {}, ptr {}", v.ty.ir(), v.v, slot));
                 Ok(Val::void())
             }
@@ -1556,6 +1601,12 @@ impl<'a> Emitter<'a> {
     fn alloc_site(&self, span: Span, what: &str) -> R<Option<String>> {
         if let Some(a) = self.arenas.last() {
             return Ok(Some(a.clone()));
+        }
+        if self.in_arena_closure.last().copied().unwrap_or(false) && self.cur_tier != TierAnnotation::High {
+            return unsupported(
+                span,
+                format!("{what} inside a closure that was written inside `with arena` (the closure's body does not hold that arena yet, so there is nowhere to allocate it)"),
+            );
         }
         match self.cur_tier {
             TierAnnotation::High => Ok(None),
@@ -2104,14 +2155,61 @@ impl<'a> Emitter<'a> {
 
     /// A name that is not a local: a capture when an enclosing function has it, otherwise `other`.
     fn unknown_name(&self, name: &str, span: Span, other: String) -> CompileError {
-        if self.outer_names.iter().any(|s| s.contains(name)) {
+        let in_frame = self.enclosing.last().map_or(false, |f| f.iter().any(|sc| sc.contains_key(name)));
+        if in_frame {
+            // Reads are captured by `capture_local`; what arrives here is an assignment.
             CompileError::at(
                 span,
-                format!("not supported yet: a closure that captures `{name}` (capturing closures are not emitted yet, decision D5)"),
+                format!("not supported yet: a closure that assigns to `{name}`, a variable of the code it is written in (a capture is a copy, so the assignment would not change the original)"),
+            )
+        } else if self.outer_names.iter().any(|s| s.contains(name)) {
+            CompileError::at(
+                span,
+                format!("not supported yet: a closure that captures `{name}` from more than one level out (only a variable of the function or closure it is written in so far)"),
             )
         } else {
             CompileError::at(span, other)
         }
+    }
+
+    /// A name used inside a closure body that is not one of its own locals: capture it when it is a
+    /// variable of the frame the closure is written in. The closure copies the value into its object when
+    /// it is created (decision D5) and the body copies it out at entry, so a capture is only right for a
+    /// variable that never changes afterwards: `mut` variables, `for` variables and `:=` bindings are
+    /// refused. Only int and bool values are captured so far: a string, struct, enum or closure in an
+    /// arena-allocated closure object would be invisible to the collector (plain arenas are not scanned).
+    fn capture_local(&mut self, name: &str, span: Span) -> R<Option<Local>> {
+        let found = match self.enclosing.last().and_then(|f| f.iter().rev().find_map(|sc| sc.get(name).cloned())) {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+        if found.mutable {
+            return unsupported(
+                span,
+                format!("a closure that captures `{name}`, which can change (declared `mut`, a `for` variable or a `:=` binding): a capture is a copy of the value taken when the closure is created"),
+            );
+        }
+        if !matches!(found.ty, Ty::I64 | Ty::I1) {
+            return unsupported(
+                span,
+                format!("a closure that captures `{name}`, which is not an int or a bool (strings, structs, enums and closures are not captured yet: the closure object may live in an arena the collector does not scan)"),
+            );
+        }
+        let idx = self.captures.last().map_or(0, |c| c.len());
+        let slot = self.alloca(found.ty, name);
+        let (gep, v) = (self.fresh(), self.fresh());
+        let ir = found.ty.ir();
+        let _ = writeln!(self.prologue, "  {gep} = getelementptr inbounds i8, ptr %.clo, i64 {}", 8 * (1 + idx));
+        let _ = writeln!(self.prologue, "  {v} = load {ir}, ptr {gep}");
+        let _ = writeln!(self.prologue, "  store {ir} {v}, ptr {slot}");
+        let local = Local { slot, ty: found.ty, mutable: false };
+        if let Some(sc) = self.scopes.first_mut() {
+            sc.insert(name.to_string(), local.clone());
+        }
+        if let Some(c) = self.captures.last_mut() {
+            c.push(Capture { name: name.to_string(), ty: found.ty, outer_slot: found.slot });
+        }
+        Ok(Some(local))
     }
 
     /// `fn(v: int) body`, a closure that captures nothing. The body becomes its own function whose
@@ -2161,6 +2259,11 @@ impl<'a> Emitter<'a> {
         let saved_arenas = std::mem::take(&mut self.arenas);
         let (saved_tmp, saved_lbl, saved_term, saved_ret) = (self.tmp, self.lbl, self.terminated, self.ret);
         let (saved_infer, saved_seen) = (self.ret_infer, self.ret_seen);
+        let saved_prologue = std::mem::take(&mut self.prologue);
+        self.enclosing.push(saved_scopes.clone());
+        self.captures.push(Vec::new());
+        let inside = !saved_arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+        self.in_arena_closure.push(inside);
         self.tmp = 0;
         self.lbl = 0;
         self.terminated = false;
@@ -2173,6 +2276,10 @@ impl<'a> Emitter<'a> {
         let ret = self.ret;
 
         self.outer_names.pop();
+        self.enclosing.pop();
+        self.in_arena_closure.pop();
+        let caps = self.captures.pop().unwrap_or_default();
+        let prologue = std::mem::replace(&mut self.prologue, saved_prologue);
         let body = std::mem::replace(&mut self.body, saved_body);
         let allocas = std::mem::replace(&mut self.allocas, saved_allocas);
         self.scopes = saved_scopes;
@@ -2192,9 +2299,28 @@ impl<'a> Emitter<'a> {
         let code = format!("@ubel_lambda.{n}");
         let obj = format!("@ubel_closure.{n}");
         let _ = writeln!(self.funcs, "; tier: {} (closure)", tier_name(self.cur_tier));
-        let _ = writeln!(self.funcs, "define internal {} {code}({header}) {{\nentry:\n{allocas}{body}}}\n", ret.ir());
-        let _ = writeln!(self.strings, "{obj} = private unnamed_addr constant {{ ptr }} {{ ptr {code} }}, align 8");
-        Ok(Val { v: obj, ty: fnty })
+        let _ = writeln!(self.funcs, "define internal {} {code}({header}) {{\nentry:\n{allocas}{prologue}{body}}}\n", ret.ir());
+        if caps.is_empty() {
+            let _ = writeln!(self.strings, "{obj} = private unnamed_addr constant {{ ptr }} {{ ptr {code} }}, align 8");
+            return Ok(Val { v: obj, ty: fnty });
+        }
+        // A closure that captures: its object is allocated where it is written (an arena inside `with
+        // arena`, so it dies with the block; the GC heap in a HIGH function; refused elsewhere, as for a
+        // struct literal) and holds the code pointer and a copy of each captured value, 8 bytes apiece.
+        // Only ints and bools are captured, so the object holds no pointer the collector must trace
+        // (the code pointer is a static address outside the heap): mask 0.
+        let arena = self.alloc_site(e.span, "a closure that captures a variable")?;
+        let size = (8 * (1 + caps.len())).to_string();
+        let objp = self.alloc_obj(arena, &size, "0", "closure");
+        self.inst(&format!("store ptr {code}, ptr {objp}"));
+        for (i, c) in caps.iter().enumerate() {
+            let v = self.fresh();
+            self.inst(&format!("{v} = load {}, ptr {}", c.ty.ir(), c.outer_slot));
+            let g = self.fresh();
+            self.inst(&format!("{g} = getelementptr inbounds i8, ptr {objp}, i64 {}", 8 * (1 + i)));
+            self.inst(&format!("store {} {v}, ptr {g}", c.ty.ir()));
+        }
+        Ok(Val { v: objp, ty: fnty })
     }
 
     /// The parameters and statements of a closure body; returns the function header's parameter list.

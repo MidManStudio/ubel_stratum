@@ -1,0 +1,27 @@
+// tests/fixtures/ok_arena_closure_capture.ubl
+// D5 (closures): closures that capture ints and bools, created inside `with arena`, in a loop and
+// with a block body. Everything is used inside the block.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(mid)
+fn run(base: int, flag: bool) int {
+    with arena(256) {
+        let k = base + 1
+        let pick = fn(x: int) if flag { x + k } else { x - k }
+        let mut total = 0
+        for i in 0 .. 3 {
+            let step = i * 10
+            let g = fn(x: int) {
+                let y = x + step
+                return y + k
+            }
+            total += g(1) + pick(i)
+        }
+        return total
+    }
+}
+
+fn main() void {
+    assert(run(2, true) == 54, "arena closures capture, loop and block bodies work")
+}

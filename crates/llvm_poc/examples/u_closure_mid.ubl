@@ -1,0 +1,13 @@
+// Not supported yet: a closure that captures, written in a MID function outside `with arena`. The
+// closure object has to go somewhere, and where a MID function outside an arena allocates is the same
+// open question as for a struct literal there.
+// expect-refusal: outside `with arena`
+@tier(mid)
+fn run(k: int) int {
+    let f = fn(x: int) x + k
+    return f(1)
+}
+
+fn main() void {
+    println(run(2))
+}

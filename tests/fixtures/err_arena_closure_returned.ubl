@@ -1,0 +1,19 @@
+// tests/fixtures/err_arena_closure_returned.ubl
+// D5 (closures): the closure object lives in the arena, so the closure value cannot be returned out
+// of the block. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn make(base: int) fn(int) int {
+    with arena(256) {
+        let k = base + 1
+        let add = fn(x: int) x + k
+        return add
+    }
+}
+
+fn main() void {
+    let f = make(2)
+    println(f(1))
+}

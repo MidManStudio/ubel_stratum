@@ -1,0 +1,66 @@
+// Closures that capture (A7b; decisions D2 and D5). A capturing closure copies the ints and bools it
+// uses into its own object when it is created; the object is allocated where the closure is written
+// (here always the GC heap, every function is HIGH; see 23_closure_arena for `with arena`). The
+// closure runs in the tier of the function it was written in. Only `let` variables and parameters
+// are captured: a copy is only right for a value that never changes afterwards.
+struct Handler {
+    name: string
+    run:  fn(int) int
+}
+
+fn make_adder(n: int) fn(int) int {
+    return fn(x: int) x + n
+}
+
+fn make_line(a: int, b: int) fn(int) int {
+    return fn(x: int) x * a + b
+}
+
+fn twice(f: fn(int) int, x: int) int {
+    return f(f(x))
+}
+
+fn main() void {
+    let add5 = make_adder(5)
+    println(add5(10), twice(add5, 1))
+    let line = make_line(3, 4)
+    println(line(5))
+
+    // a bool capture, and an if-expression body
+    let flag = true
+    let k = 6
+    let pick = fn(x: int) if flag { x + k } else { x - k }
+    println(pick(1))
+
+    // a closure created in every iteration, each capturing that iteration's value
+    let mut total = 0
+    for i in 0 .. 3 {
+        let step = i * 10
+        let g = fn(x: int) x + step
+        total += g(1)
+    }
+    println(total)
+
+    // a closure that captures, with a closure inside it that captures one of its locals
+    let outer = fn(x: int) {
+        let kk = k + 1
+        let inner = fn(y: int) y + kk
+        return inner(x) * 2
+    }
+    println(outer(1))
+
+    // many closure objects in the GC heap, of the same size as the one in the struct field (so a freed
+    // slot would be reused at once): the struct field is the only thing that reaches that one, so the
+    // collector must trace it and keep it across every collection
+    let h = Handler { name = "h", run = make_adder(1000) }
+    let mut acc = 0
+    let mut i = 0
+    while i < 300000 {
+        let f = make_adder(i)
+        let g = make_line(i, 1)
+        acc += (f(1) - i) + (g(1) - i)
+        i += 1
+    }
+    let run = h.run
+    println(acc, run(1), h.name)
+}

@@ -1,0 +1,23 @@
+// tests/fixtures/err_arena_closure_passed.ubl
+// D5 (closures): an arena closure cannot be passed to a function by value: the callee could store
+// it or return it. Must stay rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn apply(f: fn(int) int, x: int) int {
+    return f(x)
+}
+
+@tier(mid)
+fn run(base: int) int {
+    with arena(256) {
+        let k = base + 1
+        let add = fn(x: int) x + k
+        return apply(add, 1)
+    }
+}
+
+fn main() void {
+    println(run(2))
+}

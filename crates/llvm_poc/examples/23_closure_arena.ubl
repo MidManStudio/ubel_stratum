@@ -1,0 +1,50 @@
+// Closures that capture, created inside `with arena` (A7b, decision D5). The closure object is bump
+// allocated in the arena and dies with the block; sema keeps it from leaving the block, so every
+// call happens inside it. A new arena per round: nothing may be left alive, and a closure from an
+// earlier round must never be seen again.
+@tier(mid)
+fn in_arena(base: int, flag: bool) int {
+    with arena(1KB) {
+        let k = base * 2
+        let add = fn(x: int) x + k
+        let pick = fn(x: int) if flag { x + k } else { x - k }
+        let mut total = 0
+        for i in 0 .. 5 {
+            total += add(i) + pick(i)
+        }
+        // a closure created in every iteration, each capturing that iteration's value
+        for i in 0 .. 3 {
+            let step = i * 10
+            let g = fn(x: int) x + step
+            total += g(1)
+        }
+        // a closure that captures and has a block body
+        let outer = fn(x: int) {
+            let kk = k + 1
+            return (x + kk) * 2
+        }
+        total += outer(1)
+        return total
+    }
+}
+
+@tier(mid)
+fn rounds(n: int) int {
+    let mut sum = 0
+    let mut r = 0
+    while r < n {
+        with arena(256) {
+            let a = r + 1
+            let b = r * 2
+            let f = fn(x: int) x * a + b
+            sum += f(r) - f(0)
+        }
+        r += 1
+    }
+    return sum
+}
+
+fn main() void {
+    println(in_arena(3, true), in_arena(3, false))
+    println(rounds(20000))
+}

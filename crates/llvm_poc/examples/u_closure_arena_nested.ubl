@@ -1,0 +1,20 @@
+// Not supported yet: a closure written inside another closure that is itself written inside `with
+// arena`. The inner closure's object belongs in that arena, but the outer closure's body is a separate
+// function that does not hold it yet.
+// expect-refusal: inside a closure that was written inside `with arena`
+@tier(mid)
+fn run(base: int) int {
+    with arena(1KB) {
+        let k = base + 1
+        let outer = fn(x: int) {
+            let kk = k + 1
+            let inner = fn(y: int) y + kk
+            return inner(x)
+        }
+        return outer(1)
+    }
+}
+
+fn main() void {
+    println(run(2))
+}

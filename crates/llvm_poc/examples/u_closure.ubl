@@ -1,8 +1,8 @@
-// Not supported yet: a closure that captures a local of the enclosing function. Closures that
-// capture nothing compile (A7); capturing ones need decision D5 (where the captured values live).
-// expect-refusal: a closure that captures `k`
+// Not supported yet: a closure that captures a variable declared `mut`. A capture is a copy taken when
+// the closure is created, which is only right for a value that never changes afterwards.
+// expect-refusal: which can change
 fn main() void {
-    let k = 3
+    let mut k = 3
     let f = fn(x: int) x + k
     println(f(4))
 }
