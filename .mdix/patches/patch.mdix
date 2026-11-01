@@ -1,12 +1,16 @@
 // Brought to u by MidManStudio
 //
-// D3b (roadmap): an interpolated string written inside `with arena` is an arena value, so sema
-// refuses to let it outlive the block; `==`, `<` and `+` still read it. Rules and reasoning:
-// docs/ARENA_STRINGS.md. One code file, crates/core/src/sema/type_infer.rs, three anchored edits
-// (one new helper, one line in the interpolation literal arm, one line at the top of
-// binop_result), plus one line in docs/LLVM_ROADMAP.md. Each anchor is unique today; if the traits
-// chat has moved any of them, that op prints an error and is skipped, so nothing is overwritten
-// silently. Run the "Apply Patches" workflow with dry_run on first.
+// Closures in arenas (decision D5). Two defects in crates/core/src/sema/type_infer.rs:
+//  1. Calling a closure that was written inside `with arena` failed with "no method `<call>`", because
+//     its value is typed `&arena fn(...)` and only plain function types were callable (and the error
+//     then panicked the checker, see 2). The call now looks through the arena tag: it only reads the
+//     closure, which lives as long as the block. The tag still stops the closure from leaving the block.
+//  2. `TypeId::ERROR` (the sentinel for "already reported") reached `apply` and `unify`, which indexed
+//     the type table with it and panicked. Both now return early on it, so a sema error stays an error.
+// Four anchored edits, no other file. The anchors do not depend on the earlier string patch
+// (docs/ARENA_STRINGS.md), so the two can be applied in either order, but each patch.mdix replaces the
+// one before it: run the earlier one first (dry_run off), then commit this file over it.
+// Run the "Apply Patches" workflow with dry_run on first.
 
 @CONFIG(
   version    -> "1.0.0",
@@ -32,8 +36,8 @@
 
 @DATA(
   patch_files::
-    patch_insert_before("crates/core/src/sema/type_infer.rs", "/// Wrap `inner_ty` as an ArenaRef if inside a `with arena` block.", "    /// D3b (docs/ARENA_STRINGS.md): if `ty` is an arena-tagged string (`&arena string`), the plain\n    /// string type; any other type comes back unchanged. For an operator that only reads its string\n    /// operands (`==`, `<`, `+`): the result is a `bool`, or a new string that is always allocated in\n    /// the GC heap (a copy), so it carries no borrow of the operand.\n    fn peel_arena_str(&mut self, ty: TypeId) -> TypeId {\n        let resolved = self.apply(ty);\n        if let SemaType::ArenaRef { inner, .. } = self.ctx.types.get(resolved).clone() {\n            let inner = self.apply(inner);\n            if matches!(self.ctx.types.get(inner), SemaType::Str) {\n                return inner;\n            }\n        }\n        ty\n    }\n\n")
-    patch_replace_regex("crates/core/src/sema/type_infer.rs", "(self\\.check_format_spec\\(spec, hole_ty, expr\\.span\\);\\s*\\}\\s*\\}\\s*\\}\\s*)self\\.ctx\\.types\\.intern\\(SemaType::Str\\)", "\\g<1>// D3b: an interpolated string is allocated where it is written (docs/ARENA_STRINGS.md).\n                let str_ty = self.ctx.types.intern(SemaType::Str);\n                self.maybe_arena_ref(str_ty)")
-    patch_insert_after("crates/core/src/sema/type_infer.rs", "fn binop_result(&mut self, op: BinOp, lhs: TypeId, rhs: TypeId, span: Span) -> TypeId {", "        let (lhs, rhs) = (self.peel_arena_str(lhs), self.peel_arena_str(rhs));\n")
-    patch_replace_text("docs/LLVM_ROADMAP.md", "interpolation allocates by site | A6 | As stated. |", "interpolation allocates by site. DECIDED as D3b (chat 4): sema tracks arena strings, a run-time `+` always allocates in the GC heap, see docs/ARENA_STRINGS.md | A6 | Sema half delivered; emitter half is A6. |")
+    patch_insert_before("crates/core/src/sema/type_infer.rs", "/// Wrap `inner_ty` as an ArenaRef if inside a `with arena` block.", "    /// D5 (closures): calling a closure that was created inside `with arena` (its value is typed\n    /// `&arena fn(...)`) only reads the closure object, which lives as long as the block, so the call\n    /// is checked against the plain function type. What the call returns keeps whatever tag the\n    /// closure's own result type has.\n    fn peel_closure_tag(&mut self, ty: TypeId) -> TypeId {\n        if let SemaType::ArenaRef { inner, .. } = self.ctx.types.get(ty).clone() {\n            let inner = self.apply(inner);\n            if matches!(self.ctx.types.get(inner), SemaType::Function { .. }) {\n                return inner;\n            }\n        }\n        ty\n    }\n\n")
+    patch_replace_regex("crates/core/src/sema/type_infer.rs", "(let callee_def = self\\.fn_type_defs\\.get\\(&resolved\\)\\.copied\\(\\);\\s*)match self\\.ctx\\.types\\.get\\(resolved\\)\\.clone\\(\\) \\{", "\\g<1>let callee_shape = self.peel_closure_tag(resolved);\n        match self.ctx.types.get(callee_shape).clone() {")
+    patch_replace_regex("crates/core/src/sema/type_infer.rs", "(fn apply\\(&self, mut id: TypeId, types: &crate::sema::type_table::TypeTable\\) -> TypeId \\{\\s*loop \\{\\s*)match types\\.get\\(id\\) \\{", "\\g<1>if id.is_error() { return id; }\n            match types.get(id) {")
+    patch_insert_after("crates/core/src/sema/type_infer.rs", "fn unify(&mut self, a: TypeId, b: TypeId, span: Span) {", "        // The error sentinel: the problem was reported where it arose.\n        if a.is_error() || b.is_error() { return; }\n")
 )
