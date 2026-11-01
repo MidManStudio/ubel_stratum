@@ -233,6 +233,7 @@ impl Unifier {
 
     fn apply(&self, mut id: TypeId, types: &crate::sema::type_table::TypeTable) -> TypeId {
         loop {
+            if id.is_error() { return id; }
             match types.get(id) {
                 SemaType::Var(v) => match self.subst.get(v) {
                     Some(&next) if next != id => id = next,
@@ -965,6 +966,20 @@ impl<'a> InferCtx<'a> {
 
     fn current_pool(&self) -> Option<(PoolId, TypeId)> {
         self.pool_stack.last().copied()
+    }
+
+    /// D5 (closures): calling a closure that was created inside `with arena` (its value is typed
+    /// `&arena fn(...)`) only reads the closure object, which lives as long as the block, so the call
+    /// is checked against the plain function type. What the call returns keeps whatever tag the
+    /// closure's own result type has.
+    fn peel_closure_tag(&mut self, ty: TypeId) -> TypeId {
+        if let SemaType::ArenaRef { inner, .. } = self.ctx.types.get(ty).clone() {
+            let inner = self.apply(inner);
+            if matches!(self.ctx.types.get(inner), SemaType::Function { .. }) {
+                return inner;
+            }
+        }
+        ty
     }
 
     /// Wrap `inner_ty` as an ArenaRef if inside a `with arena` block.
@@ -6442,7 +6457,8 @@ impl<'a> InferCtx<'a> {
     fn call_return_type<'ast>(&mut self, callee: &Expr<'ast>, callee_ty: TypeId, args: &[Arg<'ast>], span: Span) -> TypeId {
         let resolved = self.apply(callee_ty);
         let callee_def = self.fn_type_defs.get(&resolved).copied();
-        match self.ctx.types.get(resolved).clone() {
+        let callee_shape = self.peel_closure_tag(resolved);
+        match self.ctx.types.get(callee_shape).clone() {
             SemaType::Function { params, return_type, generic_arity, .. } => {
                 let fresh_args: Vec<TypeId> = (0..generic_arity).map(|_| self.fresh_var()).collect();
                 let raw_params = params.clone();
@@ -6563,6 +6579,8 @@ impl<'a> InferCtx<'a> {
     }
 
     fn unify(&mut self, a: TypeId, b: TypeId, span: Span) {
+        // The error sentinel: the problem was reported where it arose.
+        if a.is_error() || b.is_error() { return; }
         let a = self.apply(a);
         let b = self.apply(b);
         if a == b { return; }
