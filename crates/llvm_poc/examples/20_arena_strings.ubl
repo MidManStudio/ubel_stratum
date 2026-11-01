@@ -1,0 +1,62 @@
+// Strings built inside `with arena` (A6, decision D3b). An interpolated string written inside the block
+// is bump allocated in the arena and dies with it; inside the block it prints, nests in another
+// interpolation and compares. A `+` result is different: it is a copy, always allocated in the GC heap,
+// so it may leave the block even though its operands cannot. A GC string built in HIGH code stays valid
+// after many arenas have come and gone. (Needs the D3b sema patch: docs/ARENA_STRINGS.md.)
+@tier(mid)
+fn labels(n: int) int {
+    let mut ok = 0
+    with arena(256) {
+        let a = $"item-{n}-{n * 2}"
+        let b = $"[{a}|{n < 5}|{-n}]"
+        println(a, b)
+        if a == $"item-{n}-{n * 2}" {
+            ok += 1
+        }
+        if b != a {
+            ok += 1
+        }
+        let c = a + "!" + b
+        println(c)
+        if a < c {
+            ok += 1
+        }
+        if c > b {
+            ok += 1
+        }
+    }
+    return ok
+}
+
+@tier(mid)
+fn tag(n: int) string {
+    with arena(256) {
+        let a = $"n={n}"
+        return a + "!"
+    }
+}
+
+@tier(mid)
+fn sweep(rounds: int) int {
+    let mut total = 0
+    let mut i = 0
+    while i < rounds {
+        with arena(128) {
+            let s = $"round {i}: {i * i} {i < 3} and some more text to outgrow the first chunk {i}"
+            let t = $"<{s}>"
+            if t != s {
+                total += 1
+            }
+        }
+        i += 1
+    }
+    return total
+}
+
+fn main() void {
+    let keep = $"kept-{99}" + "!"
+    println(labels(3), labels(8))
+    println(tag(5), tag(77))
+    println(sweep(5000))
+    println(keep, keep == "kept-99!")
+}

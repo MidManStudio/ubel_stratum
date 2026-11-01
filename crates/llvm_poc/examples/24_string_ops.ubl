@@ -1,0 +1,80 @@
+// String `+` and ordering (A6b). `+` copies both operands into a new string that is always allocated in
+// the GC heap, so it holds no borrow of them. `<`, `<=`, `>` and `>=` compare bytes (UTF-8 order), like
+// the interpreter's string comparison does. Covers empty strings, prefixes, non-ASCII bytes, `+=`,
+// strings long enough to take the large-object path, and strings that only a struct field or an enum
+// payload keeps alive while the loop at the end builds garbage and the collector runs.
+struct Entry {
+    key: string
+    n:   int
+}
+
+enum Tok {
+    Word(string),
+    End,
+}
+
+fn join3(a: string, b: string, c: string) string {
+    return a + ", " + b + ", " + c
+}
+
+fn repeat(s: string, n: int) string {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out += s
+        i += 1
+    }
+    return out
+}
+
+fn bigger(a: string, b: string) string {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn describe(t: Tok) string {
+    match t {
+        Tok.Word(w) => return "word:" + w,
+        Tok.End => return "end",
+    }
+}
+
+fn main() void {
+    println("ab" + "cd", "" + "x", "x" + "", "" + "")
+    let n = 42
+    println($"n={n}" + " and " + $"{n + 1}")
+    println(join3("a", "b", "c"))
+
+    // `+=` builds long strings: 1,000 bytes, then 100,000 bytes (a large object in the GC heap)
+    let line = repeat("0123456789", 100)
+    let big = repeat(line, 100)
+    println(big == repeat("0123456789", 10000), big < big + "x", big + "x" > big, big > big + "x")
+
+    // ordering: prefixes, equality, the empty string
+    println("apple" < "banana", "banana" < "apple", "ab" < "abc", "abc" < "ab", "abc" < "abd")
+    println("a" <= "a", "a" >= "a", "a" < "a", "a" > "a", "" < "a", "" <= "", "" > "")
+    // bytes, not letters: 'Z' (0x5A) is before 'a' (0x61); "é" is the bytes C3 A9, after every ASCII byte
+    println("Z" < "a", "é" > "z", "é" < "z", "é" == "é")
+    println(bigger("pear", "peach"), bigger("x", "x"), bigger("", "a"))
+    println(describe(Tok.Word("hi")), describe(Tok.End))
+
+    // strings built with `+` and kept only by a struct field and an enum payload, across many collections
+    let e = Entry { key = "k" + $"{n}", n = n }
+    let tok = Tok.Word("w" + $"{n * 2}")
+    let mut hits = 0
+    let mut i = 0
+    while i < 200000 {
+        let a = "item-" + $"{i}"
+        let b = $"item-{i}"
+        if a == b {
+            hits += 1
+        }
+        if a < b || a > b {
+            hits -= 1000000
+        }
+        i += 1
+    }
+    println(hits, e.key, describe(tok))
+}

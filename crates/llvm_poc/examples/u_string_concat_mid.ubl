@@ -1,0 +1,12 @@
+// Not supported yet: string `+` in a MID function outside `with arena`. The result goes in the GC heap,
+// and where MID code outside an arena allocates is not decided yet (inside `with arena` it is allowed).
+// expect-refusal: string `+` in a `@tier(mid)` function outside `with arena`
+@tier(mid)
+fn join(a: string, b: string) int {
+    let c = a + b
+    return 1
+}
+
+fn main() void {
+    println(join("a", "b"))
+}

@@ -442,6 +442,7 @@ impl<'a> Emitter<'a> {
         }
         if self.uses_str {
             out.push_str("declare i32  @ubel_str_eq(ptr, ptr)\n");
+            out.push_str("declare i32  @ubel_str_cmp(ptr, ptr)\n");
             out.push_str("declare i64  @ubel_i64_len(i64)\n");
             out.push_str("declare void @ubel_i64_write(ptr, i64)\n");
             out.push_str("declare void @ubel_put(ptr, ptr, i64)\n");
@@ -1951,7 +1952,23 @@ impl<'a> Emitter<'a> {
                     self.inst(&format!("{t} = icmp {pred} i32 {c}, 0"));
                     Ok(Val { v: t, ty: Ty::I1 })
                 }
-                _ => unsupported(span, "this operator on strings (only `==` and `!=` so far)"),
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    // Byte-wise lexicographic order (UTF-8 bytes), like the interpreter's string comparison.
+                    self.uses_str = true;
+                    let c = self.fresh();
+                    self.inst(&format!("{c} = call i32 @ubel_str_cmp(ptr {}, ptr {})", l.v, r.v));
+                    let t = self.fresh();
+                    let pred = match op {
+                        BinOp::Lt => "slt",
+                        BinOp::Le => "sle",
+                        BinOp::Gt => "sgt",
+                        _ => "sge",
+                    };
+                    self.inst(&format!("{t} = icmp {pred} i32 {c}, 0"));
+                    Ok(Val { v: t, ty: Ty::I1 })
+                }
+                BinOp::Add => self.str_concat(l, r, span),
+                _ => unsupported(span, "this operator on strings (only `+`, `==`, `!=`, `<`, `<=`, `>` and `>=` so far)"),
             };
         }
         if matches!(l.ty, Ty::Fn(_)) {
@@ -2416,6 +2433,45 @@ impl<'a> Emitter<'a> {
             Some(&id) => matches!(self.ctx.types.get(id), SemaType::ArenaRef { .. }),
             None => false,
         }
+    }
+
+    /// `a + b` on strings (rule S4 in docs/ARENA_STRINGS.md). The result is a copy of both operands, always
+    /// allocated in the GC heap, wherever the `+` is written: it holds no borrow of an operand, so it may
+    /// leave a `with arena` block even when an operand cannot. That also means it allocates in the GC heap
+    /// from MID code, which is only allowed inside `with arena` (a MID function outside one has no
+    /// decided place to allocate), and never in LOW.
+    fn str_concat(&mut self, l: &Val, r: &Val, span: Span) -> R<Val> {
+        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+        match self.cur_tier {
+            TierAnnotation::Low => {
+                return unsupported(span, "string `+` in `@tier(low)` (it allocates in the GC heap, which LOW must not)");
+            }
+            TierAnnotation::Mid if !in_arena => {
+                return unsupported(span, "string `+` in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)");
+            }
+            _ => {}
+        }
+        self.uses_str = true;
+        let (la, lb) = (self.fresh(), self.fresh());
+        self.inst(&format!("{la} = load i64, ptr {}", l.v));
+        self.inst(&format!("{lb} = load i64, ptr {}", r.v));
+        let total = self.fresh();
+        self.inst(&format!("{total} = add i64 {la}, {lb}"));
+        let size = self.fresh();
+        self.inst(&format!("{size} = add i64 {total}, 8"));
+        let p = self.alloc_obj(None, &size, "0", "string");
+        self.inst(&format!("store i64 {total}, ptr {p}"));
+        let dst = self.fresh();
+        self.inst(&format!("{dst} = getelementptr inbounds i8, ptr {p}, i64 8"));
+        let src_a = self.fresh();
+        self.inst(&format!("{src_a} = getelementptr inbounds i8, ptr {}, i64 8", l.v));
+        self.inst(&format!("call void @ubel_put(ptr {dst}, ptr {src_a}, i64 {la})"));
+        let dst_b = self.fresh();
+        self.inst(&format!("{dst_b} = getelementptr inbounds i8, ptr {dst}, i64 {la}"));
+        let src_b = self.fresh();
+        self.inst(&format!("{src_b} = getelementptr inbounds i8, ptr {}, i64 8", r.v));
+        self.inst(&format!("call void @ubel_put(ptr {dst_b}, ptr {src_b}, i64 {lb})"));
+        Ok(Val { v: p, ty: Ty::Str })
     }
 
     /// `$"text {a} text {b}"` as a value (D3b). Every hole is evaluated first, in order. Then the total

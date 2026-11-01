@@ -1,6 +1,6 @@
 # Arena strings (D3b)
 
-Status: PROVISIONAL. The sema half is delivered (chat 4); the emitter half is A6 (strings as values).
+Status: PROVISIONAL. The sema half is the patch to `type_infer.rs` (re-issued with A6b: the closure patch was committed over the first copy before it ran, so check that `peel_arena_str` is in `type_infer.rs`). The emitter half is done: A6 (strings as values, built by site) and A6b (`+`, ordering).
 
 ## Decision
 
@@ -39,14 +39,16 @@ interpolation literal arm, one line at the top of `binop_result`.
 - An arena string cannot be lent to a function through a by-value `string` parameter. A `&string`
   parameter goes through the D1 rules; not tested here.
 
-## What the emitter must do (A6)
+## What the emitter does (A6, A6b: done)
 
 - A literal is a static `{i64 length, bytes}` constant. `mark_ptr` ignores pointers outside the heap, so
   literals need no rooting.
-- Interpolation outside an arena: `ubel_gc_alloc_noscan(8 + length)`. Inside: bump `8 + length` in the
-  current arena (a string holds no pointers).
-- `+` on strings: always `ubel_gc_alloc_noscan`.
-- Refuse, for now: building a string (interpolation or `+`) in a LOW function; a string field in an
+- Interpolation outside an arena: a GC object of `8 + length` bytes with mask 0. Inside: bump `8 + length`
+  in the current arena (a string holds no pointers), but only when sema tags the literal `&arena string`
+  (this patch); without it the emitter refuses.
+- `+` on strings: always a GC object, wherever it is written; refused in LOW and in MID outside `with arena`.
+- Ordering: byte-wise, `ubel_str_cmp`.
+- Refused, for now: building a string (interpolation or `+`) in a LOW function; a string field in an
   arena-allocated struct or enum payload. The second one is the hidden-root hazard: the emitter only
   creates plain arenas, which the collector does not scan, so a GC string stored there could be freed.
   Lifting it needs scannable arenas chosen from the stored types.

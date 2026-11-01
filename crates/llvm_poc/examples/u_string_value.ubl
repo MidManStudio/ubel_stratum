@@ -1,7 +1,7 @@
-// Not supported yet: ordering comparisons on strings (only == and != so far).
-// expect-refusal: this operator on strings
+// Not supported yet: a method call on a string (`len`, `contains`, ...). The emitter only calls named
+// functions and closures held in locals, and strings have no methods in the emitter yet.
+// expect-refusal: calling anything but a named function
 fn main() void {
-    let a = "apple"
-    let b = "pear"
-    println(a < b)
+    let s = "hello"
+    println(s.len())
 }

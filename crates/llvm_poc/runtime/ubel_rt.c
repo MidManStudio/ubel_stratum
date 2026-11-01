@@ -55,6 +55,16 @@ int32_t ubel_str_eq(const void *a, const void *b) {
     return memcmp((const char *)a + 8, (const char *)b + 8, (size_t)la) == 0;
 }
 
+/* Byte-wise lexicographic order (UTF-8 bytes, the interpreter's String comparison): -1, 0 or 1. */
+int32_t ubel_str_cmp(const void *a, const void *b) {
+    if (a == b) return 0;
+    int64_t la = *(const int64_t *)a, lb = *(const int64_t *)b;
+    int64_t n = la < lb ? la : lb;
+    int c = n > 0 ? memcmp((const char *)a + 8, (const char *)b + 8, (size_t)n) : 0;
+    if (c != 0) return c < 0 ? -1 : 1;
+    return la < lb ? -1 : (la > lb ? 1 : 0);
+}
+
 /* Number of characters `v` takes in decimal, minus sign included. */
 int64_t ubel_i64_len(int64_t v) {
     uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;

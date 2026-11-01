@@ -1,8 +1,12 @@
-// Not supported yet: `+` on strings. Sema allows it (the result is always a GC string, see
-// docs/ARENA_STRINGS.md); the emitter does not build it yet, so it must refuse, not guess.
-// expect-refusal: this operator on strings
+// Not supported yet: string `+` in a LOW function. The result is always allocated in the GC heap, and LOW
+// must not allocate there.
+// expect-refusal: string `+` in `@tier(low)`
+@tier(low)
+fn join(a: string, b: string) int {
+    let c = a + b
+    return 1
+}
+
 fn main() void {
-    let a = "ab"
-    let b = a + "cd"
-    println(b)
+    println(join("a", "b"))
 }

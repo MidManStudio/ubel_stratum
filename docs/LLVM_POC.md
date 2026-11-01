@@ -433,8 +433,14 @@ literal is written, and the pieces are copied in. Holes may be ints (decimal), b
 mask 0, so the collector never scans it. Inside `with arena` it is bump-allocated, but only when sema
 tracks arena strings (the D3b sema patch); without that the emitter refuses, because nothing would stop
 the string leaving the block. Refused as for struct literals: LOW, and MID outside an arena.
-`==` and `!=` compare length and then bytes; `<` and friends and `+` are refused (sema allows `+`,
-whose result will always be a GC string). `println` prints a string value. A string field of a GC
+`==` and `!=` compare length and then bytes; `<`, `<=`, `>` and `>=` compare bytes in UTF-8 order, like
+the interpreter's string comparison (`ubel_str_cmp`; a shorter string that is a prefix of a longer
+one comes first, and `"é"`, the bytes C3 A9, comes after every ASCII letter). `a + b` copies both
+operands into a new string that is **always allocated in the GC heap**, wherever it is written (rule
+S4 of `docs/ARENA_STRINGS.md`: the copy holds no borrow of its operands, so it may leave a `with arena`
+block even though an arena string cannot); it is refused in LOW and in MID outside `with arena`, where
+GC allocation is not allowed or not decided. `+=` works through the same path. Any other operator on
+strings is refused. `println` prints a string value. A string field of a GC
 struct or enum is a pointer in the collector mask. Refused by name: a string field in a struct or enum
 allocated in an arena, because the emitter only creates plain arenas, which the collector does not
 scan, so a GC string kept only there could be freed (needs scannable arenas chosen from the stored
@@ -825,8 +831,9 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
 3. ~~**Strings as values** (interpolation that builds one, `==`, printing one).~~ Done (A6, see
    "Strings" above), after deciding D3b and after large-object support in the collector
    (`docs/GC_LARGE_OBJECTS.md`: a string can exceed 512 bytes, and the GC path uses the same
-   allocator). Open: strings built in arenas need the D3b sema patch to be applied, string `+` and
-   ordering, and a string field in an arena object.
+   allocator). Then string `+` and ordering (A6b). Open: strings built in arenas need the D3b sema
+   patch (re-issued with A6b), string methods (`len`, `contains`, ...), and a string field in an
+   arena object (needs scannable arenas).
 4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
    (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
    it the target program (A8). Capturing closures followed (A7b). Open: captures of strings, structs,
@@ -865,6 +872,12 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-10-31: A6b (string `+` and ordering), provisional. `a + b` is a GC copy wherever it is written, `<`
+  `<=` `>` `>=` compare bytes. `examples/24_string_ops` (empty strings, prefixes, non-ASCII bytes, `+=`,
+  a 100,000-byte string through the large-object path, strings kept alive only by a struct field and
+  an enum payload across 200,000 rounds); `examples/20_arena_strings` needs the D3b sema patch, re-issued
+  because the closure patch was committed over it before it ran. 57 of 57 without the patch; mutants of
+  the comparison sign, the prefix tie-break, the copy offset and the LOW gate are caught.
 - 2026-10-31: A7b (closures that capture), provisional, with decisions D2 (a closure's tier is that of the
   function it is created in) and D5 (the object lives in the arena of its block). Ints and bools only,
   copied at creation. Found and fixed in sema: arena closures could not be called, and the error
