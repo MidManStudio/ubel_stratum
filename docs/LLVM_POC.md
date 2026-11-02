@@ -441,15 +441,37 @@ S4 of `docs/ARENA_STRINGS.md`: the copy holds no borrow of its operands, so it m
 block even though an arena string cannot); it is refused in LOW and in MID outside `with arena`, where
 GC allocation is not allowed or not decided. `+=` works through the same path. Any other operator on
 strings is refused. `println` prints a string value. A string field of a GC
-struct or enum is a pointer in the collector mask. Refused by name: a string field in a struct or enum
-allocated in an arena, because the emitter only creates plain arenas, which the collector does not
-scan, so a GC string kept only there could be freed (needs scannable arenas chosen from the stored
-types). Runtime helpers: `ubel_str_eq`, `ubel_i64_len`, `ubel_i64_write`, `ubel_put`.
+struct or enum is a pointer in the collector mask; a string field of an arena object is safe because
+such an arena is created scannable (see "Scannable arenas"). Runtime helpers: `ubel_str_eq`, `ubel_i64_len`, `ubel_i64_write`, `ubel_put`.
 `examples/19_strings` mirrors the target's `show` and `apply` and then builds about 20 MB of garbage
 strings, so strings held only by a struct field and an enum payload must be kept by the collector. To
 check that it can fail, `Ty::Str` was taken out of the pointer mask: the output came back as
 `label-71(label-72)` instead of `fn7(v1)` (freed and reused memory). Mutants of `ubel_str_eq` and of
 the minus sign in `ubel_i64_len` are caught too.
+
+**Scannable arenas (provisional).** A `with arena` block is created with `ubel_arena_create` unless
+an object allocated in it has a pointer-typed field (a string, struct, enum or closure: a struct or
+enum literal with such a field, or a closure that captures such a value), in which case it is created
+with `ubel_arena_create_scan` and the collector treats what was written in it as roots. This is decided
+after the block has been emitted, by rewriting the creation call, because it depends on what the block
+allocates. The test is on the field's type, not on where the value came from, so it is conservative: an
+arena object whose pointers all lead to other objects of the same arena also makes its arena scannable,
+which costs a scan of the written bytes at each collection and a registry entry per arena, nothing
+else. The runtime scans only the bytes that were written: below `cur` in the current chunk, and the
+`used` count recorded in each chunk's header when the arena moved on in the retired ones, so stale
+bytes in recycled memory cannot keep garbage alive (they used to: a retired chunk was scanned in
+full). Plain arenas stay plain, and are still the fast path for blocks that hold only ints and
+bools. `examples/25_arena_scan` has an arena as the only holder of GC strings (in a struct field, in
+enum payloads and in a captured variable) while a closure builds hundreds of thousands of garbage
+strings of the same size, so a collection runs inside the block and any string the collector did not
+keep would come back overwritten; a chain of 64 GC closures, each the only holder of its captured
+string, tests the mask. `rt_gc_test arena_scan` checks the scan extent: an object referenced only from
+the unwritten tail of a retired chunk is collected, ones referenced from written bytes are kept. Mutants
+that scan nothing, that skip the enum or the closure flag, that zero the GC closure mask, and that scan
+a retired chunk in full (the old behaviour) are all caught. The struct-site flag is not caught by its
+own mutant: the string pointer also sits in a spill slot or callee-saved register of the creating frame,
+and the conservative stack scan keeps it alive; the struct and enum sites share `mark_scan` and the
+enum site is caught.
 
 **Closures that capture nothing (A7, provisional).** A function type (`fn(int) string`) works as a
 parameter, result, local and struct field type, and `fn(v: int) body` is a value of it. A closure is a
@@ -474,14 +496,19 @@ counter or did not restore the enclosing scopes are all caught.
 compiled in that tier, which is how the emitter already worked. D5: a capturing closure's object
 lives in the arena of the block it is written in and dies with it. Read as "by site", like a struct
 literal: inside `with arena` it is bump allocated in the arena; in a HIGH function, where there is no
-arena, it is a GC object (mask 0, since only ints and bools are captured). **That second case is my
+arena, it is a GC object (its mask marks the pointer-typed captures). **That second case is my
 reading of D5, not something that was stated: confirm or reverse it.** MID outside an arena and LOW are
 refused, as for a struct literal. A capture is a copy of the value taken when the closure is created;
 the body copies it out of the object at entry (a prologue after the allocas). Captures are found while
 the body is emitted: a name that is not a local of the closure but is one of the frame it is written
 in becomes a capture. Only a variable that never changes can be captured, so `let mut` variables, `for`
-variables and `:=` bindings are refused, and only ints and bools (a string, struct, enum or closure in
-an arena-allocated object would be invisible to the collector, which does not scan plain arenas).
+variables and `:=` bindings are refused. Any other value is captured: ints and bools by value, strings,
+structs, enums and closures as the pointer (so a captured struct is shared with the variable it came
+from, as structs always are), and a captured closure can be called inside the closure that captured it.
+A closure object is 8 bytes of code pointer and 8 bytes per capture; the collector's mask of a GC closure
+object is worked out in the IR from the target's pointer size (a slot is two words on a 32-bit target), so
+one `.ll` is right for both widths, and a closure may capture at most 30 variables. (The first version
+hard-coded 64-bit word positions; `25_arena_scan` failed at 32-bit and found it.)
 Refused by name as well: a capture from more than one level out (a closure in a closure that uses a
 variable of the outer function), and any closure written inside a closure written inside `with arena`
 (the inner body does not hold the arena, so there is nowhere to allocate it). Sema needed two fixes
@@ -526,11 +553,12 @@ Field expressions are evaluated first, in source order, then the object is alloc
 filled. For a field assignment the object expression is evaluated before the right-hand
 side; the interpreter's order for that case was not probed, and the tests do not depend on it.
 
-An arena struct that holds a pointer to a GC struct is only safe while something else keeps
-that GC object alive. Today that is always the case: in this emitter a MID function cannot
+An arena object that holds a pointer to a GC object is only safe if the collector can see that
+pointer. Originally that held by accident: in this emitter a MID function could not
 build GC objects (its literals outside an arena are refused), so the only GC pointers it can
-store came in as parameters, and the caller's frame still holds them. This stops being true once closures or callbacks can return GC objects
-into MID code (the Stage 1A hidden-root hazard); arenas are plain here, not scannable.
+store came in as parameters, and the caller's frame still holds them. That stopped being true once
+closures could return GC objects into MID code (the Stage 1A hidden-root hazard); it is handled now by
+scannable arenas, below.
 
 ```
 define i64 @ubel_early(i64 %.arg0) {        ; from examples/09_arena_exits.ubl
@@ -832,8 +860,8 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    "Strings" above), after deciding D3b and after large-object support in the collector
    (`docs/GC_LARGE_OBJECTS.md`: a string can exceed 512 bytes, and the GC path uses the same
    allocator). Then string `+` and ordering (A6b). Open: strings built in arenas need the D3b sema
-   patch (re-issued with A6b), string methods (`len`, `contains`, ...), and a string field in an
-   arena object (needs scannable arenas).
+   patch (re-issued with A6b) and string methods (`len`, `contains`, ...). A string field in an arena
+   object is done (scannable arenas).
 4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
    (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
    it the target program (A8). Capturing closures followed (A7b). Open: captures of strings, structs,
@@ -872,6 +900,11 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-01: scannable arenas, provisional. An arena whose objects have pointer fields is created
+  scannable, so strings, structs, enums and closures can be stored and captured in arena objects; the
+  runtime scans only written bytes. Lifted: the string-field and the int/bool-only capture refusals.
+  `25_arena_scan`, `rt_gc_test arena_scan`; the refusal examples `u_enum_string` and
+  `u_closure_capture_string` now test `match` on a string and comparing closures (names are historical).
 - 2026-10-31: A6b (string `+` and ordering), provisional. `a + b` is a GC copy wherever it is written, `<`
   `<=` `>` `>=` compare bytes. `examples/24_string_ops` (empty strings, prefixes, non-ASCII bytes, `+=`,
   a 100,000-byte string through the large-object path, strings kept alive only by a struct field and

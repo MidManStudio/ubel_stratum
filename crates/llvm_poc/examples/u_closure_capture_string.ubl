@@ -1,8 +1,9 @@
-// Not supported yet: a closure that captures anything but an int or a bool. A string, struct, enum or
-// closure captured into an arena-allocated closure object would be invisible to the collector.
-// expect-refusal: which is not an int or a bool
+// Not supported yet: comparing two closures with `==`. A closure value is a pointer to its object and
+// closures have no equality in the emitter. (The file name is historical: closures capture strings now,
+// see 25_arena_scan.)
+// expect-refusal: operators on closure values
 fn main() void {
-    let name = "ann"
-    let f = fn(x: int) $"{name}{x}"
-    println(f(1))
+    let f = fn(x: int) x + 1
+    let g = fn(x: int) x + 1
+    println(f == g)
 }

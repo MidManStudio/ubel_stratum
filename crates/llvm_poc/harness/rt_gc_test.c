@@ -51,9 +51,8 @@ static int failures;
 #define NROOTS 4096 /* even: arena requests are multiples of 16 */
 static void **roots;
 
-/* The arena's only chunk is exactly the table, and it is zeroed: a scannable arena scans every
- * byte of its chunks, so bytes nobody wrote (recycled malloc memory) could hold stale pointers
- * and keep garbage alive. */
+/* The arena's only chunk is exactly the table, and the table is all of it bumped, so it is all
+ * scanned: it is zeroed, or stale malloc bytes in it could hold pointers and keep garbage alive. */
 static void roots_init(void) {
     ubel_arena *a = ubel_arena_create_scan(NROOTS * sizeof(void *));
     roots = (void **)a->cur;
@@ -575,6 +574,48 @@ static int aborts(int which) {
     return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
 }
 
+/* A scannable arena's roots are the bytes that were written, no more. Object A is referenced from
+ * the written part of the first chunk, which the arena then retires; object B only from the unwritten
+ * tail of that same chunk (a stale word, as left by recycled memory); object C from the second chunk.
+ * A and C must survive, B must be collected. (Before the chunk header recorded `used`, a retired chunk
+ * was scanned in full and B was kept alive.) */
+static ubel_arena *scan_arena;
+static void **cell_a, **cell_c;
+static uint64_t sz_a, sz_c;
+
+static void NOINLINE arena_scan_prepare(void) {
+    scan_arena = ubel_arena_create_scan(256);
+    uint64_t before = alloc_bytes_now();
+    void *a = ubel_gc_alloc_noscan(64);
+    sz_a = alloc_bytes_now() - before;
+    fill(a, 64, 1);
+    void *b = ubel_gc_alloc_noscan(64);
+    fill(b, 64, 2);
+    before = alloc_bytes_now();
+    void *c = ubel_gc_alloc_noscan(64);
+    sz_c = alloc_bytes_now() - before;
+    fill(c, 64, 3);
+
+    cell_a = (void **)scan_arena->cur; /* what the emitted bump path does: take 16 bytes at cur */
+    scan_arena->cur += 16;
+    cell_a[0] = a;
+    ((void **)(scan_arena->end - 32))[0] = b; /* inside the chunk, past cur: written by nobody */
+    cell_c = (void **)ubel_arena_grow(scan_arena, 512); /* retires the first chunk, used = 16 */
+    cell_c[0] = c;
+}
+
+static int NOINLINE arena_scan_intact(void) {
+    return intact(cell_a[0], 64, 1) && intact(cell_c[0], 64, 3);
+}
+
+static void t_arena_scan(void) {
+    arena_scan_prepare();
+    EXPECT_LIVE(sz_a + sz_c, "A (written, retired chunk) and C (second chunk) live, B (unwritten tail) freed");
+    CHECK(arena_scan_intact(), "the objects the arena references were damaged");
+    ubel_arena_destroy(scan_arena);
+    EXPECT_LIVE(0, "after the arena is destroyed nothing references them");
+}
+
 static void t_misuse(void) {
     for (int i = 0; i < 5; i++) CHECK(aborts(i), "misuse case %d was not refused", i);
 }
@@ -593,6 +634,7 @@ static const test tests[] = {
     {"noscan_stale", t_noscan_stale, NULL},
     {"stress", t_stress, "64"},
     {"misuse", t_misuse, NULL},
+    {"arena_scan", t_arena_scan, NULL},
 };
 #define NTESTS (sizeof tests / sizeof tests[0])
 

@@ -156,10 +156,6 @@ struct EnumInfo {
     slots: usize,
 }
 
-/// Why a string-typed field cannot live in an arena object yet: the emitter only creates plain arenas,
-/// which the collector does not scan, so a GC string stored there could be freed while still in use.
-const STR_IN_ARENA: &str = "a string field in a struct or enum allocated in an arena (the collector does not scan plain arenas yet)";
-
 /// Payload fields per variant. One slot is 8 bytes, a GC object is at most 64 pointer-words
 /// (256 bytes on a 32-bit target) and the tag takes one slot, so 31 always fits.
 const MAX_VARIANT_FIELDS: usize = 31;
@@ -305,6 +301,12 @@ struct Emitter<'a> {
     uses_bump: bool,
     /// Any string operation was emitted, so the runtime's string helpers are declared.
     uses_str: bool,
+    /// Some `with arena` block was made scannable, so the runtime function that creates one is declared.
+    uses_scan: bool,
+    /// Arenas (by SSA name) that hold, or may hold, a pointer into the GC heap: a `with arena` block whose
+    /// objects have pointer fields. They are created scannable, so the collector treats what was written
+    /// in them as roots instead of freeing a GC object whose only reference is an arena object's field.
+    arena_scan: BTreeSet<String>,
     /// Function types seen so far (interned, so equal shapes have equal `Ty::Fn` indexes).
     fn_tys: RefCell<Vec<FnTy>>,
     /// Closures emitted so far, for unique names.
@@ -396,6 +398,8 @@ impl<'a> Emitter<'a> {
             uses_gc: false,
             uses_bump: false,
             uses_str: false,
+            uses_scan: false,
+            arena_scan: BTreeSet::new(),
             fn_tys: RefCell::new(Vec::new()),
             lam_n: 0,
             ret_infer: false,
@@ -427,6 +431,9 @@ impl<'a> Emitter<'a> {
         out.push_str("; Function tiers are recorded as comments; every tier shares one calling\n");
         out.push_str("; convention and data layout, so cross-tier calls are plain calls.\n\n");
         out.push_str("declare ptr  @ubel_arena_create(i64)\n");
+        if self.uses_scan {
+            out.push_str("declare ptr  @ubel_arena_create_scan(i64)\n");
+        }
         out.push_str("declare void @ubel_arena_destroy(ptr)\n");
         out.push_str("declare void @ubel_print_i64(i64)\n");
         out.push_str("declare void @ubel_print_bool(i32)\n");
@@ -644,6 +651,16 @@ impl<'a> Emitter<'a> {
 
     fn lookup(&self, name: &str) -> Option<Local> {
         self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+    }
+
+    /// An object with pointer fields is about to be allocated in `arena`: make that arena scannable.
+    /// Conservative: the pointers may point at other objects of the same arena (then scanning is only
+    /// a little work), but a field cannot say that its value is not a GC object, and a plain arena
+    /// holding the only reference to a GC object would lose it to the collector.
+    fn mark_scan(&mut self, arena: &Option<String>) {
+        if let Some(a) = arena {
+            self.arena_scan.insert(a.clone());
+        }
     }
 
     fn destroy_arenas_from(&mut self, depth: usize) {
@@ -1177,9 +1194,17 @@ impl<'a> Emitter<'a> {
                         }
                     };
                     let a = self.fresh().replace("%t", "%arena.");
-                    self.inst(&format!("{a} = call ptr @ubel_arena_create(i64 {bytes})"));
+                    let create = format!("{a} = call ptr @ubel_arena_create(i64 {bytes})");
+                    self.inst(&create);
                     self.arenas.push(a.clone());
                     self.block(body)?;
+                    // Whether the arena has to be scannable is only known once the block has been emitted
+                    // (it depends on what was allocated in it), so the creation is rewritten here.
+                    if self.arena_scan.remove(&a) {
+                        self.uses_scan = true;
+                        let scan = format!("{a} = call ptr @ubel_arena_create_scan(i64 {bytes}) ; scannable: it holds pointers to GC objects");
+                        self.body = self.body.replacen(&create, &scan, 1);
+                    }
                     // Reaching here normally means the body fell off its end; every early
                     // exit (`return`, `break`, `continue`) destroyed the arena where it left.
                     if !self.terminated {
@@ -1552,8 +1577,8 @@ impl<'a> Emitter<'a> {
             None => return unsupported(e.span, format!("struct literals of `{name}` (only plain structs declared in this file)")),
         };
         let arena = self.alloc_site(e.span, "a struct literal")?;
-        if arena.is_some() && self.structs[sid].fields.iter().any(|f| f.ty == Ty::Str) {
-            return unsupported(e.span, STR_IN_ARENA);
+        if self.structs[sid].fields.iter().any(|f| f.ty.is_ptr()) {
+            self.mark_scan(&arena);
         }
 
         let n = self.structs[sid].fields.len();
@@ -1669,8 +1694,8 @@ impl<'a> Emitter<'a> {
             ));
         }
         let arena = self.alloc_site(e.span, "an enum value")?;
-        if arena.is_some() && fields.iter().any(|f| *f == Ty::Str) {
-            return unsupported(e.span, STR_IN_ARENA);
+        if fields.iter().any(|f| f.is_ptr()) {
+            self.mark_scan(&arena);
         }
         let mut vals = Vec::new();
         for (i, a) in args.iter().enumerate() {
@@ -2069,7 +2094,12 @@ impl<'a> Emitter<'a> {
             "print" => return self.print_call(args, false),
             _ => {}
         }
-        if let Some(local) = self.lookup(name) {
+        let found = match self.lookup(name) {
+            Some(l) => Some(l),
+            None if !self.sigs.contains_key(name) => self.capture_local(name, e.span)?,
+            None => None,
+        };
+        if let Some(local) = found {
             if let Ty::Fn(idx) = local.ty {
                 return self.call_closure(e, &local, idx, args);
             }
@@ -2193,8 +2223,10 @@ impl<'a> Emitter<'a> {
     /// variable of the frame the closure is written in. The closure copies the value into its object when
     /// it is created (decision D5) and the body copies it out at entry, so a capture is only right for a
     /// variable that never changes afterwards: `mut` variables, `for` variables and `:=` bindings are
-    /// refused. Only int and bool values are captured so far: a string, struct, enum or closure in an
-    /// arena-allocated closure object would be invisible to the collector (plain arenas are not scanned).
+    /// refused. Any value is captured by copy: for a string, struct, enum or closure that is the pointer,
+    /// so a captured struct is shared with the variable it came from (as structs always are). A pointer
+    /// in a closure object is traced by the collector: through the mask for a GC object, through a
+    /// scannable arena for an arena object.
     fn capture_local(&mut self, name: &str, span: Span) -> R<Option<Local>> {
         let found = match self.enclosing.last().and_then(|f| f.iter().rev().find_map(|sc| sc.get(name).cloned())) {
             Some(l) => l,
@@ -2204,12 +2236,6 @@ impl<'a> Emitter<'a> {
             return unsupported(
                 span,
                 format!("a closure that captures `{name}`, which can change (declared `mut`, a `for` variable or a `:=` binding): a capture is a copy of the value taken when the closure is created"),
-            );
-        }
-        if !matches!(found.ty, Ty::I64 | Ty::I1) {
-            return unsupported(
-                span,
-                format!("a closure that captures `{name}`, which is not an int or a bool (strings, structs, enums and closures are not captured yet: the closure object may live in an arena the collector does not scan)"),
             );
         }
         let idx = self.captures.last().map_or(0, |c| c.len());
@@ -2324,11 +2350,42 @@ impl<'a> Emitter<'a> {
         // A closure that captures: its object is allocated where it is written (an arena inside `with
         // arena`, so it dies with the block; the GC heap in a HIGH function; refused elsewhere, as for a
         // struct literal) and holds the code pointer and a copy of each captured value, 8 bytes apiece.
-        // Only ints and bools are captured, so the object holds no pointer the collector must trace
-        // (the code pointer is a static address outside the heap): mask 0.
+        // A captured string, struct, enum or closure is a pointer the collector must trace: in a GC object
+        // its word is set in the mask (word 0 is the code pointer, a static address outside the heap), in
+        // an arena object the arena is made scannable.
+        // A slot is 8 bytes, so on a 32-bit target it is two words, and the collector's mask has 64 bits.
+        if 1 + caps.len() > 31 {
+            return unsupported(e.span, "a closure that captures more than 30 variables");
+        }
         let arena = self.alloc_site(e.span, "a closure that captures a variable")?;
+        if caps.iter().any(|c| c.ty.is_ptr()) {
+            self.mark_scan(&arena);
+        }
+        // Mask bit n means word n of the object, and a word is a pointer wide, so the bit of the slot at byte
+        // offset `off` is off / sizeof(ptr): worked out in the IR from the target's pointer size, like the
+        // struct and enum masks, so one .ll is right for 32- and 64-bit.
+        let mask = if arena.is_none() && caps.iter().any(|c| c.ty.is_ptr()) {
+            let psz = self.fresh();
+            self.inst(&format!("{psz} = ptrtoint ptr getelementptr (ptr, ptr null, i32 1) to i64"));
+            let mut acc = "0".to_string();
+            for (i, c) in caps.iter().enumerate() {
+                if !c.ty.is_ptr() {
+                    continue;
+                }
+                let idx = self.fresh();
+                self.inst(&format!("{idx} = udiv i64 {}, {psz}", 8 * (1 + i)));
+                let bit = self.fresh();
+                self.inst(&format!("{bit} = shl i64 1, {idx}"));
+                let m = self.fresh();
+                self.inst(&format!("{m} = or i64 {acc}, {bit}"));
+                acc = m;
+            }
+            acc
+        } else {
+            "0".to_string()
+        };
         let size = (8 * (1 + caps.len())).to_string();
-        let objp = self.alloc_obj(arena, &size, "0", "closure");
+        let objp = self.alloc_obj(arena, &size, &mask, "closure");
         self.inst(&format!("store ptr {code}, ptr {objp}"));
         for (i, c) in caps.iter().enumerate() {
             let v = self.fresh();

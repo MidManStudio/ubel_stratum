@@ -643,7 +643,8 @@ void ubel_gc_reset_stats(void) {
 typedef struct arena_chunk {
     struct arena_chunk *next;
     uint64_t size; /* payload bytes */
-} arena_chunk;     /* 16 bytes, so the payload stays 16-byte aligned */
+    uint64_t used; /* payload bytes written, recorded when the arena moves on to the next chunk */
+} __attribute__((aligned(16))) arena_chunk; /* a multiple of 16 bytes, so the payload stays 16-byte aligned */
 
 #define ARENA_DEFAULT_CHUNK (64u * 1024u)
 #define ARENA_CACHE_MAX     64u
@@ -695,13 +696,15 @@ ubel_arena *ubel_arena_create_scan(uint64_t chunk_size) {
     return a;
 }
 
-/* Conservatively scan every live scannable arena: the whole payload of each
- * retired chunk, and only the bumped part of the current (first) chunk. */
+/* Conservatively scan every live scannable arena: only the bytes that were bumped. For the current
+ * (first) chunk that is everything below `cur`; for a retired chunk it is the `used` bytes recorded when
+ * the arena moved on. Bytes nobody wrote (malloc memory, a recycled chunk) are never read, so a stale
+ * word there cannot keep garbage alive. */
 static void scan_arena_roots(void) {
     for (ubel_arena *a = scan_head; a; a = a->scan_next) {
         for (arena_chunk *c = (arena_chunk *)a->chunks; c; c = c->next) {
             const char *lo = (const char *)(c + 1);
-            const char *hi = (c == (arena_chunk *)a->chunks) ? a->cur : lo + c->size;
+            const char *hi = (c == (arena_chunk *)a->chunks) ? a->cur : lo + c->used;
             for (const uintptr_t *p = (const uintptr_t *)lo; (const char *)(p + 1) <= hi; ++p)
                 mark_ptr(*p);
         }
@@ -709,6 +712,10 @@ static void scan_arena_roots(void) {
 }
 
 void *ubel_arena_grow(ubel_arena *a, uint64_t size) {
+    if (a->chunks) {
+        arena_chunk *old = (arena_chunk *)a->chunks;
+        old->used = (uint64_t)(a->cur - (char *)(old + 1)); /* what was written in the chunk being retired */
+    }
     uint64_t payload = a->chunk_size;
     if (size > payload) payload = (size + 15u) & ~(uint64_t)15u;
     arena_install_chunk(a, payload);

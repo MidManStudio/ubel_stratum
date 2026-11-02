@@ -1,0 +1,145 @@
+// Scannable arenas (decision D5 follow-up). A `with arena` block whose objects hold pointers is created
+// scannable, so the collector treats what was written in it as roots. Here an arena is the ONLY holder
+// of GC strings (a struct field, enum payloads, a captured string) while a closure builds hundreds of
+// thousands of garbage strings of the same size, so a collection runs inside the block and any string
+// the collector failed to keep would be reused and come back wrong. A closure captures strings and
+// other closures; a GC closure object is the only holder of the string it captured.
+struct Note {
+    text: string
+    n:    int
+}
+
+enum Tok {
+    Word(string),
+    Pair(string, string),
+    End,
+}
+
+// Each block holds one kind of pointer-holding object, so each way of making an arena scannable (a
+// struct field, an enum payload, a closure capture) is tested on its own.
+@tier(mid)
+fn probe_struct(mk: fn(int) string, churn: fn(int) int) int {
+    let mut ok = 0
+    with arena(256) {
+        let note = Note { text = mk(7), n = 1 }
+        let hits = churn(200000)
+        if hits == 200000 {
+            ok += 1
+        }
+        if note.text == "label-7" {
+            ok += 1
+        }
+    }
+    return ok
+}
+
+@tier(mid)
+fn probe_enum(mk: fn(int) string, churn: fn(int) int) int {
+    let mut ok = 0
+    with arena(256) {
+        let tok = Tok.Word(mk(8))
+        let pair = Tok.Pair(mk(9), mk(10))
+        let hits = churn(200000)
+        if hits == 200000 {
+            ok += 1
+        }
+        let w = match tok {
+            Tok.Word(v) => v == "label-8",
+            Tok.Pair(a, b) => false,
+            Tok.End => false,
+        }
+        if w {
+            ok += 1
+        }
+        let p = match pair {
+            Tok.Pair(a, b) => a == "label-9" && b == "label-10",
+            Tok.Word(v) => false,
+            Tok.End => false,
+        }
+        if p {
+            ok += 1
+        }
+    }
+    return ok
+}
+
+@tier(mid)
+fn probe_closure(mk: fn(int) string, churn: fn(int) int) int {
+    let mut ok = 0
+    with arena(256) {
+        let s = mk(11)
+        let seen = fn(x: int) if s == "label-11" { x } else { 0 }
+        let bump = fn(x: int) x + 1
+        let twice = fn(x: int) bump(bump(x))
+        let hits = churn(200000)
+        if hits == 200000 {
+            ok += 1
+        }
+        if seen(5) == 5 {
+            ok += 1
+        }
+        if twice(5) == 7 {
+            ok += 1
+        }
+    }
+    return ok
+}
+
+fn make_prefixer(p: string) fn(int) string {
+    return fn(x: int) $"{p}{x}"
+}
+
+// 64 closures, each the only holder of its own GC string, kept in a chain of GC enum values.
+enum Fns {
+    Cons(fn(int) string, Fns),
+    Nil,
+}
+
+fn build(n: int) Fns {
+    let mut list = Fns.Nil
+    let mut i = 0
+    while i < n {
+        list = Fns.Cons(make_prefixer($"p{i}-"), list)
+        i += 1
+    }
+    return list
+}
+
+fn check(list: Fns, k: int) int {
+    match list {
+        Fns.Cons(f, rest) => {
+            let hit = if f(7) == $"p{k}-7" { 1 } else { 0 }
+            return hit + check(rest, k - 1)
+        },
+        Fns.Nil => return 0,
+    }
+}
+
+fn main() void {
+    let mk = fn(n: int) $"label-{n}"
+    let churn = fn(r: int) {
+        let mut i = 0
+        let mut hits = 0
+        while i < r {
+            let a = $"x{i}"
+            if a == $"x{i}" {
+                hits += 1
+            }
+            i += 1
+        }
+        return hits
+    }
+    println(probe_struct(mk, churn), probe_enum(mk, churn), probe_closure(mk, churn))
+
+    // closure objects in the GC heap, each the only holder of the string it captured
+    let n = 42
+    let pre = make_prefixer($"p{n}-")
+    let fs = build(64)
+    println(churn(300000))
+    println(pre(5), pre(6), check(fs, 63))
+
+    // a closure that captures another closure and calls it
+    let add = fn(x: int) x + 1
+    let twice = fn(x: int) add(add(x))
+    println(twice(5))
+}

@@ -48,10 +48,9 @@ interpolation literal arm, one line at the top of `binop_result`.
   (this patch); without it the emitter refuses.
 - `+` on strings: always a GC object, wherever it is written; refused in LOW and in MID outside `with arena`.
 - Ordering: byte-wise, `ubel_str_cmp`.
-- Refused, for now: building a string (interpolation or `+`) in a LOW function; a string field in an
-  arena-allocated struct or enum payload. The second one is the hidden-root hazard: the emitter only
-  creates plain arenas, which the collector does not scan, so a GC string stored there could be freed.
-  Lifting it needs scannable arenas chosen from the stored types.
+- A string field in a struct or enum allocated in an arena is allowed: such an arena is created
+  scannable (docs/LLVM_POC.md, "Scannable arenas"), so a GC string stored there is kept alive.
+- Refused, for now: building a string (interpolation or `+`) in a LOW function.
 
 ## Evidence
 

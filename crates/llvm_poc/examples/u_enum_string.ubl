@@ -1,23 +1,14 @@
-// Not supported yet: a string payload in an enum allocated in an arena. The emitter only creates
-// plain arenas, which the collector does not scan, so a GC string kept only there could be freed.
-// expect-refusal: a string field in a struct or enum allocated in an arena
-enum Tok {
-    Word(string),
-    End,
-}
-
-@tier(mid)
-fn run() int {
-    with arena(1KB) {
-        let t = Tok.Word("hi")
-        let r = match t {
-            Tok.Word(w) => 1,
-            Tok.End => 0,
-        }
-        return r
+// Not supported yet: `match` on a string. The emitter matches on enum values only. (The file name is
+// historical: strings in enum payloads work now, see 19_strings and 25_arena_scan.)
+// expect-refusal: `match` on anything but an enum value
+fn kind(s: string) int {
+    return match s {
+        "a" => 1,
+        "b" => 2,
+        _ => 0,
     }
 }
 
 fn main() void {
-    println(run())
+    println(kind("a"), kind("z"))
 }
