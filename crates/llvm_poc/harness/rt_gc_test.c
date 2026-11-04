@@ -707,6 +707,163 @@ static void t_clock_alias(void) {
     ubel_gc_set_clock(NULL);
 }
 
+/* Stress mode. ubel_gc_set_stress(1) collects before EVERY allocation, so a pointer that only a
+ * register or a half-built object holds is tested at the very next allocation, not whenever the
+ * heap happens to fill. Here, in that mode, objects are built so that each one is reachable from
+ * one kind of place only: struct fields (a list), an array of pointers, an array large enough for the
+ * large-object path, a scannable arena of several chunks (retired ones included), and enum-like and
+ * closure-like objects with a pointer payload / captures. While an object is being filled the only
+ * reference to it is a local of the builder. Everything is allocated and nothing is garbage, so the live
+ * bytes after the build must equal the bytes allocated. */
+typedef struct snode { struct snode *next; void *payload; uintptr_t id; } snode; /* pointer words 0, 1 */
+#define SNODE_MASK 0x3u
+typedef struct { uintptr_t tag; void *payload; } senum;                          /* pointer word 1 */
+#define SENUM_MASK 0x2u
+typedef struct { void *code; void *cap0; uintptr_t cap1; void *cap2; } sclos;    /* code is not a heap pointer */
+#define SCLOS_MASK 0xAu
+
+#define ST_LIST 150u
+#define ST_ARR 60u
+#define ST_ARENA 120u
+#define ST_ENUM 80u
+#define ST_CLOS 40u
+static ubel_arena *st_arena;
+static void **st_cells[ST_ARENA]; /* where each arena cell is; arena memory, not a GC pointer */
+
+static size_t st_psize(unsigned id) { return 24u + (id * 13u) % 90u; }
+static void *NOINLINE st_payload(unsigned id) {
+    size_t n = st_psize(id);
+    void *p = ubel_gc_alloc_noscan(n);
+    fill(p, n, id);
+    return p;
+}
+static void *NOINLINE arena_bump16(ubel_arena *a) {
+    if ((size_t)(a->end - a->cur) >= 16) {
+        void *p = a->cur;
+        a->cur += 16;
+        return p;
+    }
+    return ubel_arena_grow(a, 16);
+}
+static void NOINLINE st_fn(void) {}
+
+static void NOINLINE stress_build(void) {
+    snode *head = NULL;
+    for (unsigned i = 0; i < ST_LIST; i++) {
+        snode *n = (snode *)ubel_gc_alloc(sizeof(snode), SNODE_MASK);
+        n->id = i;
+        n->payload = st_payload(100u + i); /* collects first: n is held by this frame only */
+        n->next = head;
+        head = n;
+    }
+    roots[0] = head;
+
+    void **arr = (void **)ubel_gc_alloc_array(sizeof(void *), ST_ARR, 1u);
+    for (unsigned i = 0; i < ST_ARR; i++) arr[i] = st_payload(1000u + i);
+    roots[1] = arr;
+
+    size_t nl = UBEL_GC_MAX_CLASS / sizeof(void *) + 200; /* more than 32 KiB of pointers: a run of spans */
+    void **big = (void **)ubel_gc_alloc_array(sizeof(void *), nl, 1u);
+    for (size_t i = 0; i < nl; i++) big[i] = st_payload(2000u + (unsigned)(i % 5000u));
+    roots[2] = big;
+
+    st_arena = ubel_arena_create_scan(256); /* 16 cells per chunk: several chunks, all but one retired */
+    for (unsigned i = 0; i < ST_ARENA; i++) {
+        void **cell = (void **)arena_bump16(st_arena);
+        cell[0] = NULL;
+        cell[1] = NULL;
+        st_cells[i] = cell;
+        cell[0] = st_payload(20000u + i); /* the arena cell is the only reference */
+    }
+
+    void **earr = (void **)ubel_gc_alloc_array(sizeof(void *), ST_ENUM, 1u);
+    for (unsigned i = 0; i < ST_ENUM; i++) {
+        senum *e = (senum *)ubel_gc_alloc(sizeof(senum), SENUM_MASK);
+        e->tag = i;
+        e->payload = st_payload(30000u + i);
+        earr[i] = e;
+    }
+    roots[3] = earr;
+
+    void **carr = (void **)ubel_gc_alloc_array(sizeof(void *), ST_CLOS, 1u);
+    for (unsigned i = 0; i < ST_CLOS; i++) {
+        sclos *c = (sclos *)ubel_gc_alloc(sizeof(sclos), SCLOS_MASK);
+        c->code = (void *)st_fn;
+        c->cap1 = i;
+        c->cap0 = st_payload(40000u + i);
+        c->cap2 = st_payload(50000u + i);
+        carr[i] = c;
+    }
+    roots[4] = carr;
+}
+
+/* Number of things wrong: every object reachable from the structures, checked. */
+static int NOINLINE stress_check(void) {
+    int bad = 0;
+    unsigned i = ST_LIST;
+    for (snode *n = (snode *)roots[0]; n && i; n = n->next) {
+        i--;
+        if (n->id != i || !intact(n->payload, st_psize(100u + i), 100u + i)) bad++;
+    }
+    if (i != 0) bad++;
+    void **arr = (void **)roots[1];
+    for (unsigned k = 0; k < ST_ARR; k++) if (!intact(arr[k], st_psize(1000u + k), 1000u + k)) bad++;
+    void **big = (void **)roots[2];
+    size_t nl = UBEL_GC_MAX_CLASS / sizeof(void *) + 200;
+    for (size_t k = 0; k < nl; k++) {
+        unsigned id = 2000u + (unsigned)(k % 5000u);
+        if (!intact(big[k], st_psize(id), id)) bad++;
+    }
+    for (unsigned k = 0; k < ST_ARENA; k++)
+        if (!intact(st_cells[k][0], st_psize(20000u + k), 20000u + k)) bad++;
+    void **earr = (void **)roots[3];
+    for (unsigned k = 0; k < ST_ENUM; k++) {
+        senum *e = (senum *)earr[k];
+        if (e->tag != k || !intact(e->payload, st_psize(30000u + k), 30000u + k)) bad++;
+    }
+    void **carr = (void **)roots[4];
+    for (unsigned k = 0; k < ST_CLOS; k++) {
+        sclos *c = (sclos *)carr[k];
+        if (c->cap1 != k || c->code != (void *)st_fn || !intact(c->cap0, st_psize(40000u + k), 40000u + k) ||
+            !intact(c->cap2, st_psize(50000u + k), 50000u + k))
+            bad++;
+    }
+    return bad;
+}
+
+static void NOINLINE stress_churn(unsigned rounds) {
+    for (unsigned r = 0; r < rounds; r++) {
+        void *g = ubel_gc_alloc_noscan(16u + (r * 37u) % 3000u); /* garbage of mixed classes, reuses freed slots */
+        memset(g, 0xA5, 16);
+    }
+}
+
+static void t_stress_mode(void) {
+    ubel_gc_stats s0, s1;
+    ubel_gc_get_stats(&s0);
+    ubel_gc_set_stress(1);
+    stress_build();
+    ubel_gc_set_stress(0);
+    ubel_gc_get_stats(&s1);
+    uint64_t allocs = s1.alloc_count - s0.alloc_count, colls = s1.collections - s0.collections;
+    CHECK(allocs > 1000 && colls == allocs, "stress mode: %llu allocations but %llu collections",
+          (unsigned long long)allocs, (unsigned long long)colls);
+    CHECK(stress_check() == 0, "an object was damaged or lost while building under stress");
+    uint64_t built = s1.alloc_bytes - s0.alloc_bytes; /* nothing was garbage: all of it must be live */
+    EXPECT_LIVE(built, "every object built under stress is live");
+
+    ubel_gc_set_stress(1);
+    stress_churn(400);
+    ubel_gc_set_stress(0);
+    CHECK(stress_check() == 0, "an object was damaged by allocations under stress that reuse freed slots");
+    EXPECT_LIVE(built, "after churn only the structures are live");
+
+    for (int k = 0; k < 5; k++) roots[k] = NULL;
+    ubel_arena_destroy(st_arena);
+    st_arena = NULL;
+    EXPECT_LIVE(0, "everything dropped");
+}
+
 static const test tests[] = {
     {"classes", t_classes, NULL},
     {"large_basic", t_large_basic, NULL},
@@ -721,6 +878,7 @@ static const test tests[] = {
     {"arena_scan", t_arena_scan, NULL},
     {"register_root", t_register_root, NULL},
     {"clock_alias", t_clock_alias, NULL},
+    {"stress_mode", t_stress_mode, NULL},
 };
 #define NTESTS (sizeof tests / sizeof tests[0])
 

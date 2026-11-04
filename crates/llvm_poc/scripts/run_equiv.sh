@@ -20,7 +20,11 @@
 # collector's statistics from a run with UBEL_STATS=1).
 #
 # Environment: CLANG (default clang, needs LLVM 15+), EXTRA_FLAGS (e.g. -m32),
-#              OUT_DIR (default ${TMPDIR:-/tmp}/ubel_llvm_equiv), CARGO (default cargo).
+#              OUT_DIR (default ${TMPDIR:-/tmp}/ubel_llvm_equiv), CARGO (default cargo),
+#              GC_STRESS (e.g. 1: every compiled example runs with the collector forced before
+#              every N-th allocation, UBEL_GC_STRESS; slow, so the per-run timeout becomes
+#              STRESS_TIMEOUT, default 300 s; the runtime tests are not affected),
+#              STRESS_TIMEOUT.
 # Exit status is non-zero if any example fails.
 set -uo pipefail
 
@@ -41,7 +45,19 @@ echo "building the emitter..." >&2
 "$CARGO" build --release --manifest-path "$here/Cargo.toml" >"$out/cargo.log" 2>&1 || { tail -n 30 "$out/cargo.log" >&2; exit 1; }
 bin="$CARGO_TARGET_DIR/release/ubel-llvm"
 
-run_timeout() { if command -v timeout >/dev/null 2>&1; then timeout 30 "$@"; else "$@"; fi; }
+stress_to=30
+if [ -n "${GC_STRESS:-}" ]; then
+  stress_to="${STRESS_TIMEOUT:-300}"
+  echo "gc stress: UBEL_GC_STRESS=${GC_STRESS} for every example (a collection before every ${GC_STRESS}th allocation; timeout ${stress_to}s)" >&2
+fi
+# A subshell, so UBEL_GC_STRESS reaches the example being run and nothing else (the runtime
+# tests count collections themselves and must not get it).
+run_timeout() {
+  (
+    if [ -n "${GC_STRESS:-}" ]; then export UBEL_GC_STRESS="$GC_STRESS"; fi
+    if command -v timeout >/dev/null 2>&1; then exec timeout "$stress_to" "$@"; else exec "$@"; fi
+  )
+}
 
 # Build one native binary: build_native <ll> <exe> <flags...>
 build_native() {

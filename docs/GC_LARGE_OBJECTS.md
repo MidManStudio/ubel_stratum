@@ -37,12 +37,12 @@ A6. Everything here describes `crates/llvm_poc/runtime/ubel_rt.c`, tested by
 
 ## Tests
 
-`rt_gc_test` has 13 tests, each in its own process: every class boundary and its neighbours,
+`rt_gc_test` has 14 tests, each in its own process: every class boundary and its neighbours,
 large objects (sizes, accounting, drop), interior and one-past-the-end pointers, reuse and zeroing
 of a freed run, arrays of pointers (large array, array of large children, 64-word elements, a
 size-class array of more than 64 words, a small array whose slot has slack), pointer-free objects
 that reuse memory with stale pointer bits, a random alloc/free stress with frequent collections,
-and the refused misuse cases, plus objects held only by callee-saved registers and a clock reading that equals the address of a dead object. Objects are filled with a pattern derived from their id and checked
+and the refused misuse cases, plus objects held only by callee-saved registers a clock reading that equals the address of a dead object, and stress mode (a collection before every allocation while structures are built). Objects are filled with a pattern derived from their id and checked
 before they are dropped. `run_equiv.sh` builds and runs it at -O0, -O2 and under ASan+UBSan, on
 64-bit and (with `EXTRA_FLAGS=-m32`) 32-bit, so no workflow change is needed, and the CI report
 has a row for it.

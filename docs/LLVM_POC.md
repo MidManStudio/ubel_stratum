@@ -73,6 +73,14 @@ The benchmarks need clang 15 or newer (opaque pointers). `EXTRA_FLAGS=-m32` and
 `CLANG=clang-18` are supported. The Stage 1B script also needs cargo, because the
 emitter is a Rust crate. On Termux: `pkg install clang`.
 
+**Stress mode.** `UBEL_GC_STRESS=N` makes the runtime collect before every N-th allocation (`1` = before every
+one; `ubel_gc_set_stress(N)` does the same from C). It is implemented by holding the trigger at zero, so a
+normal run pays nothing for it. Anything that only a register or a half-built object holds, a missing
+pointer-mask bit or a mis-sized object is then damaged at the very next allocation instead of whenever the
+heap fills. `GC_STRESS=1 bash crates/llvm_poc/scripts/run_equiv.sh` runs every compiled example that way
+(the per-run timeout becomes `STRESS_TIMEOUT`, default 300 s; the runtime tests do not get it, they
+count collections themselves). Slow: the allocation-heavy examples take 10 to 80 times longer.
+
 **Run `--selftest` once on every new target before trusting its timings.** It forces a
 collection every 16 KiB and fails unless all tiers agree, the collector really ran,
 and it kept a known live list alive. The report also prints a note when HIGH did zero
@@ -934,6 +942,20 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-04: GC hardening, step 2: collect-on-every-allocation mode, provisional. `UBEL_GC_STRESS=N`,
+  `ubel_gc_set_stress`, `GC_STRESS=N` for `run_equiv.sh`. New test `rt_gc_test stress_mode` (14 tests): in stress
+  mode it builds objects reachable from one kind of place only (struct fields, a pointer array, an array on the
+  large-object path, a scannable arena with retired chunks, enum-like and closure-like objects) while each new
+  object is held only by the builder's frame, checks a collection happened before every allocation, that every
+  object is intact, and that live bytes equal the bytes allocated (nothing in it is garbage); then churns, then
+  drops everything and expects 0. Mutants: a trigger that never collects is caught; skipping the arena roots is
+  caught (crash); a scan that starts above the collector's own frames is NOT caught by this test (the
+  `register_root` test catches it). Whole example suite under `GC_STRESS=1`: 64-bit 59 passed and 1 failed, `-m32`
+  59 passed and 1 failed, each time with `20_arena_strings` (waits for the D3b sema patch) the failure; every
+  other example is identical to the interpreter at -O0, -O2 and ASan+UBSan with a collection before each of
+  its allocations (for example 610,225 collections in `24_string_ops`, 1,800,331 in `25_arena_scan`). It found no
+  collector bug in the examples. Not run: Termux, macOS, CI on real runners; `-m32` without stress after the
+  script change.
 - 2026-11-04: GC hardening, step 1, provisional. 32-bit `rt_gc_test` flake traced and fixed (see Bugs found):
   `setjmp` buffer and clock readings no longer scanned as roots, plus two new tests, `register_root` and
   `clock_alias` (13 tests). After the fix at 32-bit -O0: `large_basic` 0 of 3000 runs failed (about 0.9% before),

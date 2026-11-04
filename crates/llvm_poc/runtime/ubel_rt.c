@@ -150,6 +150,10 @@ static uint64_t last_live;
 static uint64_t bytes_since_gc;
 static uint64_t trigger_delta = MIN_TRIGGER;
 static uint64_t min_trigger   = MIN_TRIGGER;
+/* Debug mode (UBEL_GC_STRESS=N, ubel_gc_set_stress): collect before every N-th allocation. It is
+ * implemented by holding trigger_delta at 0, so the existing check in front of every allocation
+ * fires each time and the normal fast path pays nothing for it. */
+static uint64_t stress_every, stress_skip;
 static ubel_gc_stats st;
 
 static uintptr_t *mstack;
@@ -199,7 +203,12 @@ void ubel_gc_init(void *stack_base_) {
         long v = strtol(t, NULL, 10);
         if (v >= 1) min_trigger = (uint64_t)v * 1024u;
     }
-    trigger_delta = min_trigger;
+    const char *sx = getenv("UBEL_GC_STRESS"); /* debug mode: collect before every N-th allocation */
+    if (sx) {
+        long v = strtol(sx, NULL, 10);
+        if (v >= 1) stress_every = (uint64_t)v;
+    }
+    trigger_delta = stress_every ? 0 : min_trigger;
 }
 
 /* ---- pointer bitmap helpers (bit i of word `widx..` = "word is a pointer") */
@@ -310,6 +319,15 @@ static size_t find_free_run(size_t n) {
     return (size_t)-1;
 }
 
+/* Reached when the allocation volume since the last collection hit trigger_delta. Normally that
+ * means collect. In stress mode it is reached on every allocation, and collects on every N-th.
+ * No locals on purpose: this frame is inside the range the stack scan reads. */
+static void __attribute__((noinline)) gc_trigger(void) {
+    if (stress_every > 1 && ++stress_skip < stress_every) return;
+    stress_skip = 0;
+    ubel_gc_collect();
+}
+
 static void *gc_alloc_large(uint64_t size, int noscan, size_t *nwords) {
     if (size > (uint64_t)heap_bytes) {
         fprintf(stderr, "ubel_rt: a %llu-byte object does not fit in the GC heap (raise UBEL_HEAP_MB)\n",
@@ -319,7 +337,7 @@ static void *gc_alloc_large(uint64_t size, int noscan, size_t *nwords) {
     size_t n = (size_t)((size + SPAN_SIZE - 1u) >> SPAN_SHIFT);
     uint64_t rounded = (uint64_t)n << SPAN_SHIFT;
 
-    if (bytes_since_gc >= trigger_delta) ubel_gc_collect();
+    if (bytes_since_gc >= trigger_delta) gc_trigger();
     bytes_since_gc += rounded;
     st.alloc_count++;
     st.alloc_bytes += rounded;
@@ -364,7 +382,7 @@ static void *gc_alloc_large(uint64_t size, int noscan, size_t *nwords) {
 /* A zeroed slot of class `cls`, counted and paced like any allocation. The one place that knows
  * how to find a slot; the fast path below and the general path both use it. */
 static inline __attribute__((always_inline)) void *gc_slot(unsigned cls, unsigned elem) {
-    if (bytes_since_gc >= trigger_delta) ubel_gc_collect();
+    if (bytes_since_gc >= trigger_delta) gc_trigger();
     bytes_since_gc += elem;
     st.alloc_count++;
     st.alloc_bytes += elem;
@@ -657,12 +675,18 @@ void ubel_gc_collect(void) {
     st.live_bytes_last = live;
     last_live = live;
     bytes_since_gc = 0;
-    trigger_delta = live > min_trigger ? live : min_trigger; /* GOGC=100 */
+    trigger_delta = stress_every ? 0 : (live > min_trigger ? live : min_trigger); /* GOGC=100 */
 }
 
 void ubel_gc_set_min_trigger_kb(uint64_t kb) {
     min_trigger = (kb ? kb : 4096) * 1024u;
-    trigger_delta = last_live > min_trigger ? last_live : min_trigger;
+    trigger_delta = stress_every ? 0 : (last_live > min_trigger ? last_live : min_trigger);
+}
+
+void ubel_gc_set_stress(uint64_t every) {
+    stress_every = every;
+    stress_skip = 0;
+    trigger_delta = every ? 0 : (last_live > min_trigger ? last_live : min_trigger);
 }
 
 void ubel_gc_get_stats(ubel_gc_stats *out) { *out = st; }

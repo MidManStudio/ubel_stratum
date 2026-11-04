@@ -100,6 +100,13 @@ void  ubel_gc_reset_stats(void);
  * collections. The UBEL_GC_TRIGGER_KB environment variable sets it at startup. */
 void  ubel_gc_set_min_trigger_kb(uint64_t kb);
 
+/* Debug mode: collect before every `every`-th allocation (1 = before every one, 0 = off). The
+ * UBEL_GC_STRESS=N environment variable sets it at startup, so a whole program or test suite can
+ * run under it unchanged. A pointer that only a register or a half-initialised object holds, a
+ * missing pointer-mask bit or a mis-sized object shows up as damage at the very next allocation
+ * instead of whenever the heap happens to fill. Very slow; for testing only. */
+void  ubel_gc_set_stress(uint64_t every);
+
 /* Test knob: replace the clock the collector times itself with (NULL restores ubel_now_ns). A test
  * feeds it a value equal to the address of a dead object, to prove no clock reading is left in a
  * stack frame the scan reads: such a word would keep that object alive. */
