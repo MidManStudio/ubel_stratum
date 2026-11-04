@@ -1,0 +1,41 @@
+// tests/fixtures/ok_operator_scalar_left_isolated.ubl
+// A number or a string on the left with a struct on the right: the impl is
+// written for the built-in type (`impl Mul<Vec2, Vec2> for double`), and is
+// only ever reached when the right operand is a struct or an enum, so the
+// run time's own `double * double` is left alone.
+// Expected: sema OK, interpret OK.
+
+struct Vec2 {
+    x: double,
+    y: double,
+}
+
+impl Mul<double, Vec2> for Vec2 {
+    fn mul(self, rhs: double) Vec2 {
+        return Vec2 { x = self.x * rhs, y = self.y * rhs }
+    }
+}
+
+impl Mul<Vec2, Vec2> for double {
+    fn mul(self, rhs: Vec2) Vec2 {
+        return Vec2 { x = self * rhs.x, y = self * rhs.y }
+    }
+}
+
+impl Add<Vec2, string> for string {
+    fn add(self, rhs: Vec2) string {
+        return self + "(vec)"
+    }
+}
+
+fn main() void {
+    let v = Vec2 { x = 1.0, y = 2.0 }
+    let l = 3.0 * v
+    let r = v * 3.0
+    assert(l.x == r.x && l.y == r.y, "commutes by two impls")
+    assert(l.y == 6.0, "3.0 * v")
+    assert("a" + v == "a(vec)", "string on the left")
+    assert(2.0 * 4.0 == 8.0, "plain doubles")
+    assert("a" + "b" == "ab", "plain strings")
+    println("ok")
+}

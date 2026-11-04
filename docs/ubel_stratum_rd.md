@@ -416,6 +416,52 @@ added: a loop over an expression that already failed (which found the type-check
 and led to the fix) and where `TYPE-135` points. The survivor is an equivalent mutant (reading
 the last type argument of an `Iterator` impl instead of the first, when `Iterator` has one).
 
+### `tests/operators.rs`
+
+**What it does:** Integration tests for the operator traits, slice S5c (68 tests). Programs go
+through `check_source` for stage, codes, messages and suggestions and through the interpreter
+for run-time values.
+
+**Decisions:**
+- Each of the ten binary operators, its compound assignment and `Neg`/`BitNot` is generated
+  from a table into a program whose only impl is that trait, with a marker in the result, so a
+  run that reaches a neighbouring trait, or sema that resolves through one, fails. A second
+  table checks each operator against the next trait (`TYPE-136` for `v + 1` with only `Sub`).
+- Run time: several impls of one operator by right operand, a number and a string on the left,
+  a result of another type, an integer literal against an integer impl (and against `Mul<u32,
+  V>`, which gives the literal that type), operators in methods and loops, an enum operand, a
+  generic struct, a supertrait default method, closure parameters with no type, a right operand
+  not known yet, `Unique` and `Shared` values (probed, not a test), and numbers and strings
+  next to a program full of impls.
+- Bounds: numbers, strings and impls satisfy `T: Add<T, T>`; `string` satisfies `Add` only,
+  an unsigned number does not satisfy `Neg`, a float does not satisfy a bitwise trait; one
+  bound per right operand; the operator method by name through a bound, on a struct and on a
+  number (`neg`, `bit_not`, `shl`).
+- Diagnostics: `TYPE-136` (the pair, the impls there are, an integer literal, unary, a number
+  on the left, compound, nothing reported twice), `TYPE-131` for every operator and the
+  suggestion with the bound, `TYPE-126` for an unsatisfied bound and for another right
+  operand, `TYPE-128` (same kind twice, a unary trait twice, `Box<int>` with `Box<double>`),
+  `TYPE-129` (a number with a number, a collection, a tuple, a bare type parameter),
+  `TYPE-134` for one right operand with two results, and `TIER-016` for every operator trait.
+- A program's own trait named `Add` takes the name, and its `+` is left to the run time.
+- An expression that already failed to type (`*` on a non-reference, `await` on a non-task) adds
+  nothing when it is read as a field or used as an operand of any operator form; both used to
+  panic the type checker.
+
+**Mutation pass:** 39 mutations over `sema/type_infer.rs`, `interpreter/eval/user_ops.rs`,
+`interpreter/eval/expr.rs`, `interpreter/eval/mod.rs` and `rd_parser/src/prelude.rs`, 34
+caught, one redundant and four dead. Five of the first 32 survived and four were caught after tests were added: the explicit
+`neg` and `bit_not` calls on numbers (two mutants), the tier of every operator trait (the
+prelude `Neg` without `@tier(low)`), and a right operand not known yet (decided by the only
+impl). The first run also showed the supertrait expansion dropping a second bound of one
+operator trait, found by a fixture before a test existed. The survivor is a redundant
+condition: skipping candidates whose right operand has another run-time kind before comparing
+types changes nothing, because the comparison rejects them too. Seven mutations removed an
+early return for the error type (in the field read, `peel_wrappers` and five operator helpers);
+three were caught, and the four that survived were guards no path reaches (the operator site
+returns before any of those helpers sees an operand that already failed), so they were
+deleted, and so were two more of the same kind in `native_operator` and `operator_operand_text`.
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in
@@ -473,7 +519,8 @@ and through the interpreter for run-time values.
 
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-`Clone`, `Display`, `Iterator`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the eight traits are `@tier(low)`, so code at any tier can
+`Clone`, `Display`, `Iterator`, the twelve operator traits `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`,
+`BitOr`, `BitXor`, `Shl`, `Shr`, `Neg` and `BitNot`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the traits are `@tier(low)`, so code at any tier can
 hash, show and call their methods through a bound: the prelude is ordinary source and its methods are `HIGH` unless a tier is written.
 `parse()` calls `prelude::inject` after parsing the
 program. `tests/prelude_traits.rs` (95 tests) covers what each kind of type

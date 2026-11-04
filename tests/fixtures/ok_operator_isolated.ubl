@@ -1,0 +1,73 @@
+// tests/fixtures/ok_operator_isolated.ubl
+// Operator traits on their own: `Add`, `Sub`, `Mul`, `Neg` and the compound
+// assignments go through hand-written impls. One type has two impls of `Mul`,
+// told apart by the right operand (`double` and `Vec2`), and numbers and
+// strings keep their own arithmetic next to them.
+// Expected: sema OK, interpret OK.
+
+struct Vec2 {
+    x: double,
+    y: double,
+}
+
+impl Add<Vec2, Vec2> for Vec2 {
+    fn add(self, rhs: Vec2) Vec2 {
+        return Vec2 { x = self.x + rhs.x, y = self.y + rhs.y }
+    }
+}
+
+impl Sub<Vec2, Vec2> for Vec2 {
+    fn sub(self, rhs: Vec2) Vec2 {
+        return Vec2 { x = self.x - rhs.x, y = self.y - rhs.y }
+    }
+}
+
+impl Mul<double, Vec2> for Vec2 {
+    fn mul(self, rhs: double) Vec2 {
+        return Vec2 { x = self.x * rhs, y = self.y * rhs }
+    }
+}
+
+impl Mul<Vec2, Vec2> for Vec2 {
+    fn mul(self, rhs: Vec2) Vec2 {
+        return Vec2 { x = self.x * rhs.x, y = self.y * rhs.y }
+    }
+}
+
+impl Neg<Vec2> for Vec2 {
+    fn neg(self) Vec2 {
+        return Vec2 { x = 0.0 - self.x, y = 0.0 - self.y }
+    }
+}
+
+fn main() void {
+    let a = Vec2 { x = 1.0, y = 2.0 }
+    let b = Vec2 { x = 3.0, y = 4.0 }
+
+    let s = a + b
+    assert(s.x == 4.0 && s.y == 6.0, "add")
+    let d = b - a
+    assert(d.x == 2.0 && d.y == 2.0, "sub")
+    let k = a * 2.0
+    assert(k.x == 2.0 && k.y == 4.0, "scale by a double")
+    let m = a * b
+    assert(m.x == 3.0 && m.y == 8.0, "scale by a Vec2")
+    let n = -a
+    assert(n.x == -1.0 && n.y == -2.0, "neg")
+
+    let mut acc = a
+    acc += b
+    acc *= 2.0
+    assert(acc.x == 8.0 && acc.y == 12.0, "compound assignment")
+
+    let c = a + b * 2.0
+    assert(c.x == 7.0 && c.y == 10.0, "precedence")
+
+    // Numbers and strings are untouched.
+    let mut n2 = 5
+    n2 += 3
+    assert(n2 == 8, "int +=")
+    assert(2.5 * 2.0 == 5.0, "double *")
+    assert("a" + "b" == "ab", "string +")
+    println("ok")
+}

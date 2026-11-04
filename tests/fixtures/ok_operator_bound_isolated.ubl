@@ -1,0 +1,65 @@
+// tests/fixtures/ok_operator_bound_isolated.ubl
+// Bounds on the operator traits: `T: Add<T, T>` is satisfied by numbers, by
+// strings and by a struct with the impl; a parameter can carry one bound per
+// right operand (`Mul<double, T> + Mul<T, T>`); and the operator method can
+// be called through the bound.
+// Expected: sema OK, interpret OK.
+
+struct V {
+    x: int,
+}
+
+impl Add<V, V> for V {
+    fn add(self, rhs: V) V {
+        return V { x = self.x + rhs.x }
+    }
+}
+
+impl Mul<int, V> for V {
+    fn mul(self, rhs: int) V {
+        return V { x = self.x * rhs }
+    }
+}
+
+impl Mul<V, V> for V {
+    fn mul(self, rhs: V) V {
+        return V { x = self.x * rhs.x }
+    }
+}
+
+impl Neg<V> for V {
+    fn neg(self) V {
+        return V { x = 0 - self.x }
+    }
+}
+
+fn sum<T: Add<T, T>>(a: T, b: T) T {
+    return a + b
+}
+
+fn call_add<T: Add<T, T>>(a: T, b: T) T {
+    return a.add(b)
+}
+
+fn mix<T: Mul<int, T> + Mul<T, T>>(a: T, b: T) T {
+    return (a * 2) * b
+}
+
+fn flip<T: Neg<T>>(a: T) T {
+    return -a
+}
+
+fn main() void {
+    let a = V { x = 3 }
+    let b = V { x = 4 }
+    assert(sum(a, b).x == 7, "struct")
+    assert(sum(1, 2) == 3, "int")
+    assert(sum(1.5, 2.5) == 4.0, "double")
+    assert(sum("a", "b") == "ab", "string")
+    assert(call_add(a, b).x == 7, "method through the bound, struct")
+    assert(call_add(10, 5) == 15, "method through the bound, int")
+    assert(mix(a, b).x == 24, "two right operands")
+    assert(flip(a).x == -3, "neg through a bound, struct")
+    assert(flip(2.5) == -2.5, "neg through a bound, double")
+    println("ok")
+}

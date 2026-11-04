@@ -1,0 +1,88 @@
+// tests/fixtures/ok_operator_combined.ubl
+// Operator traits with the traits that shipped before them: `Display` shows
+// the result, `@derive(PartialEq)` compares it, `Iterator` produces the
+// operands, a generic function with `T: Add<T, T>` and `T: Mul<double, T>`
+// bounds runs over numbers, strings and the impls alike, a supertrait gives a
+// default method its operator, and a number on the left takes a struct on the
+// right.
+// Expected: sema OK, interpret OK.
+
+@derive(PartialEq)
+struct Vec2 {
+    x: double,
+    y: double,
+}
+
+impl Display for Vec2 {
+    fn to_string(self) string {
+        return $"({self.x}, {self.y})"
+    }
+}
+
+impl Add<Vec2, Vec2> for Vec2 {
+    fn add(self, rhs: Vec2) Vec2 {
+        return Vec2 { x = self.x + rhs.x, y = self.y + rhs.y }
+    }
+}
+
+impl Mul<double, Vec2> for Vec2 {
+    fn mul(self, rhs: double) Vec2 {
+        return Vec2 { x = self.x * rhs, y = self.y * rhs }
+    }
+}
+
+impl Mul<Vec2, Vec2> for double {
+    fn mul(self, rhs: Vec2) Vec2 {
+        return Vec2 { x = self * rhs.x, y = self * rhs.y }
+    }
+}
+
+struct Steps {
+    n:     double,
+    limit: double,
+}
+
+impl Iterator<Vec2> for Steps {
+    fn next(self) Vec2? {
+        if self.n >= self.limit {
+            return null
+        }
+        self.n = self.n + 1.0
+        return Vec2 { x = self.n, y = 0.5 }
+    }
+}
+
+fn sum<T: Add<T, T>>(a: T, b: T) T {
+    return a + b
+}
+
+fn blend<T: Mul<double, T> + Add<T, T>>(a: T, b: T, w: double) T {
+    return a * w + b * (1.0 - w)
+}
+
+trait Doubler: Add<Self, Self> {
+    fn twice(self) Self {
+        return self + self
+    }
+}
+
+impl Doubler for Vec2 {}
+
+fn main() void {
+    let mut total = Vec2 { x = 0.0, y = 0.0 }
+    let steps = Steps { n = 0.0, limit = 3.0 }
+    for step in steps {
+        total += step
+    }
+    assert(total == Vec2 { x = 6.0, y = 1.5 }, "iterator and compound assignment")
+    assert($"{total}" == "(6, 1.5)", "display of the result")
+
+    assert(sum(total, total) == total * 2.0, "generic bound with a struct")
+    assert(sum(2, 3) == 5, "generic bound with ints")
+    assert(sum("a", "b") == "ab", "generic bound with strings")
+    assert(blend(2.0, 4.0, 0.25) == 3.5, "two bounds with doubles")
+    assert(blend(total, total, 0.5) == total, "two bounds with a struct")
+
+    assert(total.twice() == 2.0 * total, "supertrait default and a number on the left")
+    println("ok")
+}

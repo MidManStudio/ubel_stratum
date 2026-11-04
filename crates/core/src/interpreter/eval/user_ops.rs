@@ -22,7 +22,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use crate::ast::common::BinOp;
+use crate::ast::common::{BinOp, UnaryOp};
 use crate::interpreter::eval::Interpreter;
 use crate::interpreter::value::{EnumPayload, EvalResult, FunctionId, Signal, Value};
 
@@ -51,6 +51,25 @@ fn hash_of_str(s: &str) -> u64 {
     h.finish()
 }
 
+/// The operator trait a binary operator goes through, if it has one.
+pub(crate) fn binop_trait_name(op: BinOp) -> Option<&'static str> {
+    Some(match op {
+        BinOp::Add => "Add",       BinOp::Sub => "Sub",
+        BinOp::Mul => "Mul",       BinOp::Div => "Div",
+        BinOp::Rem => "Rem",       BinOp::BitAnd => "BitAnd",
+        BinOp::BitOr => "BitOr",   BinOp::BitXor => "BitXor",
+        BinOp::Shl => "Shl",       BinOp::Shr => "Shr",
+        _ => return None,
+    })
+}
+
+/// An operand that can carry an operator impl: a struct, an enum, or an
+/// ownership wrapper around one.
+#[inline]
+fn is_operand(v: &Value) -> bool {
+    matches!(v, Value::Struct { .. } | Value::Enum { .. } | Value::Unique(_) | Value::Shared(_) | Value::SyncShared(_))
+}
+
 /// Whether comparing this value could involve a user's impl.
 #[inline]
 pub(crate) fn may_have_user_ops(v: &Value) -> bool {
@@ -71,6 +90,47 @@ fn ordering_from_value(v: &Value) -> Option<Ordering> {
 }
 
 impl<'ast> Interpreter<'ast> {
+    /// `lhs <op> rhs` through the operator impl the left type has for this
+    /// kind of right operand. `Ok(None)` means "not mine": the operands are
+    /// plain values (or no impl matches) and the ordinary arithmetic runs.
+    pub(crate) fn user_binary(&mut self, op: BinOp, lhs: &Value, rhs: &Value) -> Result<Option<Value>, Signal> {
+        match binop_trait_name(op) {
+            Some(name) => self.user_operator(name, lhs, Some(rhs)),
+            None       => Ok(None),
+        }
+    }
+
+    /// `-v` or `~v` through the left type's `Neg` or `BitNot` impl.
+    pub(crate) fn user_unary(&mut self, op: UnaryOp, v: &Value) -> Result<Option<Value>, Signal> {
+        match op {
+            UnaryOp::Neg    => self.user_operator("Neg", v, None),
+            UnaryOp::BitNot => self.user_operator("BitNot", v, None),
+            _               => Ok(None),
+        }
+    }
+
+    /// The impl of `trait_name` a left operand of this kind has for a right
+    /// operand of that kind, called. A number on the left finds its impl
+    /// only when the right operand is a struct or an enum (`2.0 * v`).
+    pub(crate) fn user_operator(&mut self, trait_name: &'static str, lhs: &Value, rhs: Option<&Value>) -> Result<Option<Value>, Signal> {
+        if self.operator_impls.is_empty() || !self.operator_traits.contains(trait_name) { return Ok(None); }
+        if !(is_operand(lhs) || rhs.is_some_and(is_operand)) { return Ok(None); }
+        let l = super::expr::unwrap_ownership(lhs.clone());
+        let r = rhs.map(|r| super::expr::unwrap_ownership(r.clone()));
+        let Some(left_key) = super::expr::dispatch_key(&l) else { return Ok(None); };
+        let right_key = match &r {
+            Some(r) => match super::expr::dispatch_key(r) { Some(k) => k, None => return Ok(None) },
+            None    => String::new(),
+        };
+        match self.operator_impls.get(&(left_key, trait_name, right_key)).copied() {
+            Some(f) => {
+                let args: Vec<Value> = r.into_iter().collect();
+                Ok(Some(self.call_method(f, l, &args)?))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// The function a type's impl of `trait_name` registered for `method`.
     pub(crate) fn user_trait_fn(&self, value: &Value, trait_name: &str, method: &str) -> Option<FunctionId> {
         let type_name: String = match value {

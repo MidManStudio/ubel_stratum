@@ -19,7 +19,7 @@ pub mod lifetime;
 pub use lexical::{LexicalError, StringType};
 pub use parse::{ParseContext, ParseError};
 pub use naming::NameError;
-pub use types::{NotIterableKind, TypeError};
+pub use types::{NotIterableKind, TypeError, OPERATOR_TRAITS, operator_method_of, operator_trait_arity};
 pub use tier::TierError;
 pub use borrow::BorrowError;
 pub use move_check::MoveError;

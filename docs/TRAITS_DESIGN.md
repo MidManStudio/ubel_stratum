@@ -47,7 +47,8 @@
 | **S4b** | **Built** | Tiers on traits: a trait, a trait method signature and a default method carry a tier (`@tier` on the method, else on the trait or a block around it, else `HIGH`); an impl method must equal it (`TIER-016`) and one that writes no tier takes it; a call through a bound, a qualified call and a default method call are checked (`TIER-005`); the six prelude traits are `@tier(low)`, so a hand-written impl of one is `LOW`. See `docs/TRAITS_TIERS_SPEC.md`. |
 | **S5a** | **Built** | `Display`: a prelude trait (`@tier(low)`, `fn to_string(self) string`) that a struct or enum can implement by hand to decide how `println`, `print`, `log`, `to_string`, `{x}` and the messages of `assert` and `panic` show it, at any depth; a struct prints its fields in declaration order. See \"What S5a settled\" below. |
 | **S5b** | **Built** | `Iterator<T>`: a prelude trait (`@tier(low)`, `fn next(self) T?`) that a struct or enum can implement so that `for x in value` calls `next` until it returns `null`. `Queue`, `Stack` and `Dictionary` become iterable, and a `for` over anything that cannot be walked is `TYPE-135`. See "What S5b settled" below. |
-| S5c | Planned | Operator traits (`Add`, `Sub`, `Mul`, `Neg`, `Index` and similar), so `a + b`, `-a` and `a[i]` on a user type work (they pass sema and panic at run time today); the implicit calls then get their tier check. |
+| **S5c** | **Built** | Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` (generic in the right operand and the result, `Mul<Rhs, Out>`) and `Neg<Out>`, `BitNot<Out>`, prelude traits (`@tier(low)`) that a struct or enum implements so that `a + b`, `a *= b`, `-a` and `~a` call it. A type has one impl of an operator trait per kind of right operand, and a number or a string on the left can take a struct or an enum on the right (`2.0 * v`). A bound such as `T: Add<T, T>` is satisfied by numbers, strings and impls; an operator with no impl is `TYPE-136` and one on an unbounded type parameter is `TYPE-131`. See "What S5c settled" below. |
+| S5d | Planned | `Index`: `a[i]` and `a[i] = v` on a user type (they pass sema and panic at run time today). |
 | S6 | Planned | `dyn Trait`. As in section 4. |
 
 ### What S1a settled that the options did not
@@ -699,6 +700,74 @@ Decided 2026-11-01.
   types. The items of a string and of a tuple in a `for` stay untyped. A loop over a `null`
   optional collection panics at run time, as a method call on `null` does. `Set` has no
   constructor, so a loop over one never runs.
+
+### What S5c settled
+
+Decided 2026-11-03.
+
+- **The traits.** Ten binary traits, `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`,
+  `BitXor`, `Shl` and `Shr`, each written `Trait<Rhs, Out>` with one method (`add`, `sub`, `mul`,
+  `div`, `rem`, `bit_and`, `bit_or`, `bit_xor`, `shl`, `shr`), and two unary traits, `Neg<Out>`
+  (`neg`) and `BitNot<Out>` (`bit_not`). There are no associated types, so the right operand and
+  the result are both type parameters (`impl Mul<double, Vec2> for Vec2`). All are
+  `@tier(low)`, like the other language-item traits, so an impl that writes no tier is `LOW`
+  and a written `@tier(high)` is `TIER-016`. A `LOW` method can be called from every tier, so
+  the implicit call has no tier check to make, the same as the `next` call of S5b. Logical `!`
+  and `not`, the comparison operators (S2) and `..` have no operator trait.
+- **Several impls per type (chosen over one impl per type).** `Vec2 * double` and `Vec2 * Vec2`
+  are both ordinary game math, so a type may implement one operator trait once for each kind of
+  right operand. The kind is what the run time can tell apart: a struct or enum by its name, a
+  built-in by its run-time kind, which is erased for generics. Two impls whose right operands
+  are one kind overlap (`TYPE-128`): `Mul<double, V>` twice, `Box<int>` with `Box<double>`,
+  `int` with `long`. A unary trait has one impl. This is the one place a trait has more than
+  one impl per type; the rule of S3b stands for every other trait.
+- **A number or a string on the left (`2.0 * v`).** `impl Mul<Vec2, Vec2> for double` is
+  allowed, and only reached when the right operand is a struct or an enum, so `double * double`
+  keeps the run time's own arithmetic. This is a narrow exception to the rule that a built-in
+  type that satisfies a prelude trait natively cannot have it implemented by hand (`TYPE-128`),
+  and to the rule that only a struct or an enum has a hand-written impl of a language-item
+  trait. Any other built-in left operand (`impl Add<int, int> for int`, a collection, a tuple)
+  is `TYPE-129`, as is a bare type parameter as the right operand (`impl<T> Mul<T, Box<T>> for
+  Box<T>`): impls are told apart by the right operand's run-time kind, which a type parameter
+  does not have.
+- **Numbers keep the run time's arithmetic and satisfy the traits natively.** Integers of every
+  size and the floats satisfy `Add`, `Sub`, `Mul`, `Div` and `Rem`; `string` satisfies `Add`
+  only; the integers satisfy the bitwise traits and `BitNot`; the signed integers and the floats
+  satisfy `Neg` (an unsigned number does not, the run time rejects it). So `T: Add<T, T>` accepts
+  `int`, `double`, `string` and any impl, and `a + b` on two numbers is unchanged. Sema's
+  `native_operator` and the run time's `eval_binop` each list what numbers support and have to be
+  kept in step by hand.
+- **An operator on an unbounded type parameter is `TYPE-131`** (it passed sema and worked only
+  for numbers and strings before). The check looks for a bound of the operator's trait; the
+  suggestion shows the bound with its arguments (`<T: Add<T, T>>`). With a bound whose right
+  operand is another one, the operator is `TYPE-136`. A parameter can be bounded once per right
+  operand (`T: Mul<double, T> + Mul<T, T>`); `TYPE-134` now needs one right operand with two
+  results.
+- **Compound assignment.** `a += b` means `a = a + b` (the C# rule, chosen over `AddAssign`
+  traits), so an impl always builds a new value, and the result must have the type of `a`.
+  Sema used to read `a += b` as a plain assignment and ignore the operator, so `v *= 2.0` on a
+  `Vec2` was a type mismatch and `a += b` on two structs passed and panicked.
+- **Run time.** The impls are filed by `(left type, trait, right operand's kind)`
+  (`operator_impls`), only for the traits the prelude declares in this program (a program trait
+  named `Add` takes the name, and its operator is then unchecked and not dispatched). A binary
+  operator, a unary operator and a compound assignment try the table first when a struct, an
+  enum or an ownership wrapper around one is an operand, and fall back to the run time's own
+  arithmetic otherwise, so a program with no operator impl pays one emptiness check. Inside a
+  generic body the impl is found by the kind of the values, which is also how an expression
+  whose static type is not known is dispatched. `a.add(b)` through a bound goes by the right
+  operand's kind too, and runs natively for a number.
+- **Result types.** The result of `a * b` is the impl's `Out`, substituted for a generic
+  receiver. A right operand that is not known yet is decided by the only impl, and with several
+  impls the answer waits for the run time. An integer literal fits an integer impl only
+  (`v * 2` against `Mul<double, V>` is `TYPE-136`) and takes the type of the impl it picks
+  (`Mul<u32, V>`).
+- **`TYPE-136`** reports an operator with no impl behind it, naming the pair, and the right
+  operands the left type does have impls for.
+- **Not built.** `Index` (`a[i]`, `a[i] = v`) is slice S5d. There is no `AddAssign` family. The
+  explicit form `a.mul(3.0)` on a type with several impls of one trait resolves against the first
+  impl, in sema and at run time (the operator form finds the right one). Operators on `List`,
+  `Dictionary`, tuples and other built-in left operands cannot be implemented, and `list + list`
+  or `bool & bool` still passes sema and panics at run time.
 
 ### D7: what has to be specified before S4
 

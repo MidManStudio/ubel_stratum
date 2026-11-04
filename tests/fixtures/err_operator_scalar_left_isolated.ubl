@@ -1,0 +1,22 @@
+// tests/fixtures/err_operator_scalar_left_isolated.ubl
+// `2.0 * v` when only `Vec2 * double` is implemented: the number on the left
+// has no `Mul<Vec2, _>` impl, so sema reports it instead of the run time
+// panicking.
+// Expected: sema FAIL (OperatorNotImplemented, TYPE-136).
+
+struct Vec2 {
+    x: double,
+    y: double,
+}
+
+impl Mul<double, Vec2> for Vec2 {
+    fn mul(self, rhs: double) Vec2 {
+        return Vec2 { x = self.x * rhs, y = self.y * rhs }
+    }
+}
+
+fn main() void {
+    let v = Vec2 { x = 1.0, y = 2.0 }
+    let w = 2.0 * v
+    println(w.x)
+}

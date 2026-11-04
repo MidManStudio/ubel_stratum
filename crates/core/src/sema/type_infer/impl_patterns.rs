@@ -48,6 +48,8 @@ pub(super) const DISPLAY_ON_BUILTIN: &str = "implementing `Display` by hand for 
 pub(super) const DISPLAY_ON_COLLECTION: &str = "implementing `Display` by hand for a collection (a collection is printed element by element at run time, and a user-written `to_string` for it would not be called)";
 pub(super) const ITERATOR_ON_BUILTIN: &str = "implementing `Iterator` by hand for a built-in type (only a struct or an enum can have a hand-written `Iterator`; a `for` loop walks a built-in type itself, so the impl would never be called)";
 pub(super) const ITERATOR_OPTIONAL_ITEM: &str = "an `Iterator` over optional items (`Iterator<int?>`): a `for` loop ends when `next` returns `null`, so a `null` item could not be told from the end";
+pub(super) const OPERATOR_ON_BUILTIN: &str = "implementing an operator trait for a built-in left operand other than a number or a string with a struct or an enum as the right operand (`impl Mul<Vec2, Vec2> for double` is allowed; the run time never calls any other impl on a built-in type, since it applies the operator itself)";
+pub(super) const OPERATOR_RHS_KIND: &str = "an operator impl whose right operand is a bare type parameter (`impl<T> Mul<T, Out> for Vec<T>`): impls are told apart by the kind of the right operand at run time, which a type parameter does not have";
 pub(super) const PRELUDE_ON_COLLECTION: &str = "implementing a prelude trait by hand for a collection (a collection is compared, hashed and cloned by identity at run time)";
 
 // ── Data ─────────────────────────────────────────────────────────

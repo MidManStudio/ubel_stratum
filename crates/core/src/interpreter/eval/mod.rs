@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use crate::ast::arena::AstArena;
 use crate::ast::common::{Span, TierAnnotation};
+use crate::error_management::errors::{OPERATOR_TRAITS, operator_method_of, operator_trait_arity};
 use crate::ast::literals::IntSuffix;
 use crate::ast::declarations::{FunctionDecl, MethodDecl, ParamKind, StructMember};
 use crate::ast::expressions::Expr;
@@ -176,6 +177,14 @@ pub struct Interpreter<'ast> {
     /// Whether any `impl Display for Type` was registered. While it is `false`
     /// the runtime formats values exactly as before and does no extra work.
     pub(crate) has_user_display: bool,
+    /// The operator traits the prelude declares in this program (a program
+    /// that shadows `Add` with its own trait has no operator `Add`).
+    pub(crate) operator_traits: HashSet<&'static str>,
+    /// `(left type, operator trait, right operand's kind)` -> the impl's
+    /// method, for `impl Mul<float, Vec2> for Vec2` and its siblings. A unary
+    /// operator's right kind is empty. Empty for a program with no operator
+    /// impl, which keeps the arithmetic fast path untouched (`user_ops`).
+    pub(crate) operator_impls: HashMap<(String, &'static str, String), FunctionId>,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -198,6 +207,8 @@ impl<'ast> Interpreter<'ast> {
             alias_builtin_keys: HashMap::new(),
             builtin_prelude_impls: false,
             has_user_display: false,
+            operator_traits: HashSet::new(),
+            operator_impls: HashMap::new(),
         };
         interp.register_builtins();
         interp
@@ -379,8 +390,28 @@ impl<'ast> Interpreter<'ast> {
         let inherited = defaults.iter().copied()
             .filter(|d| !imp.methods.iter().any(|m| m.name == d.name));
 
+        // An impl of an operator trait is also filed by the right operand's
+        // kind, because a type may have several (`Mul<float, V>` and
+        // `Mul<V, V>`) and `trait_method_table` holds one per trait.
+        let operator: Option<(&'static str, String)> = match self.operator_traits.get(trait_name).copied() {
+            Some(op) => {
+                let rhs = if operator_trait_arity(op) == 2 {
+                    imp.trait_args.first().copied().and_then(|t| self.impl_target_key(t)).map(|(k, _)| k)
+                } else {
+                    Some(String::new())
+                };
+                rhs.map(|k| (op, k))
+            }
+            None => None,
+        };
+
         for m in imp.methods.iter().copied().chain(inherited) {
             let id = self.register_method(&type_name, m);
+            if let Some((op, rhs_key)) = &operator {
+                if m.name == operator_method_of(op) {
+                    self.operator_impls.insert((type_name.clone(), *op, rhs_key.clone()), id);
+                }
+            }
             self.trait_method_table
                 .entry((type_name.clone(), trait_name.to_string()))
                 .or_default()
@@ -419,6 +450,11 @@ impl<'ast> Interpreter<'ast> {
                 }
                 Item::Trait(t) => {
                     self.trait_names.insert(t.name.to_string());
+                    if t.span.is_prelude() {
+                        if let Some(op) = OPERATOR_TRAITS.iter().find(|o| o.0 == t.name) {
+                            self.operator_traits.insert(op.0);
+                        }
+                    }
                     let defaults: Vec<MethodDecl<'ast>> = t.items.iter().filter_map(|it| match it {
                         crate::ast::declarations::TraitItem::DefaultMethod(m) => Some(*m),
                         _ => None,

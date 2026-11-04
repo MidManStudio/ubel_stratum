@@ -499,8 +499,9 @@ it actually turned up:
 - The implicit calls of operators and `for-in` into a trait method are not
   tier-checked: `a == b` and `a < b` run a hand-written `eq` or `partial_cmp`
   with no check against the caller's tier. Every other call to a method is
-  checked (`TIER-005`; slices S4a and S4b). Slice S5 decides the operator
-  desugaring and with it this check.
+  checked (`TIER-005`; slices S4a and S4b). Slice S5 settled it: every operator
+  trait, `Iterator` and the prelude traits are `LOW`, and a `LOW` method can be
+  called from every tier, so a check on the implicit call could never fire.
 - A hand-written impl of a prelude trait is `LOW` (`TIER-016` otherwise), so its
   body may not call a `HIGH` function, read or write a `static`, or build a
   collection. A helper such as a ranking function has to be `@tier(low)`. This
@@ -511,10 +512,32 @@ it actually turned up:
 - A tier error found in type inference (a call on a receiver, a call through a
   trait, a `TIER-016`) stops the pipeline before the tier pass runs, so a by-name
   `TIER-005` in a method body is reported only once those are fixed.
-- Arithmetic operators and indexing on user types are accepted by sema and
-  panic at runtime. The operator traits of slice S5c give them a type error.
-  (`for x in value` over a user type was the same until S5b, which added
-  `Iterator<T>` and `TYPE-135`.)
+- Indexing on a user type (`a[i]`, `a[i] = v`) is accepted by sema and panics
+  at runtime. The `Index` trait of slice S5d gives it a type error. (The
+  arithmetic, bitwise and unary operators and compound assignment were the same
+  until S5c, which added the operator traits and `TYPE-136`, and `for x in
+  value` over a user type until S5b, which added `Iterator<T>` and `TYPE-135`.)
+- Operator traits (S5c) leave these open. An impl cannot take a bare type
+  parameter as its right operand (`impl<T> Mul<T, Box<T>> for Box<T>` is
+  `TYPE-129`); `impl Mul<double, Vec2<double>> for Vec2<double>` is the way to
+  write a scalar scale on a generic vector. The explicit form `a.mul(3.0)` on a
+  type with several impls of one trait resolves against the first impl, in
+  sema and at run time, so another impl's right operand is a type mismatch
+  there; the operator form and a call through a bound find the right impl by
+  the right operand's kind. There is no `AddAssign` family: `a += b` is
+  `a = a + b`. A built-in operand with no arithmetic still passes sema and
+  panics at run time (`list + list`, `bool & bool`: "arithmetic not supported"),
+  and `native_operator` in sema and `eval_binop` at run time each list what
+  numbers support, to be kept in step by hand.
+- An expression that already failed to type (`await` on a non-task, `*` on a non-reference)
+  still panics the type checker where it is the receiver of a method call (`t.go()`), the
+  indexed value (`t[0]`), the callee (`t()`), the scrutinee of a `match`, or the value of an
+  assignment (`m = t`, `m += t` on a number), all verified on a baseline built before S5c. A
+  field read of it, an operator on it and a `for` over it are guarded (S5b, S5c). Each site
+  reads the type table with the error sentinel and needs the same early return.
+- A parenthesized expression as the first argument of a call, `println((a + b))`
+  or `f((a), b)`, is `PARSE-001`; as a later argument (`f(b, (a))`) and in a
+  `let` (`let c = (a + b) * 2`) it parses. Found while testing S5c; it predates it.
 - A `for` loop over a `null` optional collection (a `List<int>?` that holds
   `null`) panics at run time, as a method call on `null` does; sema looks
   through `T?` and `T!` and cannot know the value.

@@ -1,0 +1,23 @@
+// tests/fixtures/err_operator_combined.ubl
+// A generic function bounded by `T: Add<T, T>` called with a struct that has
+// no `Add` impl: the bound is what reports it (TYPE-126), at the call, so
+// the body's own `a + b` is never reached for the struct at run time.
+// Expected: sema FAIL (TYPE-126).
+
+struct Money {
+    cents: int,
+}
+
+fn total<T: Add<T, T>>(items: List<T>, zero: T) T {
+    let mut acc = zero
+    for item in items {
+        acc = acc + item
+    }
+    return acc
+}
+
+fn main() void {
+    let wallet = [Money { cents = 100 }, Money { cents = 250 }]
+    let sum = total(wallet, Money { cents = 0 })
+    println(sum.cents)
+}

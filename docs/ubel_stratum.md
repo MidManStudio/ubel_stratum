@@ -1704,3 +1704,40 @@ compile and the third panics when run, and two of the `err_` ones are accepted a
 `tests/iterator.rs` in `docs/ubel_stratum_rd.md`. Every line it wrote was checked for em dashes
 and first or second person.
 
+A twenty-seventh delivery (traits slice S5c) touched `interpreter/eval/expr.rs` (the operator,
+unary and compound-assignment hooks, the explicit operator call through a bound, and the
+native fallbacks), `interpreter/eval/user_ops.rs` (`user_binary`, `user_unary`,
+`user_operator`), `interpreter/eval/mod.rs` (`operator_traits`, `operator_impls` and their
+registration), `sema/type_infer.rs` (`operator_traits`, `operator_defs`, `operator_impls`,
+`operator_site`, `operator_candidates`, native satisfaction in `bound_status`, the operator
+branch of `bound_args_status`, the impl checks, one bound per right operand in
+`check_bound_list` and `supertrait_closure`), `sema/type_infer/impl_patterns.rs`,
+`error_management/errors/types/mod.rs` (the new `OperatorNotImplemented`, the operator trait
+table and the suggestions of `OperatorNeedsBound` and `ConflictingBounds`),
+`error_management/errors/mod.rs` and `rd_parser/src/prelude.rs`. The prelude gains twelve
+`@tier(low)` traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl` and
+`Shr` (`Trait<Rhs, Out>`, one method each) and `Neg<Out>` and `BitNot<Out>`. A struct or enum
+that implements one is what `a + b`, `a *= b`, `-a` and `~a` call, and a type has one impl per
+kind of right operand, so `Vec2 * double` and `Vec2 * Vec2` coexist; a number or a string on
+the left can take a struct or an enum on the right (`impl Mul<Vec2, Vec2> for double`).
+Numbers keep the run time's arithmetic and satisfy the traits natively, so `T: Add<T, T>`
+accepts `int`, `double` and `string`. An operator with no impl is the new `TYPE-136`
+`OperatorNotImplemented`, an operator on an unbounded type parameter is `TYPE-131`, and
+`a += b` is now read as `a = a + b` (sema used to treat it as a plain assignment). A crash of an
+existing kind was fixed on the way: a field read of an expression that already failed to type
+(`await` on a non-task, `*` on a non-reference) indexed the type table with the error sentinel
+and panicked the type checker (verified on the baseline), and `peel_wrappers` did the same for
+an operator on such an expression; both now stop at the sentinel, and a reported operator has
+an unknown type. It added `tests/operators.rs` (68 tests), three prelude unit tests and eight fixtures
+(`ok_operator_isolated`, `ok_operator_combined`, `err_operator_isolated`,
+`err_operator_combined`, `ok_operator_scalar_left_isolated`,
+`err_operator_scalar_left_isolated`, `ok_operator_bound_isolated`,
+`err_operator_bound_isolated`). The workspace has 1138 passing tests in 33 suites (S5b had 1067 in 32), 0 failed, 0 ignored,
+run in an independent fresh clone of live after the bundle was applied with the scaffold script.
+A sweep of 385 `.ubl` files against a binary built before S5c found that none of the 377
+files that existed before changed stage, diagnostics, exit code or output (2 fail lexing, 8 fail
+parsing, 143 stop at sema, 224 are clean and run). The eight new fixtures behave as their
+headers say: before S5c the four `ok_` ones do not compile, `err_operator_bound_isolated` is
+accepted and runs, and the other three `err_` ones fail with `TYPE-122` for the unknown operator
+trait. The mutation pass is described under `tests/operators.rs` in `docs/ubel_stratum_rd.md`.
+The added lines were checked for em dashes and first or second person.

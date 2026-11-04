@@ -1,0 +1,23 @@
+// tests/fixtures/err_operator_isolated.ubl
+// `a * b` on two `Vec2` when the type only implements `Mul` for a `double`
+// right operand: the run time would panic ("arithmetic not supported"), so
+// sema reports the pair and names the impl the type does have.
+// Expected: sema FAIL (OperatorNotImplemented, TYPE-136).
+
+struct Vec2 {
+    x: double,
+    y: double,
+}
+
+impl Mul<double, Vec2> for Vec2 {
+    fn mul(self, rhs: double) Vec2 {
+        return Vec2 { x = self.x * rhs, y = self.y * rhs }
+    }
+}
+
+fn main() void {
+    let a = Vec2 { x = 1.0, y = 2.0 }
+    let b = Vec2 { x = 3.0, y = 4.0 }
+    let c = a * b
+    println(c.x)
+}

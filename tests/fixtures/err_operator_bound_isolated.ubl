@@ -1,0 +1,13 @@
+// tests/fixtures/err_operator_bound_isolated.ubl
+// `a + b` on a value of an unbounded type parameter: nothing says `T` can be
+// added, so sema asks for the bound (TYPE-131) instead of letting the run
+// time panic for anything but a number.
+// Expected: sema FAIL (OperatorNeedsBound, TYPE-131).
+
+fn total<T>(a: T, b: T) T {
+    return a + b
+}
+
+fn main() void {
+    println(total(1, 2))
+}

@@ -102,7 +102,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, TraitBound, UnaryOp, Attribute, AttrArg};
+use crate::ast::common::{AssignOp, BinOp, GenericParam, Span, TierAnnotation, TraitBound, UnaryOp, Attribute, AttrArg};
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock, StaticDecl,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
@@ -118,7 +118,7 @@ use crate::ast::root::{Item, Program};
 use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
 use crate::ast::types::{Type, TypeKind};
 use crate::builtins::instance::{self, MethodReturn, ReceiverWrap};
-use crate::error_management::{ErrorManager, errors::{NotIterableKind, TypeError, TierError}};
+use crate::error_management::{ErrorManager, errors::{NotIterableKind, TypeError, TierError, OPERATOR_TRAITS, operator_trait_arity}};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::tier_check;
 use crate::ast::common::Visibility;
@@ -389,6 +389,55 @@ struct BoundRef {
     args:      Vec<TypeId>,
 }
 
+/// One impl of an operator trait: `impl Mul<float, Vec2> for Vec2`. A type
+/// can have several of one operator trait, told apart by the kind of the right
+/// operand at run time (generics are erased, so `Vec2<int>` and `Vec2<float>`
+/// are one kind).
+#[derive(Clone)]
+struct OperatorImpl {
+    /// The right operand's run-time kind; empty for a unary operator.
+    rhs_key: String,
+    /// The trait's arguments as the impl wrote them, in the numbering of the
+    /// left type's head: `Rhs` and `Out`, or just `Out` for a unary operator.
+    args:    Vec<TypeId>,
+}
+
+/// Whether a run-time kind (see `runtime_impl_key`) is a number, a bool, a
+/// char or a string, as opposed to a tuple, an array or a collection.
+fn is_scalar_key(key: &str) -> bool {
+    !(key.starts_with("tuple") || matches!(key, "List" | "Dictionary" | "Queue" | "Stack" | "InlineList"))
+}
+
+/// The operator trait and the operator's text for a binary operator that
+/// goes through one.
+fn binop_operator_trait(op: BinOp) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        BinOp::Add => ("Add", "+"),   BinOp::Sub => ("Sub", "-"),
+        BinOp::Mul => ("Mul", "*"),   BinOp::Div => ("Div", "/"),
+        BinOp::Rem => ("Rem", "%"),   BinOp::BitAnd => ("BitAnd", "&"),
+        BinOp::BitOr => ("BitOr", "|"), BinOp::BitXor => ("BitXor", "^"),
+        BinOp::Shl => ("Shl", "<<"),  BinOp::Shr => ("Shr", ">>"),
+        _ => return None,
+    })
+}
+
+/// The same for a compound assignment (`a += b` goes through `Add`).
+fn assign_operator_trait(op: AssignOp) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        AssignOp::AddAssign => ("Add", "+="),   AssignOp::SubAssign => ("Sub", "-="),
+        AssignOp::MulAssign => ("Mul", "*="),   AssignOp::DivAssign => ("Div", "/="),
+        AssignOp::RemAssign => ("Rem", "%="),   AssignOp::BitAndAssign => ("BitAnd", "&="),
+        AssignOp::BitOrAssign => ("BitOr", "|="), AssignOp::BitXorAssign => ("BitXor", "^="),
+        AssignOp::ShlAssign => ("Shl", "<<="),  AssignOp::ShrAssign => ("Shr", ">>="),
+        AssignOp::Assign => return None,
+    })
+}
+
+/// Whether a run-time kind is one of the integer kinds.
+fn is_integer_key(key: &str) -> bool {
+    matches!(key, "int" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64")
+}
+
 /// A requirement that `ty` implement `trait_def`, raised where a bounded
 /// generic parameter is instantiated (a call to a generic function, a
 /// struct or enum used with arguments). Checked once the arguments are
@@ -546,6 +595,15 @@ struct InferCtx<'a> {
     /// and nothing satisfies it natively: it is an ordinary trait to bounds
     /// and impls, and only a `for` loop treats it specially.
     iterator_trait:   Option<DefId>,
+    /// The prelude's operator traits (`Add`, `Neg`, ...) by definition, and
+    /// back by name; present only for one the program did not shadow. Like
+    /// `Iterator`, ordinary generic traits to bounds and impls.
+    operator_traits:  HashMap<DefId, &'static str>,
+    operator_defs:    HashMap<&'static str, DefId>,
+    /// Every impl of an operator trait, by the trait and the left operand's
+    /// run-time kind (`user:Vec2`, `builtin:double`). Only the first impl of
+    /// a trait for a type is also in `trait_impls`.
+    operator_impls:   HashMap<(DefId, String), Vec<OperatorImpl>>,
     /// Each trait's declared supertraits (`trait B: A + C`), resolved, in
     /// the order written and without repeats. Filled by
     /// `register_trait_supertraits` before any bound is registered. A name
@@ -698,6 +756,9 @@ impl<'a> InferCtx<'a> {
             prelude_traits:    HashMap::new(),
             prelude_defs:      HashMap::new(),
             iterator_trait:    None,
+            operator_traits:   HashMap::new(),
+            operator_defs:     HashMap::new(),
+            operator_impls:    HashMap::new(),
             trait_supers:      HashMap::new(),
             trait_super_args:  HashMap::new(),
             trait_arity:       HashMap::new(),
@@ -1639,7 +1700,13 @@ impl<'a> InferCtx<'a> {
         while !frontier.is_empty() {
             let mut next: Vec<BoundRef> = Vec::new();
             for b in frontier {
-                if out.iter().any(|o| o.trait_def == b.trait_def) { continue; }
+                // An operator trait is one bound per right operand, so the same
+                // trait with another first argument is another bound.
+                let operator = self.operator_traits.contains_key(&b.trait_def);
+                if out.iter().any(|o| o.trait_def == b.trait_def && (!operator || match (o.args.first(), b.args.first()) {
+                    (Some(x), Some(y)) => self.same_type(*x, *y),
+                    _ => true,
+                })) { continue; }
                 let supers = self.trait_supers.get(&b.trait_def).cloned().unwrap_or_default();
                 for sup in supers {
                     let written = self.trait_super_args.get(&(b.trait_def, sup)).cloned().unwrap_or_default();
@@ -1670,6 +1737,13 @@ impl<'a> InferCtx<'a> {
             if !t.span.is_prelude() { continue; }
             if t.name == "Iterator" {
                 self.iterator_trait = self.ctx.top_level_def(t.name);
+                continue;
+            }
+            if let Some(op) = OPERATOR_TRAITS.iter().find(|o| o.0 == t.name) {
+                if let Some(def_id) = self.ctx.top_level_def(t.name) {
+                    self.operator_traits.insert(def_id, op.0);
+                    self.operator_defs.insert(op.0, def_id);
+                }
                 continue;
             }
             let Some(name) = PRELUDE_TRAIT_NAMES.iter().find(|n| **n == t.name).copied() else { continue; };
@@ -1971,7 +2045,19 @@ impl<'a> InferCtx<'a> {
             let arity = self.trait_arity.get(&id).copied().unwrap_or(b.args.len());
             self.check_trait_arg_count(b, arity);
             let args = self.trait_arg_types(b.args, arity);
-            if let Some(first) = kept.iter().find(|k| k.trait_def == id) {
+            // An operator trait may be bounded once per right operand:
+            // `T: Mul<float, T> + Mul<T, T>`.
+            let is_operator = self.operator_traits.contains_key(&id);
+            let mut found: Option<usize> = None;
+            for (n, k) in kept.iter().enumerate() {
+                if k.trait_def != id { continue; }
+                let same_rhs = !is_operator || match (k.args.first(), args.first()) {
+                    (Some(a), Some(b)) => self.same_type(*a, *b),
+                    _ => true,
+                };
+                if same_rhs { found = Some(n); break; }
+            }
+            if let Some(first) = found.map(|n| &kept[n]) {
                 let first_args = first.args.clone();
                 let same = first_args.len() == args.len()
                     && first_args.iter().zip(&args).all(|(x, y)| self.same_type(*x, *y));
@@ -2020,6 +2106,8 @@ impl<'a> InferCtx<'a> {
     fn peel_wrappers(&mut self, ty: TypeId) -> TypeId {
         let mut cur = self.apply(ty);
         loop {
+            // An expression that already failed to type has no table entry.
+            if cur == TypeId::ERROR { return cur; }
             let inner = match self.ctx.types.get(cur) {
                 SemaType::GcRef(inner)
                 | SemaType::Unique(inner)
@@ -2132,6 +2220,11 @@ impl<'a> InferCtx<'a> {
         if let Some(name) = self.prelude_traits.get(&trait_def).copied() {
             return self.prelude_status(name, ty);
         }
+        // The run time applies an operator to a number (and `+` to a string)
+        // itself, so the built-in types satisfy the operator traits natively.
+        if let Some(name) = self.operator_traits.get(&trait_def).copied() {
+            if self.native_operator(name, ty) { return Some(true); }
+        }
         match self.ctx.types.get(ty).clone() {
             SemaType::Unknown => Some(true),
             SemaType::Var(_)  => None,
@@ -2220,6 +2313,9 @@ impl<'a> InferCtx<'a> {
         }
         if args.is_empty() { return Some(true); }
         let ty = self.peel_wrappers(ty);
+        if self.operator_traits.contains_key(&trait_def) {
+            return Some(self.operator_args_status(ty, trait_def, args, span));
+        }
         let have: Vec<TypeId> = match self.ctx.types.get(ty).clone() {
             // An impl for a generic head writes its trait arguments in the
             // head's numbering, so the receiver's own arguments go in.
@@ -2651,7 +2747,59 @@ impl<'a> InferCtx<'a> {
             }
         }
 
-        if self.trait_impls.contains_key(&(trait_def, target_def)) {
+        // An operator trait takes one impl per kind of right operand, so what
+        // makes a second impl an overlap is a right operand of the same kind
+        // at run time, not the type alone.
+        let operator = self.operator_traits.get(&trait_def).copied();
+        let mut first_impl = true;
+        if let Some(op_trait) = operator {
+            let binary = operator_trait_arity(op_trait) == 2;
+            let rhs_ty = if binary { impl_args.first().copied().map(|t| self.apply(t)) } else { None };
+            let left_key = if pattern.is_some_and(|p| p.builtin) {
+                None
+            } else if let Some((_, bty)) = builtin {
+                // The run time applies an operator to a built-in value itself;
+                // the one impl it can reach is a number or a string on the
+                // left with a struct or an enum on the right (`2.0 * v`).
+                let scalar_key = self.runtime_impl_key(bty).filter(|k| is_scalar_key(k));
+                match (scalar_key, rhs_ty) {
+                    (Some(k), Some(r)) if self.is_user_type(r) => Some(format!("builtin:{}", k)),
+                    _ => None,
+                }
+            } else {
+                Some(format!("user:{}", self.ctx.symbols.lookup(target_def).name))
+            };
+            let Some(left_key) = left_key else {
+                self.report_unsupported(impl_patterns::OPERATOR_ON_BUILTIN, i.span);
+                return;
+            };
+            let rhs_key = match rhs_ty {
+                Some(r) => match self.operator_rhs_key(r) {
+                    Some(k) => k,
+                    None => {
+                        self.report_unsupported(impl_patterns::OPERATOR_RHS_KIND, i.span);
+                        return;
+                    }
+                },
+                None => String::new(),
+            };
+            let slot = (trait_def, left_key);
+            let existing = self.operator_impls.get(&slot).map_or(0, |v| v.len());
+            if self.operator_impls.get(&slot).is_some_and(|v| v.iter().any(|o| o.rhs_key == rhs_key)) {
+                let note = if binary {
+                    Some(format!("generics are erased at run time, so a right operand of kind `{}` is one kind of value, and `{}` already has an impl for it", rhs_key, type_name))
+                } else {
+                    pattern.map(|_| "generics are erased at run time, so one impl covers every instance of the type".to_string())
+                };
+                self.errors.add_type_error(TypeError::OverlappingImpl {
+                    trait_name: info.name.clone(), type_name, note, span: i.span,
+                });
+                return;
+            }
+            first_impl = existing == 0;
+            self.operator_impls.entry(slot).or_default().push(OperatorImpl { rhs_key, args: impl_args.clone() });
+        }
+        if operator.is_none() && self.trait_impls.contains_key(&(trait_def, target_def)) {
             // Generics are erased at run time, so one impl covers every
             // `Box<..>`, and a second one is the same mistake as ever.
             let note = pattern.map(|_| "generics are erased at run time, so one impl covers every instance of the type".to_string());
@@ -2682,8 +2830,9 @@ impl<'a> InferCtx<'a> {
             }
         }
         // Types that are one kind of value at run time cannot be told apart
-        // by a call, so a trait has one impl for all of them.
-        if let Some((_, builtin_ty)) = builtin {
+        // by a call, so a trait has one impl for all of them. (An operator
+        // trait is told apart by its right operand as well, checked above.)
+        if let Some((_, builtin_ty)) = builtin.filter(|_| operator.is_none()) {
             if let Some(key) = self.runtime_impl_key(builtin_ty) {
                 if let Some(first) = self.builtin_key_impls.get(&(key.clone(), trait_def)).copied() {
                     let first_name = self.ctx.symbols.lookup(first).name.clone();
@@ -2714,10 +2863,12 @@ impl<'a> InferCtx<'a> {
                 self.builtin_key_impls.insert((key, trait_def), target_def);
             }
         }
-        self.trait_impls.insert((trait_def, target_def), i.span);
-        self.trait_impl_args.insert((trait_def, target_def), impl_args.clone());
-        if let Some(g) = pattern.and_then(|p| p.guard.clone()) {
-            self.trait_impl_guards.insert((trait_def, target_def), g);
+        if first_impl {
+            self.trait_impls.insert((trait_def, target_def), i.span);
+            self.trait_impl_args.insert((trait_def, target_def), impl_args.clone());
+            if let Some(g) = pattern.and_then(|p| p.guard.clone()) {
+                self.trait_impl_guards.insert((trait_def, target_def), g);
+            }
         }
         self.require_def_bounds(trait_def, &impl_args, i.span);
         let self_ty = match (pattern, builtin) {
@@ -2769,11 +2920,11 @@ impl<'a> InferCtx<'a> {
                         });
                     }
                     expected.tier = Some(impl_tier);
-                    self.add_trait_method(target_def, trait_def, &tm.name, expected);
+                    if first_impl { self.add_trait_method(target_def, trait_def, &tm.name, expected); }
                 }
                 None if tm.has_default => {
                     expected.guard = guard.clone();
-                    self.add_trait_method(target_def, trait_def, &tm.name, expected);
+                    if first_impl { self.add_trait_method(target_def, trait_def, &tm.name, expected); }
                 }
                 None => {
                     self.errors.add_type_error(TypeError::TraitMethodMissing {
@@ -4731,9 +4882,19 @@ impl<'a> InferCtx<'a> {
                 ty
             }
 
-            ExprKind::Assign { target, value, .. } => {
+            ExprKind::Assign { target, op, value } => {
                 let target_ty = self.infer_expr(target);
                 let value_ty  = self.infer_expr(value);
+                // `a += b` is `a = a + b`: where the operator goes through an
+                // operator trait, its result has to be the type of `a`.
+                let mut through_trait = false;
+                if let Some((trait_name, text)) = assign_operator_trait(*op) {
+                    if let Some(result) = self.operator_site(trait_name, text, target_ty, Some(value_ty), expr.span) {
+                        through_trait = true;
+                        if result != TypeId::ERROR { self.unify(target_ty, result, expr.span); }
+                    }
+                }
+                if through_trait { return self.void_ty(); }
                 // GAP 2 — check for an arena escape first. If the assign
                 // itself is the escape, report that specifically and skip
                 // the generic structural unify below: since ArenaRef pairs
@@ -4809,8 +4970,8 @@ impl<'a> InferCtx<'a> {
                 let op_ty = self.infer_expr(operand);
                 match op {
                     UnaryOp::Not    => self.bool_ty(),
-                    UnaryOp::Neg    => op_ty,
-                    UnaryOp::BitNot => op_ty,
+                    UnaryOp::Neg    => self.operator_site("Neg", "-", op_ty, None, expr.span).unwrap_or(op_ty),
+                    UnaryOp::BitNot => self.operator_site("BitNot", "~", op_ty, None, expr.span).unwrap_or(op_ty),
                     UnaryOp::Await  => self.unwrap_task(op_ty, expr.span),
                 }
             }
@@ -5481,6 +5642,9 @@ impl<'a> InferCtx<'a> {
                 let receiver_ty = self.infer_expr(target);
                 let receiver_ty = self.default_if_int_lit(receiver_ty);
                 let receiver_ty = self.apply(receiver_ty);
+                // A receiver that already failed to type has been reported;
+                // the table has no entry to read for it.
+                if receiver_ty == TypeId::ERROR { return TypeId::ERROR; }
                 if let SemaType::Named { def, args } = self.ctx.types.get(receiver_ty).clone() {
                     if let Some(fields) = self.struct_fields.get(&def).cloned() {
                         if let Some((_, raw_ty)) = fields.iter().find(|(n, _)| n == field) {
@@ -6178,6 +6342,14 @@ impl<'a> InferCtx<'a> {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
             | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                // A struct or an enum on the left, a type parameter, or a
+                // user type on the right of a number goes through the
+                // operator trait; the run time's own arithmetic stays as it was.
+                if let Some((trait_name, text)) = binop_operator_trait(op) {
+                    if let Some(result) = self.operator_site(trait_name, text, lhs, Some(rhs), span) {
+                        return result;
+                    }
+                }
                 self.unify(lhs, rhs, span);
                 self.apply(lhs)
             }
@@ -6323,6 +6495,218 @@ impl<'a> InferCtx<'a> {
     /// the operator needs the prelude trait in the parameter's bounds
     /// (`PartialEq` for `==` and `!=`, `PartialOrd` for ordering; `Ord` and
     /// `Eq` imply them). A concrete type is not checked here.
+    // ── Operator traits: `+ - * / % & | ^ << >> ~` and unary `-` ──────
+
+    /// Whether the run time applies the operator of `trait_name` to values of
+    /// the built-in type `ty` by itself. `ty` has its wrappers peeled.
+    fn native_operator(&self, trait_name: &str, ty: TypeId) -> bool {
+        let t = self.ctx.types.get(ty);
+        let signed = matches!(t, SemaType::Int | SemaType::Long | SemaType::I8 | SemaType::I16
+            | SemaType::I32 | SemaType::I64 | SemaType::Isize);
+        let unsigned = matches!(t, SemaType::U8 | SemaType::U16 | SemaType::Uint | SemaType::U32
+            | SemaType::Ulong | SemaType::U64 | SemaType::Usize);
+        let float = matches!(t, SemaType::Float | SemaType::F32 | SemaType::Double | SemaType::F64);
+        match trait_name {
+            "Add" => signed || unsigned || float || matches!(t, SemaType::Str),
+            "Sub" | "Mul" | "Div" | "Rem" => signed || unsigned || float,
+            "BitAnd" | "BitOr" | "BitXor" | "Shl" | "Shr" | "BitNot" => signed || unsigned,
+            "Neg" => signed || float,
+            _ => false,
+        }
+    }
+
+    /// Whether `ty` is a struct or an enum (the only user types that can
+    /// carry an operator impl on the left).
+    fn is_user_type(&mut self, ty: TypeId) -> bool {
+        let ty = self.peel_wrappers(ty);
+        if ty == TypeId::ERROR { return false; }
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Named { def, .. } =>
+                matches!(self.ctx.symbols.lookup(def).kind, DefKind::Struct { .. } | DefKind::Enum),
+            _ => false,
+        }
+    }
+
+    /// The key that files the operator impls of a left operand: `user:Vec2`
+    /// for a struct or an enum, `builtin:double` for a number or a string.
+    /// `None` for anything an operator impl cannot be written for.
+    fn operator_left_key(&mut self, ty: TypeId) -> Option<String> {
+        let ty = self.peel_wrappers(ty);
+        if let SemaType::Named { def, .. } = self.ctx.types.get(ty).clone() {
+            let sym = self.ctx.symbols.lookup(def);
+            if matches!(sym.kind, DefKind::Struct { .. } | DefKind::Enum) {
+                return Some(format!("user:{}", sym.name));
+            }
+            return None;
+        }
+        self.runtime_impl_key(ty).filter(|k| is_scalar_key(k)).map(|k| format!("builtin:{}", k))
+    }
+
+    /// The run-time kind of a right operand: the type's name for a struct or
+    /// an enum, `runtime_impl_key` for a built-in type, `int` for an integer
+    /// literal not decided yet. `None` when there is none (a type parameter,
+    /// an unresolved variable).
+    fn operator_rhs_key(&mut self, ty: TypeId) -> Option<String> {
+        let ty = self.peel_wrappers(ty);
+        if self.int_lit_var_of(ty).is_some() { return Some("int".to_string()); }
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Named { def, .. } => {
+                let sym = self.ctx.symbols.lookup(def);
+                if matches!(sym.kind, DefKind::Struct { .. } | DefKind::Enum) { Some(sym.name.clone()) } else { None }
+            }
+            _ => self.runtime_impl_key(ty),
+        }
+    }
+
+    /// A right operand as a diagnostic writes it (`int` for a literal that
+    /// is not decided yet, not an inference variable's name).
+    fn operator_operand_text(&mut self, ty: TypeId) -> String {
+        let ty = self.peel_wrappers(ty);
+        if self.int_lit_var_of(ty).is_some() { return "int".to_string(); }
+        self.display_type(ty)
+    }
+
+    /// The trait arguments of every impl (or bound, for a type parameter)
+    /// that could answer `trait_def` for the left operand `ty`, in the
+    /// receiver's own types: `[Rhs, Out]`, or `[Out]` for a unary operator.
+    /// A number or a string has the native impl (`[ty, ty]`) first.
+    fn operator_candidates(&mut self, trait_def: DefId, name: &str, ty: TypeId) -> Vec<Vec<TypeId>> {
+        let ty = self.peel_wrappers(ty);
+        let mut out: Vec<Vec<TypeId>> = Vec::new();
+        match self.ctx.types.get(ty).clone() {
+            SemaType::Param(_) => {
+                if let Some(bs) = self.current_bounds.get(&ty) {
+                    for b in bs.iter().filter(|b| b.trait_def == trait_def) { out.push(b.args.clone()); }
+                }
+            }
+            SemaType::Named { args: recv, .. } => {
+                let Some(key) = self.operator_left_key(ty) else { return out; };
+                let impls = self.operator_impls.get(&(trait_def, key)).cloned().unwrap_or_default();
+                for o in &impls {
+                    let mut args = Vec::with_capacity(o.args.len());
+                    for a in &o.args { args.push(self.substitute(*a, &recv)); }
+                    out.push(args);
+                }
+            }
+            _ => {
+                if self.native_operator(name, ty) { out.push(vec![ty; operator_trait_arity(name)]); }
+                if let Some(key) = self.operator_left_key(ty) {
+                    for o in self.operator_impls.get(&(trait_def, key)).cloned().unwrap_or_default() {
+                        out.push(o.args.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether a right operand of type `want` is the one an impl written for
+    /// `cand` takes: the same type, or one of the same run-time kind (an
+    /// integer literal not decided yet fits any integer kind).
+    fn operator_rhs_matches(&mut self, want: TypeId, cand: TypeId) -> bool {
+        let w = self.apply(want);
+        let c = self.apply(cand);
+        if self.same_type(w, c) { return true; }
+        if self.int_lit_var_of(w).is_some() {
+            return self.runtime_impl_key(c).is_some_and(|k| is_integer_key(&k));
+        }
+        match (self.operator_rhs_key(w), self.operator_rhs_key(c)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// `bound_args_status` for an operator trait: some impl (or bound) of
+    /// the trait for `ty` has these arguments. Impls of one operator trait
+    /// differ in the right operand, so the one whose right operand is the
+    /// wanted one is compared, not just the first.
+    fn operator_args_status(&mut self, ty: TypeId, trait_def: DefId, args: &[TypeId], span: Span) -> bool {
+        let Some(name) = self.operator_traits.get(&trait_def).copied() else { return true; };
+        let cands = self.operator_candidates(trait_def, name, ty);
+        if cands.is_empty() { return true; }
+        let binary = args.len() == 2;
+        for cand in cands {
+            if cand.len() != args.len() { continue; }
+            if binary && !self.operator_rhs_matches(args[0], cand[0]) {
+                let undecided = self.operator_rhs_key(args[0]).is_none()
+                    && !matches!(self.ctx.types.get(self.apply(args[0])), SemaType::Param(_));
+                if !undecided { continue; }
+            }
+            let mut ok = true;
+            for (want, got) in args.iter().zip(cand.iter()) {
+                if !self.types_agree(*want, *got, span) { ok = false; }
+            }
+            if ok { return true; }
+        }
+        false
+    }
+
+    /// The type of `lhs <op> rhs` (`rhs` is `None` for a unary operator)
+    /// when the operator goes through an operator trait: a struct or an enum
+    /// on the left, a type parameter on the left (its bound decides), or a
+    /// number or string on the left with a struct or an enum on the right.
+    /// `None` when the operands are for the run time's own arithmetic, which
+    /// the caller keeps doing as before. A mismatch is reported here.
+    fn operator_site(&mut self, trait_name: &'static str, op: &'static str,
+                     lhs: TypeId, rhs: Option<TypeId>, span: Span) -> Option<TypeId> {
+        let trait_def = self.operator_defs.get(trait_name).copied()?;
+        let l = self.peel_wrappers(lhs);
+        if l == TypeId::ERROR { return None; }
+        let r = rhs.map(|r| self.peel_wrappers(r));
+        let is_param = matches!(self.ctx.types.get(l), SemaType::Param(_));
+        let ours = is_param
+            || self.is_user_type(l)
+            || (r.is_some_and(|r| self.is_user_type(r)) && self.operator_left_key(l).is_some());
+        if !ours { return None; }
+        if r == Some(TypeId::ERROR) { return Some(self.unknown()); }
+        let cands = self.operator_candidates(trait_def, trait_name, l);
+        if is_param && cands.is_empty() {
+            let param = self.param_display_name(l);
+            self.errors.add_type_error(TypeError::OperatorNeedsBound { op, param, trait_name, span });
+            return Some(self.unknown());
+        }
+        let Some(rhs_ty) = r else {
+            if let Some(c) = cands.first().filter(|c| !c.is_empty()) { return Some(c[0]); }
+            let lhs_text = self.display_type(l);
+            self.errors.add_type_error(TypeError::OperatorNotImplemented {
+                op, trait_name, lhs: lhs_text, rhs: None, available: Vec::new(), span,
+            });
+            return Some(self.unknown());
+        };
+        let resolved = self.apply(rhs_ty);
+        let undecided = self.int_lit_var_of(resolved).is_none()
+            && matches!(self.ctx.types.get(resolved), SemaType::Var(_) | SemaType::Unknown);
+        let mut chosen: Option<Vec<TypeId>> = None;
+        if !cands.is_empty() && undecided {
+            // The right operand is not known yet: the only impl decides it,
+            // and with several the answer waits for the run time.
+            if cands.len() == 1 { chosen = Some(cands[0].clone()); } else { return Some(self.unknown()); }
+        } else {
+            for c in &cands {
+                if c.len() != 2 { continue; }
+                let cc = self.apply(c[0]);
+                if self.same_type(resolved, cc) { chosen = Some(c.clone()); break; }
+            }
+            if chosen.is_none() {
+                for c in &cands {
+                    if c.len() == 2 && self.operator_rhs_matches(resolved, c[0]) { chosen = Some(c.clone()); break; }
+                }
+            }
+        }
+        if let Some(c) = chosen {
+            self.unify(rhs_ty, c[0], span);
+            return Some(c[1]);
+        }
+        let lhs_text = self.display_type(l);
+        let rhs_text = self.operator_operand_text(resolved);
+        let mut available = Vec::with_capacity(cands.len());
+        for c in &cands { if let Some(a) = c.first() { available.push(self.display_type(*a)); } }
+        self.errors.add_type_error(TypeError::OperatorNotImplemented {
+            op, trait_name, lhs: lhs_text, rhs: Some(rhs_text), available, span,
+        });
+        Some(self.unknown())
+    }
+
     fn check_operator_bound(&mut self, operand: TypeId, trait_name: &'static str, op: &'static str, span: Span) {
         let ty = self.peel_wrappers(operand);
         if !matches!(self.ctx.types.get(ty), SemaType::Param(_)) { return; }

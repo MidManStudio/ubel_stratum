@@ -306,6 +306,21 @@ pub enum TypeError {
         span:      Span,
     },
 
+    /// An operator applied to operands with no operator-trait impl behind
+    /// it: a struct or enum with no `impl Mul<R, Out> for T` for this right
+    /// operand, or a built-in left operand with no `impl Mul<UserType, Out>
+    /// for double`. `rhs` is `None` for a unary operator; `available` lists
+    /// the right operands the left type does have an impl for, so the
+    /// suggestion can name them.
+    OperatorNotImplemented {
+        op:         &'static str,
+        trait_name: &'static str,
+        lhs:        String,
+        rhs:        Option<String>,
+        available:  Vec<String>,
+        span:       Span,
+    },
+
     /// A trait that is its own supertrait, directly (`trait A: A`) or
     /// through others (`trait A: B  trait B: A`). `path` is the cycle as
     /// written, `A -> B -> A`, starting and ending at `trait_name`.
@@ -389,6 +404,43 @@ pub enum TypeError {
     },
 }
 
+/// The operator traits the prelude declares, as (trait, method, operator,
+/// number of type parameters). One table so the diagnostics, sema and the
+/// run time agree on the names.
+pub const OPERATOR_TRAITS: &[(&str, &str, &str, usize)] = &[
+    ("Add",    "add",     "+",  2),
+    ("Sub",    "sub",     "-",  2),
+    ("Mul",    "mul",     "*",  2),
+    ("Div",    "div",     "/",  2),
+    ("Rem",    "rem",     "%",  2),
+    ("BitAnd", "bit_and", "&",  2),
+    ("BitOr",  "bit_or",  "|",  2),
+    ("BitXor", "bit_xor", "^",  2),
+    ("Shl",    "shl",     "<<", 2),
+    ("Shr",    "shr",     ">>", 2),
+    ("Neg",    "neg",     "-",  1),
+    ("BitNot", "bit_not", "~",  1),
+];
+
+/// Number of type parameters of an operator trait, or 0 for any other trait.
+pub fn operator_trait_arity(trait_name: &str) -> usize {
+    OPERATOR_TRAITS.iter().find(|t| t.0 == trait_name).map_or(0, |t| t.3)
+}
+
+/// The method an operator trait declares (`Mul` gives `mul`).
+pub fn operator_method_of(trait_name: &str) -> &'static str {
+    OPERATOR_TRAITS.iter().find(|t| t.0 == trait_name).map_or("", |t| t.1)
+}
+
+/// An operator trait written the way a user would (`Mul<R, Out>`).
+fn trait_label(trait_name: &str) -> String {
+    match operator_trait_arity(trait_name) {
+        2 => format!("{}<R, Out>", trait_name),
+        1 => format!("{}<Out>", trait_name),
+        _ => trait_name.to_string(),
+    }
+}
+
 impl TypeError {
     pub fn span(&self) -> Span {
         match self {
@@ -419,6 +471,7 @@ impl TypeError {
             TypeError::SupertraitCycle             { span, .. } => *span,
             TypeError::ConflictingBounds           { span, .. } => *span,
             TypeError::NotIterable                 { span, .. } => *span,
+            TypeError::OperatorNotImplemented      { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -521,6 +574,12 @@ impl TypeError {
 
             TypeError::NotIterable { type_name, .. } =>
                 format!("cannot iterate over a value of type `{}`", type_name),
+
+            TypeError::OperatorNotImplemented { op, trait_name, lhs, rhs: Some(rhs), .. } =>
+                format!("cannot apply `{}` to `{}` and `{}`: no `{}` impl for this pair", op, lhs, rhs, trait_label(trait_name)),
+
+            TypeError::OperatorNotImplemented { op, trait_name, lhs, rhs: None, .. } =>
+                format!("cannot apply `{}` to a value of type `{}`: no `{}` impl", op, lhs, trait_label(trait_name)),
 
             TypeError::SupertraitCycle { trait_name, path, .. } =>
                 format!("trait `{}` is its own supertrait: {}", trait_name, path),
@@ -634,6 +693,12 @@ impl TypeError {
             TypeError::MethodOnUnboundedParam { method, param, .. } =>
                 Some(format!("declare a bound that provides `{}`, as in `<{}: SomeTrait>`", method, param)),
 
+            TypeError::OperatorNeedsBound { param, trait_name, .. } if operator_trait_arity(trait_name) == 2 =>
+                Some(format!("declare the bound, as in `<{}: {}<{}, {}>>`", param, trait_name, param, param)),
+
+            TypeError::OperatorNeedsBound { param, trait_name, .. } if operator_trait_arity(trait_name) == 1 =>
+                Some(format!("declare the bound, as in `<{}: {}<{}>>`", param, trait_name, param)),
+
             TypeError::OperatorNeedsBound { param, trait_name, .. } =>
                 Some(format!("declare the bound, as in `<{}: {}>`", param, trait_name)),
 
@@ -643,6 +708,9 @@ impl TypeError {
             TypeError::MissingSupertraitImpl { supertrait, type_name, .. } =>
                 Some(format!("add `impl {} for {} {{ .. }}`", supertrait, type_name)),
 
+            TypeError::ConflictingBounds { trait_name, .. } if operator_trait_arity(trait_name) > 0 =>
+                Some(format!("a type has one impl of `{}` for each right operand, with one result type, so a parameter can be bounded by it once per right operand; keep one of the two", trait_name)),
+
             TypeError::ConflictingBounds { trait_name, .. } =>
                 Some(format!("a type has one impl of `{}`, so a parameter can be bounded by it once; keep one of the two", trait_name)),
 
@@ -651,6 +719,15 @@ impl TypeError {
 
             TypeError::NotIterable { type_name, kind: NotIterableKind::UserType, .. } =>
                 Some(format!("add `impl Iterator<Item> for {} {{ fn next(self) Item? {{ .. }} }}`, or iterate one of its collection fields", type_name)),
+
+            TypeError::OperatorNotImplemented { trait_name, lhs, rhs: Some(rhs), available, .. } if available.is_empty() =>
+                Some(format!("add `impl {}<{}, Out> for {} {{ fn {}(self, rhs: {}) Out {{ .. }} }}`", trait_name, rhs, lhs, operator_method_of(trait_name), rhs)),
+
+            TypeError::OperatorNotImplemented { op, trait_name, lhs, rhs: Some(rhs), available, .. } =>
+                Some(format!("`{}` on `{}` is implemented with {}; add `impl {}<{}, Out> for {} {{ .. }}` for `{}`, or use one of those", op, lhs, available.join(", "), trait_name, rhs, lhs, rhs)),
+
+            TypeError::OperatorNotImplemented { trait_name, lhs, rhs: None, .. } =>
+                Some(format!("add `impl {}<Out> for {} {{ fn {}(self) Out {{ .. }} }}`", trait_name, lhs, operator_method_of(trait_name))),
 
             TypeError::NotIterable { .. } =>
                 Some("a `for` loop walks a List, an array, a Queue, a Stack, a Dictionary, an InlineList, a Pool, a string, a tuple, a range, or a struct or enum that implements `Iterator<T>`".to_string()),
@@ -722,6 +799,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::SupertraitCycle { .. }               => "TYPE-133",
             TypeError::ConflictingBounds { .. }             => "TYPE-134",
             TypeError::NotIterable { .. }                   => "TYPE-135",
+            TypeError::OperatorNotImplemented { .. }        => "TYPE-136",
         }
     }
     fn span(&self) -> Span { self.span() }

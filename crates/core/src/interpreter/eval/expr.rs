@@ -17,6 +17,7 @@ use crate::ast::expressions::{
 };
 use crate::ast::literals::{Align, FormatSpec, InterpolationPart, IntSuffix, Literal, NumericBase};
 use crate::ast::types::{Type, TypeKind};
+use crate::error_management::errors::operator_method_of;
 use crate::interpreter::eval::{stmt, pattern, FunctionBody, FunctionDef, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
 
@@ -86,6 +87,8 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                     let rv = eval_expr(interp, rhs)?;
                     if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
                         if let Some(v) = interp.user_comparison(*op, &lv, &rv)? { return Ok(v); }
+                    } else if !interp.operator_impls.is_empty() {
+                        if let Some(v) = interp.user_binary(*op, &lv, &rv)? { return Ok(v); }
                     }
                     eval_binop(*op, lv, rv)
                 }
@@ -95,6 +98,9 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         // ── Unary operators ───────────────────────────────────────
         ExprKind::UnaryOp { op, operand } => {
             let v = eval_expr(interp, operand)?;
+            if matches!(op, UnaryOp::Neg | UnaryOp::BitNot) && !interp.operator_impls.is_empty() {
+                if let Some(r) = interp.user_unary(*op, &v)? { return Ok(r); }
+            }
             match op {
                 UnaryOp::Neg => match v {
                     // `wrapping_neg`, not plain `-n`: negating `i64::MIN`
@@ -920,7 +926,13 @@ fn eval_assign<'ast>(
     // Compound assignment: read → binop → write.
     let current = read_lvalue(interp, target)?;
     let binop   = assign_op_to_binop(op);
-    let new_val = eval_binop(binop, current, rhs)?;
+    // `a += b` is `a = a + b`: through the operator impl when the operands
+    // have one.
+    let user = if interp.operator_impls.is_empty() { None } else { interp.user_binary(binop, &current, &rhs)? };
+    let new_val = match user {
+        Some(v) => v,
+        None    => eval_binop(binop, current, rhs)?,
+    };
     write_lvalue(interp, target, new_val)
 }
 
@@ -1177,6 +1189,14 @@ fn eval_call_with_receiver<'ast>(
     // method) runs the trait's method for the receiver's type, never an
     // inherent method of the same name that only the concrete type sees.
     if let Some(trait_name) = interp.trait_call_sites.get(&callee_span) {
+        // An operator trait's method (`a.add(b)` through a bound) goes by the
+        // right operand's kind too, and runs natively for a number.
+        if let Some(op_trait) = interp.operator_traits.get(trait_name.as_str()).copied() {
+            if method_name == operator_method_of(op_trait) {
+                if let Some(v) = interp.user_operator(op_trait, &receiver, args.first())? { return Ok(v); }
+                return native_operator_call(op_trait, receiver, &args);
+            }
+        }
         if let Some(type_name) = dispatch_key(&receiver) {
             let fn_id = interp.trait_method_table
                 .get(&(type_name, trait_name.clone()))
@@ -1195,9 +1215,47 @@ fn eval_call_with_receiver<'ast>(
     eval_method_call(interp, receiver, method_name, &args)
 }
 
+/// `a.add(b)` and the other operator methods on values the run time does
+/// arithmetic on itself (through a bound such as `T: Add<T, T>`).
+fn native_operator_call(trait_name: &str, receiver: Value, args: &[Value]) -> EvalResult {
+    let binop = match trait_name {
+        "Add" => BinOp::Add,       "Sub" => BinOp::Sub,
+        "Mul" => BinOp::Mul,       "Div" => BinOp::Div,
+        "Rem" => BinOp::Rem,       "BitAnd" => BinOp::BitAnd,
+        "BitOr" => BinOp::BitOr,   "BitXor" => BinOp::BitXor,
+        "Shl" => BinOp::Shl,       "Shr" => BinOp::Shr,
+        _ => return native_unary_call(trait_name, receiver),
+    };
+    match args.first() {
+        Some(rhs) => eval_binop(binop, unwrap_ownership(receiver), unwrap_ownership(rhs.clone())),
+        None      => Err(Signal::Panic(format!("`{}` needs a right operand", trait_name))),
+    }
+}
+
+/// `v.neg()` and `v.bit_not()` on a number.
+fn native_unary_call(trait_name: &str, v: Value) -> EvalResult {
+    match (trait_name, unwrap_ownership(v)) {
+        ("Neg", Value::Int(n))    => Ok(Value::Int(n.wrapping_neg())),
+        ("Neg", Value::I8(n))     => Ok(Value::I8(n.wrapping_neg())),
+        ("Neg", Value::I16(n))    => Ok(Value::I16(n.wrapping_neg())),
+        ("Neg", Value::I32(n))    => Ok(Value::I32(n.wrapping_neg())),
+        ("Neg", Value::Float(f))  => Ok(Value::Float(-f)),
+        ("Neg", Value::Double(f)) => Ok(Value::Double(-f)),
+        ("BitNot", Value::Int(n)) => Ok(Value::Int(!n)),
+        ("BitNot", Value::I8(n))  => Ok(Value::I8(!n)),
+        ("BitNot", Value::I16(n)) => Ok(Value::I16(!n)),
+        ("BitNot", Value::I32(n)) => Ok(Value::I32(!n)),
+        ("BitNot", Value::U8(n))  => Ok(Value::U8(!n)),
+        ("BitNot", Value::U16(n)) => Ok(Value::U16(!n)),
+        ("BitNot", Value::U32(n)) => Ok(Value::U32(!n)),
+        ("BitNot", Value::UInt(n)) => Ok(Value::UInt(!n)),
+        (name, other) => Err(Signal::Panic(format!("cannot apply `{}` to {}", name, other.type_name()))),
+    }
+}
+
 /// What a receiver's methods are registered under: a struct's or enum's own
 /// type name, or a built-in value's key (`Value::impl_key`).
-fn dispatch_key(v: &Value) -> Option<String> {
+pub(crate) fn dispatch_key(v: &Value) -> Option<String> {
     match v {
         Value::Struct { type_name, .. } | Value::Enum { type_name, .. } => Some(type_name.clone()),
         other => other.impl_key().map(|k| k.into_owned()),

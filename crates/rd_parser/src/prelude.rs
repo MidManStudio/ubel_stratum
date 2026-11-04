@@ -93,6 +93,66 @@ trait Iterator<T> {
 }
 
 @tier(low)
+trait Add<Rhs, Out> {
+    fn add(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait Sub<Rhs, Out> {
+    fn sub(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait Mul<Rhs, Out> {
+    fn mul(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait Div<Rhs, Out> {
+    fn div(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait Rem<Rhs, Out> {
+    fn rem(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait BitAnd<Rhs, Out> {
+    fn bit_and(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait BitOr<Rhs, Out> {
+    fn bit_or(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait BitXor<Rhs, Out> {
+    fn bit_xor(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait Shl<Rhs, Out> {
+    fn shl(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait Shr<Rhs, Out> {
+    fn shr(self, rhs: Rhs) Out
+}
+
+@tier(low)
+trait Neg<Out> {
+    fn neg(self) Out
+}
+
+@tier(low)
+trait BitNot<Out> {
+    fn bit_not(self) Out
+}
+
+@tier(low)
 struct Hasher {
     state: u64,
     fn new() Hasher { return Hasher { state = 1469598103934665603u64 } }
@@ -109,7 +169,9 @@ trait Hash: Eq {
 /// it depends on, so one pass over this list in `kept_names` reaches a
 /// fixpoint.
 const NAMES: &[&str] = &[
-    "Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator", "Hasher", "Hash",
+    "Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator",
+    "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot",
+    "Hasher", "Hash",
 ];
 
 /// What a prelude item needs besides its supertraits (those are read from
@@ -235,37 +297,58 @@ mod tests {
 
     #[test]
     fn nothing_declared_keeps_everything() {
-        assert_eq!(kept(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator", "Hasher", "Hash"]);
+        assert_eq!(kept(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_ordering_takes_the_ordering_traits_with_it() {
-        assert_eq!(kept(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Display", "Iterator", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_partial_eq_takes_every_trait_built_on_it() {
-        assert_eq!(kept(&["PartialEq"]), vec!["Ordering", "Clone", "Display", "Iterator", "Hasher"]);
+        assert_eq!(kept(&["PartialEq"]), vec!["Ordering", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Hasher"]);
     }
 
     #[test]
     fn a_user_clone_loses_only_clone() {
-        assert_eq!(kept(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Display", "Iterator", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_iterator_loses_only_iterator() {
-        assert_eq!(kept(&["Iterator"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Iterator"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Hasher", "Hash"]);
+    }
+
+    #[test]
+    fn a_user_add_loses_only_add() {
+        let all = kept(&[]);
+        let without_add: Vec<&str> = all.iter().copied().filter(|n| *n != "Add").collect();
+        assert_eq!(kept(&["Add"]), without_add);
+    }
+
+    #[test]
+    fn a_user_neg_loses_only_neg() {
+        let all = kept(&[]);
+        let without_neg: Vec<&str> = all.iter().copied().filter(|n| *n != "Neg").collect();
+        assert_eq!(kept(&["Neg"]), without_neg);
+    }
+
+    #[test]
+    fn every_operator_trait_is_a_prelude_name() {
+        for op in ["Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot"] {
+            assert!(NAMES.contains(&op), "{op}");
+        }
     }
 
     #[test]
     fn a_user_hasher_takes_hash_with_it() {
-        assert_eq!(kept(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator"]);
+        assert_eq!(kept(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot"]);
     }
 
     #[test]
     fn a_user_eq_takes_ord_and_hash_but_leaves_partial_eq() {
-        assert_eq!(kept(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Display", "Iterator", "Hasher"]);
+        assert_eq!(kept(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Hasher"]);
     }
 
     #[test]
@@ -289,6 +372,9 @@ mod tests {
         assert_eq!(deps("Clone"),      Vec::<&str>::new());
         assert_eq!(deps("Display"),    Vec::<&str>::new());
         assert_eq!(deps("Iterator"),   Vec::<&str>::new());
+        for op in ["Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot"] {
+            assert_eq!(deps(op), Vec::<&str>::new(), "{op}");
+        }
         assert_eq!(deps("Hasher"),     Vec::<&str>::new());
         assert_eq!(deps("Hash"),       vec!["Hasher", "Eq"]);
     }

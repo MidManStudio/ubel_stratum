@@ -143,8 +143,13 @@ verified safe.
   declaration order. A struct or enum can implement `Iterator<T>` (`fn next(self) T?`)
   so that `for x in value` calls `next` until it returns `null`; `Queue`, `Stack` and
   `Dictionary` can be looped over too, and a `for` over anything that cannot be walked is
-  a compile error instead of a run-time panic. Next: operator traits (the operators then
-  check their calls), associated types, and `dyn Trait`
+  a compile error instead of a run-time panic. A struct or enum can implement the operator
+  traits (`Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr`, `Neg`
+  and `BitNot`), so `a + b`, `a *= b`, `-a` and `~a` call it; a type can have one impl per
+  kind of right operand (`Vec2 * double` and `Vec2 * Vec2`), a number can take a struct on
+  its right (`2.0 * v`), and an operator with no impl, or on an unbounded type parameter, is a
+  compile error instead of a run-time panic. Next: indexing (`a[i]`), associated types, and
+  `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to
