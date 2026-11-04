@@ -100,6 +100,11 @@ void  ubel_gc_reset_stats(void);
  * collections. The UBEL_GC_TRIGGER_KB environment variable sets it at startup. */
 void  ubel_gc_set_min_trigger_kb(uint64_t kb);
 
+/* Test knob: replace the clock the collector times itself with (NULL restores ubel_now_ns). A test
+ * feeds it a value equal to the address of a dead object, to prove no clock reading is left in a
+ * stack frame the scan reads: such a word would keep that object alive. */
+void  ubel_gc_set_clock(uint64_t (*now)(void));
+
 /* ----------------------------------------------------------------- MID --- */
 
 /* The first four fields are shared with %Arena in the bench .ll files. Keep them in

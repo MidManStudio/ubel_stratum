@@ -771,7 +771,7 @@ was tested and what was not.
 | **Show the generated IR** next to the program | **very likely feasible, small** | The emitter is pure Rust over the same core and parser crates the playground already compiles to wasm, with no libLLVM and no file access in the library. **Not tested**: this sandbox has no wasm32 Rust target. A `cargo check --target wasm32-unknown-unknown` step in CI would settle it. |
 | **Run** the emitted code in a WebAssembly engine | **works** | Tested: the IR for all 10 runnable examples compiles with `clang --target=wasm32`, links with `wasm-ld` against a freestanding runtime (`wasm/wasm_rt.c`, printing and traps imported from JavaScript) and runs in Node with output identical to the interpreter and no arena left alive. The binaries are 0.5 to 1.4 KB. See `scripts/run_wasm_demo.sh`. |
 | **Compile** IR to wasm inside the browser | **possible but heavy** | Browser builds of LLVM exist and accept LLVM IR and a WebAssembly target. One packaged browser compiler is about 60 MB and reserves 256 MiB of wasm memory; Wasmer's clang-in-browser demo is a 100 MB download. Not tried here. Only sensible as an opt-in feature, not the default playground load. |
-| **HIGH tier** (the GC) on wasm | **needs design work** | The PoC collector finds roots by scanning the machine stack and registers conservatively. In WebAssembly the operand stack and locals are not addressable memory, so that cannot see them; only the linear-memory shadow stack is visible. HIGH on wasm needs precise roots, for example an explicit shadow stack that the compiler maintains. This is reasoning from how wasm works, not something tested here. `mmap`, `setjmp` and `__builtin_unwind_init` also do not exist there, so the runtime needs a port. MID and LOW are not affected the same way. |
+| **HIGH tier** (the GC) on wasm | **needs design work** | The PoC collector finds roots by scanning the machine stack and registers conservatively. In WebAssembly the operand stack and locals are not addressable memory, so that cannot see them; only the linear-memory shadow stack is visible. HIGH on wasm needs precise roots, for example an explicit shadow stack that the compiler maintains. This is reasoning from how wasm works, not something tested here. `mmap` and the register spill (`__builtin_unwind_init`) also do not exist there, so the runtime needs a port. MID and LOW are not affected the same way. |
 
 What the demo did **not** cover: the Stage 1B subset never allocates from the GC heap and
 never allocates from an arena (it only creates and destroys them), so the demo says nothing
@@ -825,6 +825,11 @@ None of this has been started, and the plan is open to change.
 - A plain arena that holds the only reference to a GC object is a bug, not a supported
   mode. `xit_arena_plain` exists only to demonstrate it.
 - Globals are not GC roots, and nothing here is thread-safe.
+- The stack scan is conservative, so a word that merely looks like an address keeps an object alive. On
+  64-bit that is rare; on 32-bit a random word lands inside the heap often enough to see (probability
+  about heap-in-use / 4 GiB per word). The runtime keeps its own frames free of such words (no
+  `setjmp` buffer, clock readings in statics, a wiped zone below `ubel_gc_collect`), but the program's
+  own stale slots are out of its hands. `rt_gc_test` scrubs the stack below each test frame for that reason.
 - Emitted struct objects are limited to 32 fields so they fit a GC object on 32-bit targets.
 - ASan's fake stack (`detect_stack_use_after_return`) can move locals off the real stack,
   where a conservative scan cannot see them. The struct programs pass with it on and off at
@@ -847,6 +852,19 @@ None of this has been started, and the plan is open to change.
 - Runtime: the conservative stack scan reads poisoned stack words, so a sanitizer build of
   any program that collects reported a stack-buffer-overflow inside the collector. The two
   functions that read the stack are now exempt from ASan instrumentation.
+- Runtime, 32-bit only (found 2026-11-04 as an `rt_gc_test` flake, about 0.9% of runs in `large_basic`,
+  `array_ptr` and `array_large_children`, always on a 32-bit build, never on 64-bit, so CI did not see it).
+  The collector kept dead objects alive through words in its own frames that only look like addresses:
+  (1) the `setjmp` buffer in `scan_roots`: glibc stores `esp` and `eip` XORed with a random per-process
+  guard and leaves 128 bytes of signal mask uninitialised, so the same random words were read on every
+  collection of a run; (2) `t0/t1/t2` in `ubel_gc_collect`: the low word of a nanosecond clock falls inside
+  a 5 MB object for about 5 ms out of every 4.3 s, wider than the test's retry window. Fixed: `scan_roots`
+  relies on `__builtin_unwind_init` alone, readings go through a `noinline` `stamp()` into statics, and
+  `clear_scan_zone()` zeroes the stack below the collector before the scan. Tests: `register_root` (objects
+  held only by callee-saved registers) and `clock_alias` (a clock reading equal to a dead object's
+  address; deterministic, and it fails on 64-bit too). Mutants caught: losing the register scan, inline
+  clock reads, no `clear_scan_zone`. Removing only `__builtin_unwind_init` is NOT caught, because
+  `ubel_gc_collect`'s own prologue already pushes the registers; the two layers are redundant by accident.
 - A delivery bug: a nested `README.md` in a replacements archive was captured by the
   standing manifest's filename-based override for `README.md` and overwrote the repo's
   root README. The same hazard applies to any nested `Cargo.toml`; the manifest needs an
@@ -916,6 +934,12 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-04: GC hardening, step 1, provisional. 32-bit `rt_gc_test` flake traced and fixed (see Bugs found):
+  `setjmp` buffer and clock readings no longer scanned as roots, plus two new tests, `register_root` and
+  `clock_alias` (13 tests). After the fix at 32-bit -O0: `large_basic` 0 of 3000 runs failed (about 0.9% before),
+  `array_ptr` and `array_large_children` 0 of 1500 each, `classes` and `reuse` 0 of 800, `interior` 0 of 400.
+  `run_equiv.sh` at 64-bit and `-m32`: 59 passed, 1 failed each time, the failure being `20_arena_strings`,
+  which waits for the D3b sema patch. Not run: Termux, macOS, CI on real runners.
 - 2026-11-02: D2 closed, provisional. Sema `TIER-017`: a LOW function may call a closure only if it is an
   immutable local bound straight to a lambda in that function; the emitter applies the same rule, so a LOW
   function can now create and call closures (`26_closure_low`). `u_closure_low` now tests a capturing

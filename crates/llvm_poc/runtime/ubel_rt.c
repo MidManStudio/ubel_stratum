@@ -18,7 +18,6 @@
  */
 #include "ubel_rt.h"
 
-#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -548,14 +547,20 @@ static void __attribute__((noinline)) UBEL_NO_ASAN scan_stack_region(void) {
     for (; p < hi; ++p) mark_ptr(*p);
 }
 
+/* The callee-saved registers can hold the only copy of a pointer. __builtin_unwind_init makes this
+ * function save every one of them in its own prologue, so they sit in this frame, which the scan below
+ * covers; the barrier after the call stops a tail call from popping the frame first.
+ *
+ * Do not use setjmp for this. glibc stores some of the registers (esp and eip, and ebp or rbp) XORed
+ * with a random per-process pointer guard, and the rest of a jmp_buf is uninitialised (the signal-mask
+ * area is 128 bytes). Scanning one reads a few random words and some stale ones. On a 64-bit target a
+ * random word never lands in the heap, but on a 32-bit target it does with probability about
+ * (heap in use) / 4 GiB per word, and because the guard is fixed for the process, the object it hits
+ * stays retained for the whole run (found by the rt_gc_test flake at 32-bit, 2026-11-04). */
 static void __attribute__((noinline)) UBEL_NO_ASAN scan_roots(void) {
-    jmp_buf jb;
-    setjmp(jb); /* spills callee-saved registers into this frame */
-#if defined(__GNUC__) || defined(__clang__)
-    __builtin_unwind_init(); /* also covers registers glibc's setjmp mangles (e.g. rbp) */
-#endif
+    __builtin_unwind_init();
     scan_stack_region();
-    __asm__ volatile("" : : "r"(&jb) : "memory"); /* keep jb alive and in this frame */
+    __asm__ volatile("" : : : "memory");
 }
 
 /* Scannable arenas (defined with the arena code below) act as extra roots. */
@@ -606,20 +611,49 @@ static uint64_t sweep(void) {
     return live;
 }
 
+/* The collector's own frames are inside the range the stack scan reads, so they must not hold
+ * words that look like addresses by accident. A clock reading is the worst case: on a 32-bit target
+ * its low word falls inside any given multi-megabyte object for several milliseconds out of every
+ * 4.3 seconds, and a local that keeps the last reading keeps that object alive across consecutive
+ * collections. So the readings live in statics, never in a local (found at 32-bit, 2026-11-04). */
+static uint64_t gc_t0, gc_t1, gc_t2;
+static uint64_t (*gc_clock)(void); /* test knob: ubel_gc_set_clock */
+
+/* The frames of scan_roots and scan_stack_region are laid over whatever the collector's earlier calls
+ * (the clock, ubel_gc_collect's own callees) left below it, and a frame has padding and unwritten
+ * slots that the scan reads. Zero that region first, so the scan reads zeros there and not the
+ * collector's own leftovers (Boehm does the same, GC_clear_stack). 4 KiB is far more than those two
+ * small frames need. It cannot touch the program's frames: they are above this one. */
+#define GC_CLEAR_BYTES 4096u
+static void __attribute__((noinline)) UBEL_NO_ASAN clear_scan_zone(void) {
+    volatile unsigned char zone[GC_CLEAR_BYTES];
+    for (unsigned i = 0; i < GC_CLEAR_BYTES; i++) zone[i] = 0;
+    __asm__ volatile("" : : "r"(zone) : "memory");
+}
+
+void ubel_gc_set_clock(uint64_t (*now)(void)) { gc_clock = now; }
+
+/* Takes a reading straight into a static. A separate function on purpose: in an unoptimised build
+ * the result of `gc_clock ? gc_clock() : ubel_now_ns()` is spilled to a slot of whatever function
+ * evaluates it, and ubel_gc_collect's own frame is always inside the scanned range. In here the
+ * spill lives in a frame that is gone (and wiped by clear_scan_zone) before the scan starts. */
+static void __attribute__((noinline)) stamp(uint64_t *dst) { *dst = gc_clock ? gc_clock() : ubel_now_ns(); }
+
 void ubel_gc_collect(void) {
     if (!heap_base) return;
-    uint64_t t0 = ubel_now_ns();
+    stamp(&gc_t0);
+    clear_scan_zone();
     scan_roots();
     scan_arena_roots();
     while (mtop) scan_object(mstack[--mtop]);
-    uint64_t t1 = ubel_now_ns();
+    stamp(&gc_t1);
     uint64_t live = sweep();
-    uint64_t t2 = ubel_now_ns();
+    stamp(&gc_t2);
 
     st.collections++;
-    st.mark_ns  += t1 - t0;
-    st.sweep_ns += t2 - t1;
-    if (t2 - t0 > st.max_pause_ns) st.max_pause_ns = t2 - t0;
+    st.mark_ns  += gc_t1 - gc_t0;
+    st.sweep_ns += gc_t2 - gc_t1;
+    if (gc_t2 - gc_t0 > st.max_pause_ns) st.max_pause_ns = gc_t2 - gc_t0;
     st.live_bytes_last = live;
     last_live = live;
     bytes_since_gc = 0;

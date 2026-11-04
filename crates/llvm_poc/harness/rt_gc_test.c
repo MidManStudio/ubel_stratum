@@ -103,14 +103,16 @@ static uint64_t NOINLINE collect_and_live(void) {
  * A variable-length array in an inner block zeroes that region with no call frame in the way,
  * and is released before the collecting call. */
 static volatile size_t scrub_n = 96 * 1024; /* a runtime length, so the array below is a real VLA */
+#define SCRUB()                                                                    \
+    do {                                                                           \
+        size_t n_ = scrub_n;                                                       \
+        volatile unsigned char b_[n_]; /* released at the end of this block */     \
+        memset((void *)b_, 0, n_);                                                 \
+        __asm__ volatile("" : : "r"(b_) : "memory");                               \
+    } while (0)
 #define COLLECT()                                                                  \
     ({                                                                             \
-        {                                                                          \
-            size_t n_ = scrub_n;                                                   \
-            volatile unsigned char b_[n_]; /* released at the end of this block */ \
-            memset((void *)b_, 0, n_);                                             \
-            __asm__ volatile("" : : "r"(b_) : "memory");                           \
-        }                                                                          \
+        SCRUB();                                                                   \
         collect_and_live();                                                        \
     })
 
@@ -623,6 +625,88 @@ static void t_misuse(void) {
 /* ------------------------------------------------------------------ main */
 
 typedef struct { const char *name; void (*fn)(void); const char *trigger_kb; } test;
+
+/* Objects held only by callee-saved registers. A conservative collector has to treat the registers
+ * of the interrupted program as roots; the runtime does it by making scan_roots save all of them
+ * in its own frame (__builtin_unwind_init). The probe loads one object per callee-saved register,
+ * and runs a collection with nothing else pointing at them: the table holds the complement of each
+ * address (not a pointer), the probe un-complements straight into the register, and the stack was
+ * scrubbed first. If the register scan is lost, the objects are freed and live is 0.
+ * x86-64 and i386 only (naked asm); other targets skip. */
+#if defined(__x86_64__) || defined(__i386__)
+#define HAVE_REG_PROBE 1
+static void NOINLINE collect_cb(void) { ubel_gc_collect(); }
+
+#if defined(__x86_64__)
+#define NREGP 5 /* rbx r12 r13 r14 r15 */
+__attribute__((naked, noinline)) static void reg_probe(void **words, void (*fn)(void)) {
+    __asm__ volatile(
+        "pushq %rbx\n\t pushq %r12\n\t pushq %r13\n\t pushq %r14\n\t pushq %r15\n\t" /* rsp is 16-aligned again */
+        "movq   (%rdi), %rbx\n\t notq %rbx\n\t"
+        "movq  8(%rdi), %r12\n\t notq %r12\n\t"
+        "movq 16(%rdi), %r13\n\t notq %r13\n\t"
+        "movq 24(%rdi), %r14\n\t notq %r14\n\t"
+        "movq 32(%rdi), %r15\n\t notq %r15\n\t"
+        "movq %rsi, %rax\n\t xorl %edi, %edi\n\t xorl %esi, %esi\n\t"
+        "callq *%rax\n\t"
+        "popq %r15\n\t popq %r14\n\t popq %r13\n\t popq %r12\n\t popq %rbx\n\t"
+        "ret\n\t");
+}
+#else
+#define NREGP 3 /* ebx esi edi */
+__attribute__((naked, noinline)) static void reg_probe(void **words, void (*fn)(void)) {
+    __asm__ volatile(
+        "pushl %ebx\n\t pushl %esi\n\t pushl %edi\n\t" /* esp is 16-aligned again */
+        "movl 16(%esp), %eax\n\t movl 20(%esp), %ecx\n\t"
+        "movl  (%eax), %ebx\n\t notl %ebx\n\t"
+        "movl 4(%eax), %esi\n\t notl %esi\n\t"
+        "movl 8(%eax), %edi\n\t notl %edi\n\t"
+        "xorl %eax, %eax\n\t xorl %edx, %edx\n\t"
+        "call *%ecx\n\t"
+        "popl %edi\n\t popl %esi\n\t popl %ebx\n\t"
+        "ret\n\t");
+}
+#endif
+
+static void NOINLINE complement_root(int slot) { roots[slot] = (void *)~(uintptr_t)roots[slot]; }
+
+static void t_register_root(void) {
+    uint64_t want = 0;
+    for (int i = 0; i < NREGP; i++) {
+        want += alloc_root(i, 100u + 16u * (unsigned)i, 9000u + (uint32_t)i);
+        complement_root(i);
+    }
+    SCRUB();
+    reg_probe(roots, collect_cb);
+    ubel_gc_stats s;
+    ubel_gc_get_stats(&s);
+    CHECK(LIVE_OK(s.live_bytes_last, want), "objects held only by callee-saved registers: live %llu, expected %llu",
+          (unsigned long long)s.live_bytes_last, (unsigned long long)want);
+    for (int i = 0; i < NREGP; i++) roots[i] = NULL;
+    EXPECT_LIVE(0, "registers released");
+}
+#else
+static void t_register_root(void) { printf("    (no register probe for this target)\n"); }
+#endif
+
+/* The collector's frames are inside the stack range it scans, so nothing in them may look like an
+ * address by accident. A clock reading is the realistic case (on a 32-bit target its low word lands
+ * inside a given large object for milliseconds at a time), so this feeds the collector a "clock"
+ * that returns an address inside a dead object. If a reading is left in a local of
+ * ubel_gc_collect, that object stays alive and live is not 0. */
+static uintptr_t clock_hidden;
+static uint64_t NOINLINE alias_clock(void) { return (uint64_t)(~clock_hidden + 4096u); }
+static void NOINLINE remember_complement(int slot) { clock_hidden = (uintptr_t)roots[slot]; roots[slot] = NULL; clock_hidden = ~clock_hidden; }
+
+static void t_clock_alias(void) {
+    uint64_t rounded = alloc_root(0, 200000, 5150); /* a large object: an address 4096 bytes in is inside it */
+    EXPECT_LIVE(rounded, "held by its root");
+    remember_complement(0);          /* drop it, remembering only ~address */
+    ubel_gc_set_clock(alias_clock);  /* every reading the collector takes is now an address in the dead object */
+    EXPECT_LIVE(0, "dead object whose address was a clock reading");
+    ubel_gc_set_clock(NULL);
+}
+
 static const test tests[] = {
     {"classes", t_classes, NULL},
     {"large_basic", t_large_basic, NULL},
@@ -635,6 +719,8 @@ static const test tests[] = {
     {"stress", t_stress, "64"},
     {"misuse", t_misuse, NULL},
     {"arena_scan", t_arena_scan, NULL},
+    {"register_root", t_register_root, NULL},
+    {"clock_alias", t_clock_alias, NULL},
 };
 #define NTESTS (sizeof tests / sizeof tests[0])
 
