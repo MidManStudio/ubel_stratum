@@ -1,0 +1,29 @@
+// tests/fixtures/ok_closure_tier_low_created.ubl
+// D2 (closures): a closure has the tier of the function it is created in. A LOW function may call a
+// closure it created itself (an immutable `let` bound straight to a lambda), including one that calls
+// another such closure. MID and HIGH functions may call any closure they are handed: handing a closure
+// down to a MID function that calls it is the callback pattern.
+//
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(low)
+fn low_user(x: int) int {
+    let a = fn(v: int) v + 1
+    let b = fn(v: int) a(v) * 2
+    return b(x)
+}
+
+@tier(mid)
+fn mid_callback(cb: fn(int) int, x: int) int {
+    return cb(x)
+}
+
+fn high_callback(cb: fn(int) int, x: int) int {
+    return cb(x)
+}
+
+fn main() void {
+    assert(low_user(4) == 10, "a LOW function calls closures it created")
+    assert(mid_callback(fn(v: int) v + 1, 4) == 5, "a MID function calls a closure it was handed")
+    assert(high_callback(fn(v: int) v + 1, 4) == 5, "a HIGH function calls a closure it was handed")
+}

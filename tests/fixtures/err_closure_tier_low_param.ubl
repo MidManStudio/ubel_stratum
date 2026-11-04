@@ -1,0 +1,14 @@
+// tests/fixtures/err_closure_tier_low_param.ubl
+// D2 (closures): a LOW function cannot call a closure it was handed. A function type carries no tier, so
+// the closure could belong to a higher tier, and LOW runs nothing that is not LOW. Must stay rejected.
+//
+// Expected: sema FAIL (TIER-017, LowCallsUnknownClosure).
+
+@tier(low)
+fn run(f: fn(int) int, x: int) int {
+    return f(x)
+}
+
+fn main() void {
+    println(run(fn(v: int) v + 1, 2))
+}

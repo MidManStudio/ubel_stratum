@@ -1,0 +1,21 @@
+// tests/fixtures/err_closure_tier_low_returned.ubl
+// D2 (closures): a closure that came back from a call is not known to have been created here, even when
+// the function that returned it is LOW. Conservative on purpose: only a `let` bound straight to a lambda
+// has a known tier. Must stay rejected.
+//
+// Expected: sema FAIL (TIER-017, LowCallsUnknownClosure).
+
+@tier(low)
+fn make() fn(int) int {
+    return fn(v: int) v + 1
+}
+
+@tier(low)
+fn run(x: int) int {
+    let f = make()
+    return f(x)
+}
+
+fn main() void {
+    println(run(2))
+}

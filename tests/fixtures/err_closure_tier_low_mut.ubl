@@ -1,0 +1,15 @@
+// tests/fixtures/err_closure_tier_low_mut.ubl
+// D2 (closures): a `mut` binding can be reassigned to another closure, so a LOW function cannot know the
+// tier of what it holds. Only an immutable `let` bound straight to a lambda counts. Must stay rejected.
+//
+// Expected: sema FAIL (TIER-017, LowCallsUnknownClosure).
+
+@tier(low)
+fn run(x: int) int {
+    let mut f = fn(v: int) v + 1
+    return f(x)
+}
+
+fn main() void {
+    println(run(2))
+}

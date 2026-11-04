@@ -484,16 +484,33 @@ the GC heap whatever tier calls it, and one written in MID code outside `with ar
 allocates. Parameter types must be written (`fn(x) ...` is refused). The result type is sema's when it
 resolved; otherwise it is taken from the first value the body returns, because sema records a lambda's
 type before an integer literal in the body has been defaulted to `int` (a block body that returns such
-a local has an open result type there). Refused by name: calling a closure in a LOW function
-(sema does not check a closure's tier, and LOW must not run code that can allocate); calling one
-that is not a plain local (read it out of a struct field first); printing or comparing closures. `examples/21_closures` covers two parameters, block bodies, nesting, closures returned and
+a local has an open result type there). Refused by name: calling a closure in a LOW function unless it
+was created there (see D2 below); calling one that is not a plain local (read it out of a struct field first); printing or comparing closures. `examples/21_closures` covers two parameters, block bodies, nesting, closures returned and
 kept in a struct field, a callback called from MID inside `with arena`, and 100,000 calls whose bodies
 build strings while the collector runs. Mutants that reversed the arguments, did not restore the temp
 counter or did not restore the enclosing scopes are all caught.
 
+**The tier of a closure (D2, provisional).** A closure has the tier of the function it is created in, and its
+body is checked and compiled in that tier (the tier checker walks a lambda under the enclosing function's
+tier, so a lambda written in a LOW function cannot call a MID function). The tier matters where a closure
+is *called*, and a function type carries no tier, so the tier of what a variable holds is known only when
+the variable was bound where the closure was created. The rule, in sema (`TIER-017`,
+`LowCallsUnknownClosure`, `tier_check.rs`) and independently in the emitter: **a LOW function may call a
+closure only if it is an immutable local bound by `let` straight to a lambda in that function** (or captured
+from one that is). A parameter, a `mut` binding, a closure returned by a call (even from a LOW function) and
+anything else could belong to a higher tier, so calling it from LOW is refused. MID and HIGH may call any
+closure: handing a closure down to a MID function that calls it is the callback pattern, which the target
+program is built on, so the rule that a named call may not go up a tier is deliberately not applied to
+closures. Only LOW can be checked because only LOW has a premise to protect (it runs nothing that can
+allocate or trigger a collection). The conservative parts are real limits: a closure from a LOW function that
+returns one cannot be called from LOW, and a tier in function types (so that a MID parameter could say what
+it accepts) would be a language change. `examples/26_closure_low` creates and calls closures in LOW
+functions; `tests/fixtures/*_closure_tier_*` pin the rule.
+
 **Closures that capture (A7b, provisional; decisions D2 and D5, taken by the project owner on
 2026-10-31).** D2: a closure's tier is the tier of the function it is created in; its body is
-compiled in that tier, which is how the emitter already worked. D5: a capturing closure's object
+compiled in that tier, which is how the emitter already worked (see "The tier of a closure" below
+for what that means at a call site). D5: a capturing closure's object
 lives in the arena of the block it is written in and dies with it. Read as "by site", like a struct
 literal: inside `with arena` it is bump allocated in the arena; in a HIGH function, where there is no
 arena, it is a GC object (its mask marks the pointer-typed captures). **That second case is my
@@ -865,8 +882,7 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
 4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
    (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
    it the target program (A8). Capturing closures followed (A7b). Open: captures of strings, structs,
-   enums and closures, `mut` captures, captures from more than one level out, and a sema check of a
-   closure's tier at its call sites.
+   enums and closures, `mut` captures and captures from more than one level out.
 
 Parallel track that does not block the above: run the slice 3 CI workflows, and the GC
 hardening items in `docs/GC_RESEARCH.md` (global roots, a collect-on-every-
@@ -900,6 +916,10 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-02: D2 closed, provisional. Sema `TIER-017`: a LOW function may call a closure only if it is an
+  immutable local bound straight to a lambda in that function; the emitter applies the same rule, so a LOW
+  function can now create and call closures (`26_closure_low`). `u_closure_low` now tests a capturing
+  closure in LOW. No other fixture or example changed behaviour (370 files checked).
 - 2026-11-01: scannable arenas, provisional. An arena whose objects have pointer fields is created
   scannable, so strings, structs, enums and closures can be stored and captured in arena objects; the
   runtime scans only written bytes. Lifted: the string-field and the int/bool-only capture refusals.

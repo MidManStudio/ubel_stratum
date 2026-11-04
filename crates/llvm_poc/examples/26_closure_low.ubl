@@ -1,0 +1,26 @@
+// A closure in a LOW function (decision D2): a closure has the tier of the function it is created in,
+// so a LOW function may create closures and call them. It may call only closures it created itself,
+// bound by an immutable `let` straight to a lambda; a closure from anywhere else could belong to a
+// higher tier (sema: TIER-017). The bodies are LOW code too: no allocation, no calls up.
+@tier(low)
+fn scale(x: int, k: int) int {
+    let double = fn(v: int) v + v
+    let inc = fn(v: int) v + 1
+    return inc(double(x)) * k
+}
+
+@tier(low)
+fn sum_to(n: int) int {
+    let step = fn(a: int, b: int) a + b
+    let mut total = 0
+    let mut i = 1
+    while i <= n {
+        total = step(total, i)
+        i += 1
+    }
+    return total
+}
+
+fn main() void {
+    println(scale(5, 3), sum_to(100))
+}

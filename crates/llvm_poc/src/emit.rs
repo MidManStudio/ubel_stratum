@@ -202,6 +202,9 @@ struct Local {
     /// Declared `mut`, a `for` variable or a `:=` binding: it can change after a closure copied it, so a
     /// closure may not capture it.
     mutable: bool,
+    /// Bound by an immutable `let` straight to a lambda (`let f = fn(...) ...`): a closure created in this
+    /// function, so its tier is this function's (decision D2). The only closure a LOW function may call.
+    lambda: bool,
 }
 
 /// A value a closure copies from the frame it is written in when it is created.
@@ -637,7 +640,7 @@ impl<'a> Emitter<'a> {
     fn declare(&mut self, name: &str, ty: Ty) -> String {
         let slot = self.alloca(ty, name);
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), Local { slot: slot.clone(), ty, mutable: false });
+            scope.insert(name.to_string(), Local { slot: slot.clone(), ty, mutable: false, lambda: false });
         }
         slot
     }
@@ -646,6 +649,13 @@ impl<'a> Emitter<'a> {
     fn mark_mutable(&mut self, name: &str) {
         if let Some(l) = self.scopes.last_mut().and_then(|sc| sc.get_mut(name)) {
             l.mutable = true;
+        }
+    }
+
+    /// Mark the local just declared in the innermost scope as bound straight to a lambda.
+    fn mark_lambda(&mut self, name: &str) {
+        if let Some(l) = self.scopes.last_mut().and_then(|sc| sc.get_mut(name)) {
+            l.lambda = true;
         }
     }
 
@@ -1104,6 +1114,8 @@ impl<'a> Emitter<'a> {
                 let slot = self.declare(name, v.ty);
                 if mutable {
                     self.mark_mutable(name);
+                } else if matches!(value.kind, ExprKind::Lambda(_)) {
+                    self.mark_lambda(name);
                 }
                 self.inst(&format!("store {} {}, ptr {}", v.ty.ir(), v.v, slot));
                 Ok(())
@@ -2245,7 +2257,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.prologue, "  {gep} = getelementptr inbounds i8, ptr %.clo, i64 {}", 8 * (1 + idx));
         let _ = writeln!(self.prologue, "  {v} = load {ir}, ptr {gep}");
         let _ = writeln!(self.prologue, "  store {ir} {v}, ptr {slot}");
-        let local = Local { slot, ty: found.ty, mutable: false };
+        let local = Local { slot, ty: found.ty, mutable: false, lambda: found.lambda };
         if let Some(sc) = self.scopes.first_mut() {
             sc.insert(name.to_string(), local.clone());
         }
@@ -2431,10 +2443,14 @@ impl<'a> Emitter<'a> {
     /// `f(args)` where `f` is a local of function type: load the code pointer from the closure object
     /// and call it with the object as the hidden first argument.
     fn call_closure(&mut self, e: &Expr, local: &Local, idx: usize, args: &[Arg]) -> R<Val> {
-        if self.cur_tier == TierAnnotation::Low {
+        // Decision D2: a closure has the tier of the function it is created in. LOW may call only one it
+        // created itself: a local bound by an immutable `let` straight to a lambda. Anything else could
+        // be a closure from a higher tier. Sema refuses it too (TIER-017); this keeps the emitter safe
+        // on its own.
+        if self.cur_tier == TierAnnotation::Low && !(local.lambda && !local.mutable) {
             return unsupported(
                 e.span,
-                "calling a closure in `@tier(low)` (sema does not check a closure's tier yet, decision D2, and LOW must not run code that can allocate)",
+                "calling a closure in `@tier(low)` that was not bound by a `let` straight to a lambda in this function (its tier is not known, decision D2; sema refuses it too, TIER-017)",
             );
         }
         let sig = self.fn_sig(idx);

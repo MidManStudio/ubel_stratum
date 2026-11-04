@@ -1,0 +1,20 @@
+// tests/fixtures/err_closure_tier_low_body.ubl
+// D2 (closures), first half: a closure's body is checked in the tier of the function it is written in, so
+// a lambda written in a LOW function cannot call a MID function. This already held; the fixture keeps it.
+//
+// Expected: sema FAIL (TIER-005, IllegalTierCall).
+
+@tier(mid)
+fn helper(x: int) int {
+    return x + 1
+}
+
+@tier(low)
+fn run(x: int) int {
+    let f = fn(v: int) helper(v)
+    return f(x)
+}
+
+fn main() void {
+    println(run(2))
+}

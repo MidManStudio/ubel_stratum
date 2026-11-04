@@ -1,11 +1,14 @@
-// Not supported yet: calling a closure in a LOW function. Sema accepts it and does not check a
-// closure's tier (decision D2), and LOW must not run code that can allocate.
-// expect-refusal: calling a closure in `@tier(low)`
+// Not supported yet: a closure that captures, written in a LOW function. The closure object has to go
+// somewhere and LOW does not allocate (how it would is undecided). Capturing nothing is fine: see
+// 26_closure_low. (Calling a closure that LOW did not create is refused by sema, TIER-017:
+// tests/fixtures/err_closure_tier_low_param.ubl.)
+// expect-refusal: a closure that captures a variable in `@tier(low)`
 @tier(low)
-fn run(f: fn(int) int, x: int) int {
-    return f(x)
+fn run(k: int) int {
+    let f = fn(x: int) x + k
+    return f(1)
 }
 
 fn main() void {
-    println(run(fn(v: int) v + 1, 2))
+    println(run(2))
 }
