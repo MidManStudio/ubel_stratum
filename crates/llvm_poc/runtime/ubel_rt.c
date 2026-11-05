@@ -583,6 +583,7 @@ static void __attribute__((noinline)) UBEL_NO_ASAN scan_roots(void) {
 
 /* Scannable arenas (defined with the arena code below) act as extra roots. */
 static void scan_arena_roots(void);
+static void scan_global_roots(void);
 
 /* ---- sweeping --------------------------------------------------------- */
 
@@ -663,6 +664,7 @@ void ubel_gc_collect(void) {
     clear_scan_zone();
     scan_roots();
     scan_arena_roots();
+    scan_global_roots();
     while (mtop) scan_object(mstack[--mtop]);
     stamp(&gc_t1);
     uint64_t live = sweep();
@@ -767,6 +769,49 @@ static void scan_arena_roots(void) {
                 mark_ptr(*p);
         }
     }
+}
+
+/* ---- global roots ----------------------------------------------------- */
+
+/* Memory registered with ubel_gc_add_root is scanned word by word at every collection, like the
+ * stack. The table is plain malloc memory, never GC heap, and is keyed by region start. */
+typedef struct { uintptr_t lo, hi; } root_region;
+static root_region *groots;
+static size_t       ngroots, gcap;
+
+static void __attribute__((noinline)) UBEL_NO_ASAN scan_global_roots(void) {
+    for (size_t i = 0; i < ngroots; i++) {
+        uintptr_t p = (groots[i].lo + (sizeof(uintptr_t) - 1)) & ~(uintptr_t)(sizeof(uintptr_t) - 1);
+        for (; p + sizeof(uintptr_t) <= groots[i].hi; p += sizeof(uintptr_t)) mark_ptr(*(const uintptr_t *)p);
+    }
+}
+
+void ubel_gc_add_root(void *addr, uint64_t bytes) {
+    uintptr_t lo = (uintptr_t)addr, hi = lo + (uintptr_t)bytes;
+    if (!addr || bytes < sizeof(uintptr_t) || bytes > UINTPTR_MAX || hi < lo) {
+        fprintf(stderr, "ubel_rt: ubel_gc_add_root needs a non-null address and a size of at least one word\n");
+        abort();
+    }
+    for (size_t i = 0; i < ngroots; i++)
+        if (groots[i].lo == lo) { groots[i].hi = hi; return; } /* same start: change the length */
+    if (ngroots == gcap) {
+        gcap = gcap ? gcap * 2 : 16;
+        groots = (root_region *)realloc(groots, gcap * sizeof(root_region));
+        if (!groots) { fprintf(stderr, "ubel_rt: out of memory registering a global root\n"); abort(); }
+    }
+    groots[ngroots].lo = lo;
+    groots[ngroots].hi = hi;
+    ngroots++;
+}
+
+void ubel_gc_remove_root(void *addr) {
+    for (size_t i = 0; i < ngroots; i++)
+        if (groots[i].lo == (uintptr_t)addr) {
+            groots[i] = groots[--ngroots];
+            return;
+        }
+    fprintf(stderr, "ubel_rt: ubel_gc_remove_root: %p is not a registered root\n", addr);
+    abort();
 }
 
 void *ubel_arena_grow(ubel_arena *a, uint64_t size) {

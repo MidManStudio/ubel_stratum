@@ -215,7 +215,7 @@ code built without a sanitizer, and the benchmark programs are the same hand-wri
 - One thread, one object size (32 bytes), and a list-shaped live set. Trees and arrays
   mark differently.
 - LOW is glibc `malloc`. A pool or a different allocator would change LOW.
-- Roots are conservative and globals are not roots. The GC is a first cut and has not
+- Roots are conservative; a global is a root only if its memory is registered (`ubel_gc_add_root`). The GC is a first cut and has not
   been tuned; its allocation fast path in particular has room to improve.
 - Two shared CI runners with the variance noted above. Absolute times are not comparable
   between runners or between targets (a `Node` is 32 bytes on 64-bit and 28 on 32-bit).
@@ -832,7 +832,11 @@ None of this has been started, and the plan is open to change.
   size.
 - A plain arena that holds the only reference to a GC object is a bug, not a supported
   mode. `xit_arena_plain` exists only to demonstrate it.
-- Globals are not GC roots, and nothing here is thread-safe.
+- A global or static variable is a GC root only if the memory holding it is registered with
+  `ubel_gc_add_root` (and unregistered with `ubel_gc_remove_root` before that memory goes away). The emitter
+  registers nothing: the only globals it defines are `private unnamed_addr constant`s (string literals and
+  static closure objects), which hold no heap pointers. A language feature with mutable globals would need
+  the emitter to register them. Nothing here is thread-safe.
 - The stack scan is conservative, so a word that merely looks like an address keeps an object alive. On
   64-bit that is rare; on 32-bit a random word lands inside the heap often enough to see (probability
   about heap-in-use / 4 GiB per word). The runtime keeps its own frames free of such words (no
@@ -911,8 +915,8 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    enums and closures, `mut` captures and captures from more than one level out.
 
 Parallel track that does not block the above: run the slice 3 CI workflows, and the GC
-hardening items in `docs/GC_RESEARCH.md` (global roots, a collect-on-every-
-allocation debug mode; large objects are done), since items 2 to 4 all allocate more kinds of object.
+hardening items in `docs/GC_RESEARCH.md` (large objects, global roots and the collect-on-every-allocation
+debug mode are done; what is left is stress over more pointer locations as the emitter grows), since items 2 to 4 all allocate more kinds of object.
 
 Decisions the language still owes the emitter: where a MID helper outside `with arena`
 allocates (the target program sidesteps it, because sema stops arena values crossing calls
@@ -942,6 +946,18 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-04: GC hardening, step 3: global roots, provisional. `ubel_gc_add_root(addr, bytes)` and
+  `ubel_gc_remove_root(addr)`: the registered memory is scanned word by word at every collection, like the stack;
+  regions are keyed by start address (adding the same start changes the length); a NULL address, under one word,
+  or removing an unregistered address aborts. New test `rt_gc_test global_roots` (15 tests): both ends of a region
+  (the word one past the end is not scanned, the word before the start is not), a changed length, a start that is
+  not word-aligned (only the words that fit inside), nothing registered (the global keeps nothing alive), and 300
+  one-word regions removed in an order that exercises the swap-with-last removal; `misuse` has 3 more cases.
+  Mutants caught at -O0 and -O2, 64-bit and 32-bit: the last word skipped, removal one past the end, the scan not
+  called, a same-start add appended instead of changing the length, an unaligned start. The emitter registers
+  nothing, because it defines no mutable globals (checked: its only globals are `private unnamed_addr constant`).
+  `run_equiv.sh` at 64-bit and `-m32`: 59 passed, 1 failed each (`20_arena_strings`, waiting for the D3b sema patch).
+  Not run: Termux, macOS, CI on real runners.
 - 2026-11-04: GC hardening, step 2: collect-on-every-allocation mode, provisional. `UBEL_GC_STRESS=N`,
   `ubel_gc_set_stress`, `GC_STRESS=N` for `run_equiv.sh`. New test `rt_gc_test stress_mode` (14 tests): in stress
   mode it builds objects reachable from one kind of place only (struct fields, a pointer array, an array on the

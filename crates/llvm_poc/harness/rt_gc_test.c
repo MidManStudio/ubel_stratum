@@ -558,6 +558,7 @@ static void t_stress(void) {
 }
 
 /* Misuse is refused loudly: each call must abort. */
+static void *misuse_word;
 static int aborts(int which) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -568,6 +569,9 @@ static int aborts(int which) {
         case 2: ubel_gc_alloc_array(2 * sizeof(void *), 4, 0x8u); break;     /* mask outside the element */
         case 3: ubel_gc_alloc_array(sizeof(void *), ~0ull / 2, 1u); break;   /* total overflows */
         case 4: ubel_gc_alloc_noscan(~0ull); break;                          /* larger than the heap */
+        case 5: ubel_gc_add_root(NULL, 64); break;                           /* no address */
+        case 6: ubel_gc_add_root(&misuse_word, 1); break;                    /* less than a word */
+        case 7: ubel_gc_remove_root(&misuse_word); break;                    /* never registered */
         }
         _exit(0); /* returned: not refused */
     }
@@ -619,7 +623,7 @@ static void t_arena_scan(void) {
 }
 
 static void t_misuse(void) {
-    for (int i = 0; i < 5; i++) CHECK(aborts(i), "misuse case %d was not refused", i);
+    for (int i = 0; i < 8; i++) CHECK(aborts(i), "misuse case %d was not refused", i);
 }
 
 /* ------------------------------------------------------------------ main */
@@ -864,6 +868,83 @@ static void t_stress_mode(void) {
     EXPECT_LIVE(0, "everything dropped");
 }
 
+/* Global roots. A pointer kept in a global is only a root if the memory holding it is registered.
+ * Each phase refills the whole array with fresh objects and registers a different region of it, so
+ * the live bytes say exactly which words were scanned: both ends of a region, a changed length, a
+ * start that is not word-aligned. The second half registers 300 one-word regions (the table has to
+ * grow) and removes them in an order that exercises the swap-with-last removal. */
+static void *g_slots[8];
+static uint64_t g_sz[8];
+static void *g_many[300];
+
+static void NOINLINE g_refill(void) {
+    for (unsigned i = 0; i < 8; i++) {
+        uint64_t before = alloc_bytes_now();
+        void *p = ubel_gc_alloc_noscan(100u + 40u * i);
+        g_sz[i] = alloc_bytes_now() - before;
+        fill(p, 100u + 40u * i, 700u + i);
+        g_slots[i] = p;
+    }
+}
+static int NOINLINE g_intact(unsigned i) { return intact(g_slots[i], 100u + 40u * i, 700u + i); }
+static uint64_t g_sum(unsigned from, unsigned to) { /* slots from..to-1 */
+    uint64_t t = 0;
+    for (unsigned i = from; i < to; i++) t += g_sz[i];
+    return t;
+}
+static void NOINLINE gm_put(unsigned i) {
+    void *p = ubel_gc_alloc_noscan(64);
+    fill(p, 64, 500u + i);
+    g_many[i] = p;
+}
+static int NOINLINE gm_intact(unsigned i) { return intact(g_many[i], 64, 500u + i); }
+
+static void t_global_roots(void) {
+    const size_t W = sizeof(void *);
+
+    /* the first four words only: word 3 is scanned, word 4 (one past the end) is not */
+    ubel_gc_add_root(g_slots, 4 * W);
+    g_refill();
+    EXPECT_LIVE(g_sum(0, 4), "words 0..3 registered: only those objects live");
+    for (unsigned i = 0; i < 4; i++) CHECK(g_intact(i), "global-root object %u was damaged", i);
+
+    /* the same start with a longer length */
+    ubel_gc_add_root(g_slots, 8 * W);
+    g_refill();
+    EXPECT_LIVE(g_sum(0, 8), "same start, length changed to 8 words: all live");
+    for (unsigned i = 0; i < 8; i++) CHECK(g_intact(i), "global-root object %u was damaged after the length change", i);
+
+    /* a region that starts in the middle: the word before it is not scanned */
+    ubel_gc_remove_root(g_slots);
+    ubel_gc_add_root(&g_slots[2], 4 * W);
+    g_refill();
+    EXPECT_LIVE(g_sum(2, 6), "words 2..5 registered: 0, 1, 6 and 7 are not roots");
+    for (unsigned i = 2; i < 6; i++) CHECK(g_intact(i), "global-root object %u was damaged (middle region)", i);
+
+    /* a start that is not word-aligned: only the words that fit entirely inside are scanned (1, 2, 3) */
+    ubel_gc_remove_root(&g_slots[2]);
+    ubel_gc_add_root((char *)g_slots + 1, 4 * W);
+    g_refill();
+    EXPECT_LIVE(g_sum(1, 4), "unaligned region: words 1..3 fit, word 4 does not");
+
+    /* nothing registered: the global holds the only reference and does not keep anything alive */
+    ubel_gc_remove_root((char *)g_slots + 1);
+    g_refill();
+    EXPECT_LIVE(0, "no root registered");
+
+    /* many regions: the table has to grow, and removal swaps the last entry into the hole */
+    for (unsigned i = 0; i < 300; i++) ubel_gc_add_root(&g_many[i], W);
+    uint64_t before300 = alloc_bytes_now();
+    for (unsigned i = 0; i < 300; i++) gm_put(i);
+    uint64_t all300 = alloc_bytes_now() - before300; /* nothing else was allocated: this is all live */
+    EXPECT_LIVE(all300, "300 one-word regions registered: all 300 objects live");
+    for (unsigned i = 0; i < 300; i += 2) ubel_gc_remove_root(&g_many[i]); /* evens */
+    EXPECT_LIVE(all300 / 2u, "after removing the even regions only the odd 150 are live");
+    for (unsigned i = 1; i < 300; i += 2) CHECK(gm_intact(i), "global-root object %u (odd) was damaged", i);
+    for (unsigned i = 1; i < 300; i += 2) ubel_gc_remove_root(&g_many[i]);
+    EXPECT_LIVE(0, "all regions removed");
+}
+
 static const test tests[] = {
     {"classes", t_classes, NULL},
     {"large_basic", t_large_basic, NULL},
@@ -879,6 +960,7 @@ static const test tests[] = {
     {"register_root", t_register_root, NULL},
     {"clock_alias", t_clock_alias, NULL},
     {"stress_mode", t_stress_mode, NULL},
+    {"global_roots", t_global_roots, NULL},
 };
 #define NTESTS (sizeof tests / sizeof tests[0])
 

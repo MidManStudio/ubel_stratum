@@ -112,6 +112,16 @@ void  ubel_gc_set_stress(uint64_t every);
  * stack frame the scan reads: such a word would keep that object alive. */
 void  ubel_gc_set_clock(uint64_t (*now)(void));
 
+/* Global roots. The stack, the registers and scannable arenas are roots; a pointer kept in a global
+ * or static variable is not, unless the memory holding it is registered. Every aligned word in
+ * [addr, addr + bytes) is then treated as a possible pointer at each collection, conservatively like
+ * the stack. A region is identified by its start address: adding a start that is already registered
+ * changes its length. The memory must stay valid until ubel_gc_remove_root(addr). A NULL address, a
+ * size under one word, or removing an address that is not registered aborts, like the allocation
+ * misuse cases. Not thread-safe, like the rest of the runtime. */
+void  ubel_gc_add_root(void *addr, uint64_t bytes);
+void  ubel_gc_remove_root(void *addr);
+
 /* ----------------------------------------------------------------- MID --- */
 
 /* The first four fields are shared with %Arena in the bench .ll files. Keep them in
