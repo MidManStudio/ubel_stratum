@@ -96,8 +96,7 @@ algorithm.
 ## Open questions
 
 1. Where can GC references live: stacks, registers, globals, heap objects, closures,
-   arenas, native code? How does the collector find each? (Globals are not roots in the
-   PoC today.)
+   arenas, native code? How does the collector find each? (Globals are roots only if registered with `ubel_gc_add_root`.)
 2. Which stores need barriers, and what do they cost in generated code?
 3. Can a pointer to a HIGH object be stored in MID or LOW memory, and under which rules?
 4. Can a MID object outlive its arena through a callback, closure or returned value?
@@ -114,7 +113,7 @@ Provisional, and to be decided together.
 
 1. Settle the root and cross-tier contract (questions 1 to 5) before changing algorithms.
 2. Make the current collector trustworthy: global roots, large objects, stress tests that
-   collect at awkward points, and a debug mode that collects on every allocation.
+   collect at awkward points, and a debug mode that collects on every allocation. Done 2026-11-04 (provisional): see docs/LLVM_POC.md, Log.
 3. Measure properly: allocation fast path, pause distributions (median, p95, p99, worst),
    memory overhead, and allocation lifetimes on real programs.
 4. Only then evaluate generational and concurrent designs against measured needs.

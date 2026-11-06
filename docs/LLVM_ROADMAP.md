@@ -161,12 +161,11 @@ What exists, and is measured (two shared CI runners, hand-written IR, provisiona
 stop-the-world, non-moving mark-sweep collector with size-class spans, a conservative stack scan
 and precise heap masks per object. Marking costs 10 to 15 ns per live node, a 6.4 MB live set
 spent 52% to 59% of the run in collection with 2.2 to 3.1 ms pauses, and allocation costs 7 to
-14 ns against 1.5 to 5 ns for an arena bump. Limits: objects of at most 64 words, globals are not
-roots, one thread.
+14 ns against 1.5 to 5 ns for an arena bump. Limits: a global is a root only if its memory is registered (`ubel_gc_add_root`), one thread.
 
 Hardening that does not need a design decision, and gates everything after it:
 
-1. Global roots and a collect-on-every-allocation debug mode run over the whole example suite
+1. DONE (2026-11-04, provisional): global roots (`ubel_gc_add_root`) and a collect-on-every-allocation mode (`UBEL_GC_STRESS=N`, `GC_STRESS=N` for `run_equiv.sh`), run over the whole example suite at 64-bit and 32-bit; a 32-bit false-retention bug was also fixed (docs/LLVM_POC.md, Bugs found)
    (large objects, A5, are in the runtime).
 2. Stress tests that put objects in every place a pointer can live (struct and enum payloads,
    closures when they exist, scannable arenas) and check survival and reclamation.
@@ -231,10 +230,10 @@ place sema and the calculus disagree.
 | # | Decision | Blocks | Default I would take if told to proceed (provisional) |
 |---|---|---|---|
 | D1 | Can an arena value cross a call (a borrowed-reference parameter), or is copy-out the only way? | B4, B2, A7 | Allow a borrowed `&L` parameter with a lifetime tied to the caller's arena, because the callback pattern is the design's main selling point and copy-out costs 1.2x to 1.3x. |
-| D2 | Does a function type carry a tier, and is calling a closure checked against it? | B4, B3, A7 | Yes, to close the hole above. |
-| D3 | String representation: GC object `{length, bytes}`, literals static, interpolation allocates by site. DECIDED as D3b (chat 4): sema tracks arena strings, a run-time `+` always allocates in the GC heap, see docs/ARENA_STRINGS.md | A6 | Sema half delivered; emitter half is A6. |
+| D2 | Does a function type carry a tier, and is calling a closure checked against it? | B4, B3, A7 | DECIDED by the owner (2026-10-31): a closure's tier is the tier of the function it is created in. A function type carries no tier, so only LOW can be checked: a LOW function may call only a closure it created itself (TIER-017); MID and HIGH may call any. In sema and in the emitter, provisional. |
+| D3 | String representation: GC object `{length, bytes}`, literals static, interpolation allocates by site. DECIDED as D3b (chat 4): sema tracks arena strings, a run-time `+` always allocates in the GC heap, see docs/ARENA_STRINGS.md | A6 | Both halves are in: the emitter half (A6, A6b) and the sema half (docs/ARENA_STRINGS.md). |
 | D4 | Enum payload-free variants: uniform heap object (today) or plain integer | A4 | Keep the uniform object for now, revisit once strings and closures exist. |
-| D5 | Capturing closures: closure object holds captured values, in the GC heap or the arena by site | A7 | By site, like every other literal. |
+| D5 | Capturing closures: closure object holds captured values, in the GC heap or the arena by site | A7 | DECIDED by the owner (2026-10-31): a capturing closure's object lives in the arena of its block and dies with it. My reading, not confirmed: in a HIGH function outside any arena the object is a GC object (by site, like a struct literal); MID outside an arena and LOW refuse it. Implemented (A7b), provisional. |
 | D6 | Recursive arena structures: optional references, arena-capable enums, or arena lists | B2, A8 | Needs your call; the target program does not depend on it. |
 | D7 | Moving collector: allowed or never | B1, B3 | Never, until a measurement shows non-moving costs too much. |
 | D8 | Proof assistant, or paper proofs only | B5 | Paper first. |
