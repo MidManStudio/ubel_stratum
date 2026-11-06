@@ -1,0 +1,126 @@
+// tests/fixtures/ok_index_combined.ubl
+// The index traits with the traits that shipped before them: a `Matrix`
+// indexed by a `(int, int)` pair, `Add` for `+`, `Display` for the printed
+// form, `Iterator` to walk the rows, nested indexing (`table[1][0]`), and a
+// generic function bounded by `Index<int, int>` and `IndexSet<int, int>` that
+// runs over a `List`, a `Dictionary` and a struct alike, calling the methods
+// by name as well as through `[]`.
+// Expected: sema OK, interpret OK.
+
+@derive(PartialEq)
+struct Matrix {
+    cells: List<int>,
+    w:     int,
+}
+
+impl Index<(int, int), int> for Matrix {
+    fn index(self, idx: (int, int)) int {
+        return self.cells[idx[0] * self.w + idx[1]]
+    }
+}
+
+impl IndexSet<(int, int), int> for Matrix {
+    fn index_set(self, idx: (int, int), value: int) {
+        self.cells[idx[0] * self.w + idx[1]] = value
+    }
+}
+
+impl Add<Matrix, Matrix> for Matrix {
+    fn add(self, rhs: Matrix) Matrix {
+        let mut out = [0, 0, 0, 0]
+        let mut i = 0
+        while i < 4 {
+            out[i] = self.cells[i] + rhs.cells[i]
+            i += 1
+        }
+        return Matrix { cells = out, w = self.w }
+    }
+}
+
+impl Display for Matrix {
+    fn to_string(self) string {
+        return $"[{self.cells[0]} {self.cells[1]} / {self.cells[2]} {self.cells[3]}]"
+    }
+}
+
+struct Row {
+    items: List<int>,
+}
+
+impl Index<int, int> for Row {
+    fn index(self, idx: int) int {
+        return self.items[idx]
+    }
+}
+
+struct Table {
+    rows: List<Row>,
+}
+
+impl Index<int, Row> for Table {
+    fn index(self, idx: int) Row {
+        return self.rows[idx]
+    }
+}
+
+struct Cursor {
+    row:  int,
+    last: int,
+}
+
+impl Iterator<int> for Cursor {
+    fn next(self) int? {
+        if self.row >= 2 {
+            return null
+        }
+        self.row = self.row + 1
+        return self.row
+    }
+}
+
+fn first<C: Index<int, int>>(c: C) int {
+    return c[0]
+}
+
+fn put<C: IndexSet<int, int>>(c: C, v: int) {
+    c[1] = v
+}
+
+fn second<C: Index<int, int>>(c: C) int {
+    return c.index(1)
+}
+
+fn main() void {
+    let m = Matrix { cells = [1, 2, 3, 4], w = 2 }
+    let r0: int = 1
+    let c0: int = 1
+    let p = (r0, c0)
+    assert(m[p] == 4, "pair index")
+    m[p] = 40
+    assert(m[p] == 40, "pair write")
+
+    let sum = m + m
+    assert(sum.cells[3] == 80, "operator on indexed types")
+    assert($"{m}" == "[1 2 / 3 40]", "display")
+
+    let t = Table { rows = [Row { items = [1, 2] }, Row { items = [3, 4] }] }
+    assert(t[1][0] == 3, "nested indexing")
+
+    let cur = Cursor { row = 0, last = 0 }
+    let mut acc = 0
+    for r in cur {
+        acc += t[r - 1][1]
+    }
+    assert(acc == 6, "iterator feeding an index")
+
+    let l = [10, 20, 30]
+    let d: Dictionary<int, int> = Dictionary.new()
+    d.set(0, 7)
+    d.set(1, 8)
+    assert(first(l) == 10 && first(d) == 7, "bound over a list and a dictionary")
+    put(l, 99)
+    put(d, 98)
+    assert(l[1] == 99 && d[1] == 98, "write bound")
+    assert(second(l) == 99 && second(t[0]) == 2, "method by name")
+    println("ok")
+}

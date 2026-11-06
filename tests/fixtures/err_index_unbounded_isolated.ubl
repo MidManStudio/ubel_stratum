@@ -1,0 +1,13 @@
+// tests/fixtures/err_index_unbounded_isolated.ubl
+// `a[0]` on a value of an unbounded type parameter: nothing says `T` can be
+// indexed, so sema asks for the bound (TYPE-131) instead of typing the result
+// as unknown and leaving a run-time panic for anything but a `List`.
+// Expected: sema FAIL (OperatorNeedsBound, TYPE-131).
+
+fn at<T>(a: T) int {
+    return a[0]
+}
+
+fn main() void {
+    println(at([1, 2, 3]))
+}

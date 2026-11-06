@@ -462,6 +462,42 @@ three were caught, and the four that survived were guards no path reaches (the o
 returns before any of those helpers sees an operand that already failed), so they were
 deleted, and so were two more of the same kind in `native_operator` and `operator_operand_text`.
 
+### `tests/index.rs`
+
+**What it does:** Integration tests for the index traits and the typed built-in indexing, slice
+S5d (47 tests). Programs go through `check_source` for stage, codes, messages and suggestions
+and through the interpreter for run-time values.
+
+**Decisions:**
+- Run time: a read, a write and a compound assignment through impls; one type with `Index` for
+  an `int`, a `(int, int)` and a `string`; nested indexing with a field write at the end
+  (`t[0][1].x = 20`); a read-only type, a write-only type, an enum, a generic type, `Shared` and
+  `Unique` values (indexed once, since `Unique` is moved by the first use on the baseline too), an
+  optional list, and the methods by name.
+- Bounds: `List`, `Dictionary`, string and impls satisfy `Index` and `IndexSet` bounds with the
+  right argument shapes (`[int, T]`, `[K, V]`, `[int, char]`), a string does not satisfy the
+  write bound, another kind of index does not satisfy a bound, a read bound does not allow a
+  write, an unbounded parameter is `TYPE-131` with the bound in the suggestion, and
+  `c.index_set(i, v)` through a bound runs for a struct, a list and a dictionary.
+- Diagnostics: `TYPE-136` for a missing read impl (the kinds the type has, the suggestion
+  without any), a missing write impl, and both sides of a compound assignment; `TYPE-137` for a
+  `Queue`, `Stack`, `Set`, number, and an assignment through a string or tuple; `TYPE-101` for
+  the index of a list, string, tuple, array and dictionary and for the stored value, in the
+  expected-then-found order; `TYPE-128`, `TYPE-129` (five built-in targets, a number with a
+  struct index, a bare type parameter) and `TIER-016`.
+- Negative index on a write counts from the end; one past the start or the end is a panic that
+  names the index as written.
+- Tuples unify item by item, and another arity or another item is a mismatch.
+- A program trait named `Index` shadows the read side only; `IndexSet` stays the prelude's.
+
+**Mutation pass:** 30 mutations over `sema/type_infer.rs`, `interpreter/eval/expr.rs`,
+`interpreter/eval/user_ops.rs` and `rd_parser/src/prelude.rs`, 29 caught and one redundant: the
+shadow guard in `index_site` repeated what `operator_site` already does first (it returns
+`None` for a shadowed trait), so the guard was deleted and the behavior got its own test. The
+first run of the new tests found three mistakes in the tests themselves (a `Unique` value moved
+by its first index, an `L` literal suffix Ubel does not have, and a tuple literal as the first
+call argument, which does not parse).
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in
@@ -520,7 +556,7 @@ and through the interpreter for run-time values.
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
 `Clone`, `Display`, `Iterator`, the twelve operator traits `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`,
-`BitOr`, `BitXor`, `Shl`, `Shr`, `Neg` and `BitNot`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the traits are `@tier(low)`, so code at any tier can
+`BitOr`, `BitXor`, `Shl`, `Shr`, `Neg`, `BitNot`, `Index` and `IndexSet`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the traits are `@tier(low)`, so code at any tier can
 hash, show and call their methods through a bound: the prelude is ordinary source and its methods are `HIGH` unless a tier is written.
 `parse()` calls `prelude::inject` after parsing the
 program. `tests/prelude_traits.rs` (95 tests) covers what each kind of type

@@ -48,7 +48,7 @@
 | **S5a** | **Built** | `Display`: a prelude trait (`@tier(low)`, `fn to_string(self) string`) that a struct or enum can implement by hand to decide how `println`, `print`, `log`, `to_string`, `{x}` and the messages of `assert` and `panic` show it, at any depth; a struct prints its fields in declaration order. See \"What S5a settled\" below. |
 | **S5b** | **Built** | `Iterator<T>`: a prelude trait (`@tier(low)`, `fn next(self) T?`) that a struct or enum can implement so that `for x in value` calls `next` until it returns `null`. `Queue`, `Stack` and `Dictionary` become iterable, and a `for` over anything that cannot be walked is `TYPE-135`. See "What S5b settled" below. |
 | **S5c** | **Built** | Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` (generic in the right operand and the result, `Mul<Rhs, Out>`) and `Neg<Out>`, `BitNot<Out>`, prelude traits (`@tier(low)`) that a struct or enum implements so that `a + b`, `a *= b`, `-a` and `~a` call it. A type has one impl of an operator trait per kind of right operand, and a number or a string on the left can take a struct or an enum on the right (`2.0 * v`). A bound such as `T: Add<T, T>` is satisfied by numbers, strings and impls; an operator with no impl is `TYPE-136` and one on an unbounded type parameter is `TYPE-131`. See "What S5c settled" below. |
-| S5d | Planned | `Index`: `a[i]` and `a[i] = v` on a user type (they pass sema and panic at run time today). |
+| **S5d** | **Built** | `Index<Idx, Out>` and `IndexSet<Idx, Val>`, two `@tier(low)` prelude traits: a struct or enum that implements them is what `a[i]` and `a[i] = v` call (`a[i] += v` needs both), a type has one impl per kind of index, and `List`, arrays, `Dictionary` and strings satisfy them natively. The built-in indexables are typed as well (a `Dictionary` by its key, a string gives a `char`, an index has to be an `int`), what the run time cannot index is `TYPE-137`, a negative index on a write counts from the end, and tuple types now unify. See "What S5d settled" below. |
 | S6 | Planned | `dyn Trait`. As in section 4. |
 
 ### What S1a settled that the options did not
@@ -768,6 +768,60 @@ Decided 2026-11-03.
   impl, in sema and at run time (the operator form finds the right one). Operators on `List`,
   `Dictionary`, tuples and other built-in left operands cannot be implemented, and `list + list`
   or `bool & bool` still passes sema and panics at run time.
+
+### What S5d settled
+
+Decided 2026-11-05.
+
+- **Two traits (chosen over one trait with both methods, and over a write trait that requires
+  the read trait).** `Index<Idx, Out>` has `fn index(self, idx: Idx) Out` and
+  `IndexSet<Idx, Val>` has `fn index_set(self, idx: Idx, value: Val)`; both are `@tier(low)`
+  like the other language-item traits, and the methods are named `index` and `index_set` (chosen
+  over `get` and `set`, which user containers usually define as their own methods). A type may
+  have only the read side or only the write side. `a[i]` calls `index`, `a[i] = v` calls
+  `index_set` and needs no read impl, and `a[i] += v` reads through `Index`, applies the
+  operator, and writes through `IndexSet`, so it needs both and the written type has to be the
+  one that was read.
+- **One impl per kind of index.** The same rule as the operator traits (S5c): `Index<int, T>`,
+  `Index<string, T>` and `Index<(int, int), T>` coexist for one type, impls whose index is one
+  kind of value at run time overlap (`TYPE-128`), and the impls are filed by `(type, trait,
+  kind of the index)` with the operator impls. An impl for a built-in type, any of them, is
+  `TYPE-129` (a number on the left with a struct on the right, which S5c allows for the
+  operators, makes no sense for an index), as is a bare type parameter as the index.
+- **Built-ins satisfy the traits natively.** A `List`, an array, a slice and an `InlineList`
+  satisfy `Index<int, T>` and `IndexSet<int, T>`, a `Dictionary<K, V>` satisfies both with
+  `(K, V)`, and a string satisfies `Index<int, char>` only. So `C: Index<int, int>` accepts a
+  `List<int>` and any struct with the impl, and `c.index(i)` and `c.index_set(i, v)` through a
+  bound run natively for the built-ins and by the index's kind for a struct. An index on an
+  unbounded type parameter is `TYPE-131` (it was accepted, typed as an unknown, before).
+- **The built-ins are typed (chosen with the negative-write fix).** The index of a `List`,
+  array, slice, `InlineList`, string or tuple has to be an `int` (`long`, `i64` and `isize` are
+  the same kind of value; any other integer type is a mismatch, as the run time reads
+  `Value::Int` only), a `Dictionary` is indexed by its key type and gives its value type, a
+  string gives a `char`, and a tuple read by an integer literal gives that item (any other
+  index gives an unknown type). A string and a tuple cannot be assigned through, and a number, a
+  `Queue`, a `Stack`, a `Set`, a `Pool` or a function cannot be indexed at all: `TYPE-137`. The
+  transparent `T?` and `T!` and the ownership and reference wrappers are looked through, and a
+  value whose type is not known yet is not an error. Each of these used to pass sema.
+- **A negative index on a write** counts from the end, as it does on a read (`l[-1] = 9`
+  writes the last element; before, it panicked with an index near 2^64), and one past the start
+  is a panic naming the index as written.
+- **Tuple types unify.** The unifier compared single-parameter wrappers, `Named` and
+  `Dictionary` structurally and had no tuple case, so two tuple types built apart were never
+  equal unless they were one table entry (`take(p)` with `p: (int, int)` and `fn take(k: (int,
+  int))` was a mismatch between two identical types). Same arity now unifies item by item. A
+  tuple-indexed impl needed it; it also fixes the tuple annotations that did not unify with
+  integer literals.
+- **Run time.** `a[i]` and `a[i] = v` try the impl table first when a struct, an enum or an
+  ownership wrapper around one is the indexed value, and otherwise index the built-in as before.
+  A program that declares its own trait named `Index` or `IndexSet` shadows that one (each on
+  its own) and its use is left unchecked, as for the operator traits.
+- **Not built.** `a[1 .. 3]` is not a slice: a range evaluates to a `List` at run time and sema
+  does not know the type of a range expression, so it passes sema and panics ("cannot index List
+  with List"), as before. There is no `a[i, j]` syntax; a pair is written `a[(i, j)]`. A tuple
+  literal index out of range is not reported (the type is unknown and the run time panics), and a
+  missing `Dictionary` key still panics at run time. Indexing a `Pool` is `TYPE-137`, not a
+  handle lookup.
 
 ### D7: what has to be specified before S4
 

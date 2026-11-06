@@ -1,0 +1,21 @@
+// tests/fixtures/err_index_isolated.ubl
+// `r[0] = 5` on a type that implements `Index` but not `IndexSet`: the run
+// time would panic ("invalid index assignment target"), so sema reports that
+// there is no write impl for this index.
+// Expected: sema FAIL (OperatorNotImplemented, TYPE-136).
+
+struct Readings {
+    values: List<int>,
+}
+
+impl Index<int, int> for Readings {
+    fn index(self, idx: int) int {
+        return self.values[idx]
+    }
+}
+
+fn main() void {
+    let r = Readings { values = [1, 2, 3] }
+    println(r[0])
+    r[0] = 5
+}

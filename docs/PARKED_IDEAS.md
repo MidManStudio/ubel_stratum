@@ -512,11 +512,17 @@ it actually turned up:
 - A tier error found in type inference (a call on a receiver, a call through a
   trait, a `TIER-016`) stops the pipeline before the tier pass runs, so a by-name
   `TIER-005` in a method body is reported only once those are fixed.
-- Indexing on a user type (`a[i]`, `a[i] = v`) is accepted by sema and panics
-  at runtime. The `Index` trait of slice S5d gives it a type error. (The
-  arithmetic, bitwise and unary operators and compound assignment were the same
-  until S5c, which added the operator traits and `TYPE-136`, and `for x in
-  value` over a user type until S5b, which added `Iterator<T>` and `TYPE-135`.)
+- Indexing on a user type (`a[i]`, `a[i] = v`) was accepted by sema and panicked
+  at runtime until S5d, which added `Index` and `IndexSet` and a type error
+  (`TYPE-136`, `TYPE-137`). The arithmetic, bitwise and unary operators and
+  compound assignment were the same until S5c, and `for x in value` over a user
+  type until S5b.
+- Indexing (S5d) leaves these open. A tuple read by an integer literal out of
+  range is not reported (the type is unknown and the run time panics), and a
+  missing `Dictionary` key panics at run time. `a[1 .. 3]` is not a slice: a
+  range is a `List` at run time and sema does not type a range expression, so
+  it passes sema and panics ("cannot index List with List"), as before. A
+  `Pool` is not indexable (`TYPE-137`); a handle lookup has no syntax.
 - Operator traits (S5c) leave these open. An impl cannot take a bare type
   parameter as its right operand (`impl<T> Mul<T, Box<T>> for Box<T>` is
   `TYPE-129`); `impl Mul<double, Vec2<double>> for Vec2<double>` is the way to

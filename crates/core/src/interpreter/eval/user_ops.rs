@@ -109,6 +109,31 @@ impl<'ast> Interpreter<'ast> {
         }
     }
 
+    /// `coll[idx]` through the `Index` impl a struct or an enum has for this
+    /// kind of index. `Ok(None)` means "not mine": the value is a built-in the
+    /// run time indexes itself.
+    pub(crate) fn user_index(&mut self, coll: &Value, idx: &Value) -> Result<Option<Value>, Signal> {
+        if self.operator_impls.is_empty() || !is_operand(coll) { return Ok(None); }
+        self.user_operator("Index", coll, Some(idx))
+    }
+
+    /// `coll[idx] = value` through the `IndexSet` impl a struct or an enum has
+    /// for this kind of index. `false` means "not mine".
+    pub(crate) fn user_index_set(&mut self, coll: &Value, idx: &Value, value: &Value) -> Result<bool, Signal> {
+        if self.operator_impls.is_empty() || !self.operator_traits.contains("IndexSet") || !is_operand(coll) {
+            return Ok(false);
+        }
+        let l = super::expr::unwrap_ownership(coll.clone());
+        let r = super::expr::unwrap_ownership(idx.clone());
+        let (Some(left_key), Some(right_key)) = (super::expr::dispatch_key(&l), super::expr::dispatch_key(&r)) else {
+            return Ok(false);
+        };
+        match self.operator_impls.get(&(left_key, "IndexSet", right_key)).copied() {
+            Some(f) => { self.call_method(f, l, &[r, value.clone()])?; Ok(true) }
+            None    => Ok(false),
+        }
+    }
+
     /// The impl of `trait_name` a left operand of this kind has for a right
     /// operand of that kind, called. A number on the left finds its impl
     /// only when the right operand is a struct or an enum (`2.0 * v`).

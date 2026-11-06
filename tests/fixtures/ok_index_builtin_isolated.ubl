@@ -1,0 +1,32 @@
+// tests/fixtures/ok_index_builtin_isolated.ubl
+// The built-in indexables, typed: a `Dictionary` by its key type giving its
+// value type, a string giving a `char`, a tuple read by a literal giving that
+// item, and a negative index on a write counting from the end as it does on a
+// read.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let d: Dictionary<string, int> = Dictionary.new()
+    d["a"] = 1
+    d["b"] = 2
+    d["a"] += 10
+    let a: int = d["a"]
+    assert(a == 11 && d["b"] == 2, "dictionary")
+
+    let s = "abc"
+    let c: char = s[1]
+    assert(c == 'b', "string gives a char")
+
+    let t = (7, "x")
+    let n: int = t[0]
+    let w: string = t[1]
+    assert(n == 7 && w == "x", "tuple items")
+
+    let l = [1, 2, 3]
+    assert(l[-1] == 3, "negative read")
+    l[-1] = 9
+    assert(l[2] == 9, "negative write")
+    l[-3] += 5
+    assert(l[0] == 6, "negative compound")
+    println("ok")
+}

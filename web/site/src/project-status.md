@@ -148,8 +148,11 @@ verified safe.
   and `BitNot`), so `a + b`, `a *= b`, `-a` and `~a` call it; a type can have one impl per
   kind of right operand (`Vec2 * double` and `Vec2 * Vec2`), a number can take a struct on
   its right (`2.0 * v`), and an operator with no impl, or on an unbounded type parameter, is a
-  compile error instead of a run-time panic. Next: indexing (`a[i]`), associated types, and
-  `dyn Trait`
+  compile error instead of a run-time panic. A struct or enum can also implement `Index` and
+  `IndexSet`, so `a[i]`, `a[i] = v` and `a[i] += v` call it (one impl per kind of index, and a
+  `List` or a `Dictionary` satisfies the same bounds); `List`, `Dictionary`, string and tuple
+  indexing is typed, and indexing what the run time cannot index is a compile error. Next:
+  associated types, and `dyn Trait`
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

@@ -1,0 +1,82 @@
+// tests/fixtures/ok_index_isolated.ubl
+// The index traits on their own: `a[i]` calls `Index<Idx, Out>` and
+// `a[i] = v` calls `IndexSet<Idx, Val>`. One type has several `Index` impls,
+// told apart by the kind of the index (`int`, `(int, int)`, `string`); a type
+// may have only the read side or only the write side; `a[i] += v` goes
+// through both.
+// Expected: sema OK, interpret OK.
+
+struct Grid {
+    cells: List<int>,
+    w:     int,
+}
+
+impl Index<int, int> for Grid {
+    fn index(self, idx: int) int {
+        return self.cells[idx]
+    }
+}
+
+impl Index<(int, int), int> for Grid {
+    fn index(self, idx: (int, int)) int {
+        return self.cells[idx[0] * self.w + idx[1]]
+    }
+}
+
+impl Index<string, int> for Grid {
+    fn index(self, idx: string) int {
+        return self.cells[0] + 1000
+    }
+}
+
+impl IndexSet<int, int> for Grid {
+    fn index_set(self, idx: int, value: int) {
+        self.cells[idx] = value
+    }
+}
+
+struct Constants {
+    base: int,
+}
+
+impl Index<int, int> for Constants {
+    fn index(self, idx: int) int {
+        return self.base + idx
+    }
+}
+
+struct Last {
+    value: int,
+}
+
+impl IndexSet<int, int> for Last {
+    fn index_set(self, idx: int, value: int) {
+        self.value = idx + value
+    }
+}
+
+fn main() void {
+    let g = Grid { cells = [1, 2, 3, 4], w = 2 }
+    assert(g[2] == 3, "read by an int")
+
+    let row: int = 1
+    let col: int = 0
+    let at = (row, col)
+    assert(g[at] == 3, "read by a pair")
+    assert(g["x"] == 1001, "read by a string")
+
+    g[0] = 10
+    assert(g[0] == 10, "write")
+    g[1] += 5
+    assert(g[1] == 7, "compound assignment reads and writes")
+    g[1] *= 2
+    assert(g[1] == 14, "compound assignment again")
+
+    let c = Constants { base = 100 }
+    assert(c[5] == 105, "a read-only type")
+
+    let l = Last { value = 0 }
+    l[3] = 4
+    assert(l.value == 7, "a write-only type")
+    println("ok")
+}

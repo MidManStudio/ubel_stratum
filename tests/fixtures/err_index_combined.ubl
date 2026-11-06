@@ -1,0 +1,24 @@
+// tests/fixtures/err_index_combined.ubl
+// A generic function bounded by `C: Index<int, int>` called with a struct that
+// is only indexed by a `string`: the bound is what reports it (TYPE-126), at
+// the call, since the impl it needs is for another kind of index.
+// Expected: sema FAIL (TYPE-126).
+
+struct Registry {
+    names: List<string>,
+}
+
+impl Index<string, int> for Registry {
+    fn index(self, idx: string) int {
+        return self.names.len()
+    }
+}
+
+fn first<C: Index<int, int>>(c: C) int {
+    return c[0]
+}
+
+fn main() void {
+    let r = Registry { names = ["a", "b"] }
+    println(first(r))
+}

@@ -208,6 +208,7 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         ExprKind::Index { target, index } => {
             let coll = eval_expr(interp, target)?;
             let idx  = eval_expr(interp, index)?;
+            if let Some(v) = interp.user_index(&coll, &idx)? { return Ok(v); }
             if let Value::Dict(rc) = &coll {
                 if interp.may_have_user_ops(&idx) {
                     return match interp.dict_position(rc, &idx)? {
@@ -992,16 +993,19 @@ fn write_lvalue<'ast>(
         ExprKind::Index { target: coll_expr, index: idx_expr } => {
             let coll = eval_expr(interp, coll_expr)?;
             let idx  = eval_expr(interp, idx_expr)?;
+            if interp.user_index_set(&coll, &idx, &value)? { return Ok(Value::Void); }
             match (coll, idx) {
                 (Value::List(rc), Value::Int(i)) => {
                     let mut list = rc.borrow_mut();
-                    let i = i as usize;
-                    if i < list.len() {
-                        list[i] = value;
+                    let len = list.len() as i64;
+                    // A negative index counts from the end, as a read does.
+                    let at = if i < 0 { len + i } else { i };
+                    if at >= 0 && at < len {
+                        list[at as usize] = value;
                         Ok(Value::Void)
                     } else {
                         Err(Signal::Panic(format!(
-                            "index {} out of bounds (len {})", i, list.len()
+                            "index {} out of bounds (len {})", i, len
                         )))
                     }
                 }
@@ -1193,7 +1197,13 @@ fn eval_call_with_receiver<'ast>(
         // right operand's kind too, and runs natively for a number.
         if let Some(op_trait) = interp.operator_traits.get(trait_name.as_str()).copied() {
             if method_name == operator_method_of(op_trait) {
-                if let Some(v) = interp.user_operator(op_trait, &receiver, args.first())? { return Ok(v); }
+                if op_trait == "IndexSet" {
+                    if let [idx, value] = args.as_slice() {
+                        if interp.user_index_set(&receiver, idx, value)? { return Ok(Value::Void); }
+                    }
+                } else if let Some(v) = interp.user_operator(op_trait, &receiver, args.first())? {
+                    return Ok(v);
+                }
                 return native_operator_call(op_trait, receiver, &args);
             }
         }
@@ -1218,6 +1228,20 @@ fn eval_call_with_receiver<'ast>(
 /// `a.add(b)` and the other operator methods on values the run time does
 /// arithmetic on itself (through a bound such as `T: Add<T, T>`).
 fn native_operator_call(trait_name: &str, receiver: Value, args: &[Value]) -> EvalResult {
+    // `c.index(i)` and `c.index_set(i, v)` on a `List`, `Dictionary` or
+    // string through an `Index` or `IndexSet` bound.
+    if trait_name == "Index" {
+        return match args.first() {
+            Some(idx) => eval_index(unwrap_ownership(receiver), unwrap_ownership(idx.clone())),
+            None      => Err(Signal::Panic("`index` needs an index".into())),
+        };
+    }
+    if trait_name == "IndexSet" {
+        return match args {
+            [idx, value] => native_index_set(unwrap_ownership(receiver), unwrap_ownership(idx.clone()), value.clone()),
+            _            => Err(Signal::Panic("`index_set` needs an index and a value".into())),
+        };
+    }
     let binop = match trait_name {
         "Add" => BinOp::Add,       "Sub" => BinOp::Sub,
         "Mul" => BinOp::Mul,       "Div" => BinOp::Div,
@@ -1229,6 +1253,33 @@ fn native_operator_call(trait_name: &str, receiver: Value, args: &[Value]) -> Ev
     match args.first() {
         Some(rhs) => eval_binop(binop, unwrap_ownership(receiver), unwrap_ownership(rhs.clone())),
         None      => Err(Signal::Panic(format!("`{}` needs a right operand", trait_name))),
+    }
+}
+
+/// `coll[idx] = value` for a built-in that has an index to assign through.
+fn native_index_set(coll: Value, idx: Value, value: Value) -> EvalResult {
+    match (coll, idx) {
+        (Value::List(rc), Value::Int(i)) => {
+            let mut list = rc.borrow_mut();
+            let len = list.len() as i64;
+            let at = if i < 0 { len + i } else { i };
+            if at >= 0 && at < len {
+                list[at as usize] = value;
+                Ok(Value::Void)
+            } else {
+                Err(Signal::Panic(format!("index {} out of bounds (len {})", i, len)))
+            }
+        }
+        (Value::Dict(rc), key) => {
+            let mut dict = rc.borrow_mut();
+            if let Some(entry) = dict.iter_mut().find(|(k, _)| k.equals(&key)) {
+                entry.1 = value;
+            } else {
+                dict.push((key, value));
+            }
+            Ok(Value::Void)
+        }
+        _ => Err(Signal::Panic("invalid index assignment target".into())),
     }
 }
 

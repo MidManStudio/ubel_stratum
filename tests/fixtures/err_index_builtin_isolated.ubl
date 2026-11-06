@@ -1,0 +1,11 @@
+// tests/fixtures/err_index_builtin_isolated.ubl
+// `q[0]` on a `Queue`: the type table calls it indexable, but the run time
+// has no index for it and panics ("cannot index Queue"), so sema reports it.
+// Expected: sema FAIL (NotIndexable, TYPE-137).
+
+fn main() void {
+    let q = Queue.new()
+    q.enqueue(1)
+    q.enqueue(2)
+    println(q[0])
+}

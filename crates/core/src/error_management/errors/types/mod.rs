@@ -312,6 +312,16 @@ pub enum TypeError {
     /// for double`. `rhs` is `None` for a unary operator; `available` lists
     /// the right operands the left type does have an impl for, so the
     /// suggestion can name them.
+    /// An index (`a[i]`) or an assignment through one (`a[i] = v`) on a value
+    /// that cannot be indexed that way: a number, a `Queue`, a `Stack`, a
+    /// `Set`, a function, or a string or tuple being assigned to. `write` is
+    /// true for an assignment.
+    NotIndexable {
+        type_name: String,
+        write:     bool,
+        span:      Span,
+    },
+
     OperatorNotImplemented {
         op:         &'static str,
         trait_name: &'static str,
@@ -420,6 +430,8 @@ pub const OPERATOR_TRAITS: &[(&str, &str, &str, usize)] = &[
     ("Shr",    "shr",     ">>", 2),
     ("Neg",    "neg",     "-",  1),
     ("BitNot", "bit_not", "~",  1),
+    ("Index",    "index",     "[]",  2),
+    ("IndexSet", "index_set", "[]=", 2),
 ];
 
 /// Number of type parameters of an operator trait, or 0 for any other trait.
@@ -435,6 +447,8 @@ pub fn operator_method_of(trait_name: &str) -> &'static str {
 /// An operator trait written the way a user would (`Mul<R, Out>`).
 fn trait_label(trait_name: &str) -> String {
     match operator_trait_arity(trait_name) {
+        _ if trait_name == "Index"    => "Index<Idx, Out>".to_string(),
+        _ if trait_name == "IndexSet" => "IndexSet<Idx, Val>".to_string(),
         2 => format!("{}<R, Out>", trait_name),
         1 => format!("{}<Out>", trait_name),
         _ => trait_name.to_string(),
@@ -472,6 +486,7 @@ impl TypeError {
             TypeError::ConflictingBounds           { span, .. } => *span,
             TypeError::NotIterable                 { span, .. } => *span,
             TypeError::OperatorNotImplemented      { span, .. } => *span,
+            TypeError::NotIndexable                { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -574,6 +589,18 @@ impl TypeError {
 
             TypeError::NotIterable { type_name, .. } =>
                 format!("cannot iterate over a value of type `{}`", type_name),
+
+            TypeError::NotIndexable { type_name, write: false, .. } =>
+                format!("cannot index a value of type `{}`", type_name),
+
+            TypeError::NotIndexable { type_name, write: true, .. } =>
+                format!("cannot assign through an index of a value of type `{}`", type_name),
+
+            TypeError::OperatorNotImplemented { trait_name: "Index", lhs, rhs: Some(rhs), .. } =>
+                format!("cannot index `{}` with `{}`: no `Index<Idx, Out>` impl for this index", lhs, rhs),
+
+            TypeError::OperatorNotImplemented { trait_name: "IndexSet", lhs, rhs: Some(rhs), .. } =>
+                format!("cannot assign through an index of `{}` with `{}`: no `IndexSet<Idx, Val>` impl for this index", lhs, rhs),
 
             TypeError::OperatorNotImplemented { op, trait_name, lhs, rhs: Some(rhs), .. } =>
                 format!("cannot apply `{}` to `{}` and `{}`: no `{}` impl for this pair", op, lhs, rhs, trait_label(trait_name)),
@@ -693,6 +720,12 @@ impl TypeError {
             TypeError::MethodOnUnboundedParam { method, param, .. } =>
                 Some(format!("declare a bound that provides `{}`, as in `<{}: SomeTrait>`", method, param)),
 
+            TypeError::OperatorNeedsBound { param, trait_name: "Index", .. } =>
+                Some(format!("declare the bound, as in `<{}: Index<Idx, Out>>`", param)),
+
+            TypeError::OperatorNeedsBound { param, trait_name: "IndexSet", .. } =>
+                Some(format!("declare the bound, as in `<{}: IndexSet<Idx, Val>>`", param)),
+
             TypeError::OperatorNeedsBound { param, trait_name, .. } if operator_trait_arity(trait_name) == 2 =>
                 Some(format!("declare the bound, as in `<{}: {}<{}, {}>>`", param, trait_name, param, param)),
 
@@ -719,6 +752,21 @@ impl TypeError {
 
             TypeError::NotIterable { type_name, kind: NotIterableKind::UserType, .. } =>
                 Some(format!("add `impl Iterator<Item> for {} {{ fn next(self) Item? {{ .. }} }}`, or iterate one of its collection fields", type_name)),
+
+            TypeError::NotIndexable { write: false, .. } =>
+                Some("a `List`, an array, a `Dictionary`, a `string`, a tuple, and a struct or enum that implements `Index<Idx, Out>` can be indexed".to_string()),
+
+            TypeError::NotIndexable { write: true, .. } =>
+                Some("a `List`, an array, a `Dictionary`, and a struct or enum that implements `IndexSet<Idx, Val>` can be assigned through an index; a `string` and a tuple are read only".to_string()),
+
+            TypeError::OperatorNotImplemented { trait_name: "Index", lhs, rhs: Some(rhs), available, .. } if available.is_empty() =>
+                Some(format!("add `impl Index<{}, Out> for {} {{ fn index(self, idx: {}) Out {{ .. }} }}`", rhs, lhs, rhs)),
+
+            TypeError::OperatorNotImplemented { trait_name: "IndexSet", lhs, rhs: Some(rhs), available, .. } if available.is_empty() =>
+                Some(format!("add `impl IndexSet<{}, Val> for {} {{ fn index_set(self, idx: {}, value: Val) {{ .. }} }}`", rhs, lhs, rhs)),
+
+            TypeError::OperatorNotImplemented { trait_name: "Index" | "IndexSet", lhs, rhs: Some(rhs), available, .. } =>
+                Some(format!("`{}` is indexed with {}; add an impl for `{}`, or use one of those", lhs, available.join(", "), rhs)),
 
             TypeError::OperatorNotImplemented { trait_name, lhs, rhs: Some(rhs), available, .. } if available.is_empty() =>
                 Some(format!("add `impl {}<{}, Out> for {} {{ fn {}(self, rhs: {}) Out {{ .. }} }}`", trait_name, rhs, lhs, operator_method_of(trait_name), rhs)),
@@ -800,6 +848,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::ConflictingBounds { .. }             => "TYPE-134",
             TypeError::NotIterable { .. }                   => "TYPE-135",
             TypeError::OperatorNotImplemented { .. }        => "TYPE-136",
+            TypeError::NotIndexable { .. }                  => "TYPE-137",
         }
     }
     fn span(&self) -> Span { self.span() }

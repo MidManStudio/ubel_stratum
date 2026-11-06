@@ -2763,14 +2763,15 @@ impl<'a> InferCtx<'a> {
                 // left with a struct or an enum on the right (`2.0 * v`).
                 let scalar_key = self.runtime_impl_key(bty).filter(|k| is_scalar_key(k));
                 match (scalar_key, rhs_ty) {
-                    (Some(k), Some(r)) if self.is_user_type(r) => Some(format!("builtin:{}", k)),
+                    (Some(k), Some(r)) if self.is_user_type(r) && !matches!(op_trait, "Index" | "IndexSet") => Some(format!("builtin:{}", k)),
                     _ => None,
                 }
             } else {
                 Some(format!("user:{}", self.ctx.symbols.lookup(target_def).name))
             };
             let Some(left_key) = left_key else {
-                self.report_unsupported(impl_patterns::OPERATOR_ON_BUILTIN, i.span);
+                let why = if matches!(op_trait, "Index" | "IndexSet") { impl_patterns::INDEX_ON_BUILTIN } else { impl_patterns::OPERATOR_ON_BUILTIN };
+                self.report_unsupported(why, i.span);
                 return;
             };
             let rhs_key = match rhs_ty {
@@ -4671,27 +4672,91 @@ impl<'a> InferCtx<'a> {
     /// method call needed (none of `List`/`Queue`/`Stack` have one
     /// either). Bare `T` values, not paired with their `Handle` — see
     /// `value_to_iter_vec`'s own doc comment on why.
-    fn element_type_of(&mut self, collection_ty: TypeId) -> TypeId {
-        let resolved = self.apply(collection_ty);
-        match self.ctx.types.get(resolved) {
-            SemaType::List(e)
-            | SemaType::Set(e)
-            | SemaType::Queue(e)
-            | SemaType::Stack(e)
-            | SemaType::Slice(e)
-            | SemaType::InlineList(e)
-            | SemaType::Pool(e)          => *e,
-            SemaType::Array { elem, .. } => *elem,
-            SemaType::ArenaRef { inner, .. } => {
-                let inner = *inner;
-                self.element_type_of(inner)
-            }
-            SemaType::PoolRef { inner, .. } => {
-                let inner = *inner;
-                self.element_type_of(inner)
-            }
-            _ => self.fresh_var(),
+    // ── Indexing: `a[i]` and `a[i] = v` ─────────────────────────────
+
+    /// The type of `coll[idx]`; with `write`, the type of what an assignment
+    /// through it stores (the caller unifies the stored value with it).
+    ///
+    /// What the run time can index is what is accepted: a `List`, an array, a
+    /// slice or an `InlineList` by an `int`, a `Dictionary` by its key type,
+    /// a `string` (gives a `char`) and a tuple by an `int`, the last two read
+    /// only, and a struct, an enum or a type parameter through the prelude's
+    /// `Index<Idx, Out>` (read) and `IndexSet<Idx, Val>` (write). Ownership
+    /// and reference wrappers and the transparent `T?` and `T!` are looked
+    /// through. Anything else is `TYPE-137`. A value whose type is not known
+    /// yet is not an error.
+    fn index_site<'ast>(&mut self, coll: TypeId, idx: TypeId, index: &Expr<'ast>, write: bool, span: Span) -> TypeId {
+        // The expression already failed and was reported where it arose.
+        if coll.is_error() { return self.unknown(); }
+        let mut ty = self.peel_wrappers(coll);
+        while let SemaType::Optional(inner) | SemaType::Fallible(inner) = self.ctx.types.get(ty).clone() {
+            ty = self.peel_wrappers(inner);
         }
+        if ty.is_error() { return self.unknown(); }
+        match self.ctx.types.get(ty).clone() {
+            SemaType::List(e) | SemaType::Slice(e) | SemaType::InlineList(e) => {
+                self.expect_int_index(idx, index.span);
+                e
+            }
+            SemaType::Array { elem, .. } => {
+                self.expect_int_index(idx, index.span);
+                elem
+            }
+            SemaType::Dictionary(k, v) => {
+                self.unify(k, idx, index.span);
+                v
+            }
+            SemaType::Str => {
+                self.expect_int_index(idx, index.span);
+                if write {
+                    self.report_not_indexable(ty, true, span);
+                    return self.unknown();
+                }
+                self.ctx.types.intern(SemaType::Char)
+            }
+            SemaType::Tuple(items) => {
+                self.expect_int_index(idx, index.span);
+                if write {
+                    self.report_not_indexable(ty, true, span);
+                    return self.unknown();
+                }
+                match &index.kind {
+                    ExprKind::Lit(Literal::Int(n)) if *n >= 0 && (*n as usize) < items.len() => items[*n as usize],
+                    _ => self.unknown(),
+                }
+            }
+            SemaType::Unknown => self.fresh_var(),
+            SemaType::Var(n) if !self.int_lit_vars.contains_key(&n) => self.fresh_var(),
+            SemaType::Named { .. } | SemaType::Param(_) if self.is_user_type(ty) || matches!(self.ctx.types.get(ty), SemaType::Param(_)) => {
+                let (name, text) = if write { ("IndexSet", "[]=") } else { ("Index", "[]") };
+                // A program that declares its own `Index` has no prelude trait
+                // to require, and the index is left unchecked (`None`).
+                match self.operator_site(name, text, ty, Some(idx), span) {
+                    Some(t) => t,
+                    None    => self.fresh_var(),
+                }
+            }
+            _ => {
+                self.report_not_indexable(ty, write, span);
+                self.unknown()
+            }
+        }
+    }
+
+    /// An index of a `List`, array, slice, `InlineList`, string or tuple has
+    /// to be an `int` (the run time reads `Value::Int` only); `long`, `i64`
+    /// and `isize` are the same kind of value as `int`.
+    fn expect_int_index(&mut self, idx: TypeId, span: Span) {
+        let resolved = self.apply(idx);
+        if resolved.is_error() { return; }
+        if matches!(self.ctx.types.get(resolved), SemaType::Long | SemaType::I64 | SemaType::Isize) { return; }
+        let int = self.int_ty();
+        self.unify(int, idx, span);
+    }
+
+    fn report_not_indexable(&mut self, ty: TypeId, write: bool, span: Span) {
+        let type_name = self.display_type(ty);
+        self.errors.add_type_error(TypeError::NotIndexable { type_name, write, span });
     }
 
     /// The type a `for` loop binds, from what it iterates.
@@ -4883,7 +4948,17 @@ impl<'a> InferCtx<'a> {
             }
 
             ExprKind::Assign { target, op, value } => {
-                let target_ty = self.infer_expr(target);
+                // Assigning through an index goes through the write side
+                // (`IndexSet`), which a type may have without the read side;
+                // `a[i] += b` needs both.
+                let target_ty = match (&target.kind, op) {
+                    (ExprKind::Index { target: container, index }, AssignOp::Assign) => {
+                        let c = self.infer_expr(container);
+                        let i = self.infer_expr(index);
+                        self.index_site(c, i, index, true, target.span)
+                    }
+                    _ => self.infer_expr(target),
+                };
                 let value_ty  = self.infer_expr(value);
                 // `a += b` is `a = a + b`: where the operator goes through an
                 // operator trait, its result has to be the type of `a`.
@@ -4892,6 +4967,14 @@ impl<'a> InferCtx<'a> {
                     if let Some(result) = self.operator_site(trait_name, text, target_ty, Some(value_ty), expr.span) {
                         through_trait = true;
                         if result != TypeId::ERROR { self.unify(target_ty, result, expr.span); }
+                    }
+                }
+                if !matches!(op, AssignOp::Assign) {
+                    if let ExprKind::Index { target: container, index } = &target.kind {
+                        if let (Some(c), Some(i)) = (self.ctx.expr_type(container.span), self.ctx.expr_type(index.span)) {
+                            let stored = self.index_site(c, i, index, true, target.span);
+                            self.unify(stored, target_ty, expr.span);
+                        }
                     }
                 }
                 if through_trait { return self.void_ty(); }
@@ -5695,8 +5778,8 @@ impl<'a> InferCtx<'a> {
 
             ExprKind::Index { target, index } => {
                 let coll = self.infer_expr(target);
-                self.infer_expr(index);
-                self.element_type_of(coll)
+                let idx  = self.infer_expr(index);
+                self.index_site(coll, idx, index, false, expr.span)
             }
 
             ExprKind::Try(inner)   => {
@@ -6511,8 +6594,30 @@ impl<'a> InferCtx<'a> {
             "Sub" | "Mul" | "Div" | "Rem" => signed || unsigned || float,
             "BitAnd" | "BitOr" | "BitXor" | "Shl" | "Shr" | "BitNot" => signed || unsigned,
             "Neg" => signed || float,
+            // The run time indexes these itself, so they satisfy the traits.
+            "Index" => matches!(t, SemaType::List(_) | SemaType::Slice(_) | SemaType::InlineList(_)
+                | SemaType::Array { .. } | SemaType::Dictionary(..) | SemaType::Str),
+            "IndexSet" => matches!(t, SemaType::List(_) | SemaType::Slice(_) | SemaType::InlineList(_)
+                | SemaType::Array { .. } | SemaType::Dictionary(..)),
             _ => false,
         }
+    }
+
+    /// The trait arguments the run time's own indexing or arithmetic stands
+    /// for: `[ty, ty]` for a number, `[int, element]` for a `List` and its
+    /// kin, `[key, value]` for a `Dictionary`, `[int, char]` for a string.
+    fn native_operator_args(&mut self, name: &str, ty: TypeId) -> Vec<TypeId> {
+        if matches!(name, "Index" | "IndexSet") {
+            let int = self.int_ty();
+            match self.ctx.types.get(ty).clone() {
+                SemaType::List(e) | SemaType::Slice(e) | SemaType::InlineList(e) => return vec![int, e],
+                SemaType::Array { elem, .. } => return vec![int, elem],
+                SemaType::Dictionary(k, v) => return vec![k, v],
+                SemaType::Str => return vec![int, self.ctx.types.intern(SemaType::Char)],
+                _ => {}
+            }
+        }
+        vec![ty; operator_trait_arity(name)]
     }
 
     /// Whether `ty` is a struct or an enum (the only user types that can
@@ -6589,7 +6694,7 @@ impl<'a> InferCtx<'a> {
                 }
             }
             _ => {
-                if self.native_operator(name, ty) { out.push(vec![ty; operator_trait_arity(name)]); }
+                if self.native_operator(name, ty) { let native = self.native_operator_args(name, ty); out.push(native); }
                 if let Some(key) = self.operator_left_key(ty) {
                     for o in self.operator_impls.get(&(trait_def, key)).cloned().unwrap_or_default() {
                         out.push(o.args.clone());
@@ -7238,6 +7343,27 @@ impl<'a> InferCtx<'a> {
         if let Some((ka, va, kb, vb)) = dict_pair {
             self.unify(ka, kb, span);
             self.unify(va, vb, span);
+            return true;
+        }
+
+        // A tuple carries one type per item, so it cannot go through the
+        // single inner-pair extraction below either, and it was missing
+        // from this function: two tuple types built apart never unified
+        // unless they were the same table entry, so `take(p)` with `p:
+        // (int, int)` and `fn take(k: (int, int))` was a type mismatch
+        // between two identical types. Same arity unifies item by item;
+        // another arity is a mismatch.
+        let tuple_pair: Option<(Vec<TypeId>, Vec<TypeId>)> = {
+            match (self.ctx.types.get(a), self.ctx.types.get(b)) {
+                (SemaType::Tuple(ta), SemaType::Tuple(tb)) => Some((ta.clone(), tb.clone())),
+                _ => None,
+            }
+        };
+        if let Some((ta, tb)) = tuple_pair {
+            if ta.len() != tb.len() { return false; }
+            for (ia, ib) in ta.iter().zip(tb.iter()) {
+                self.unify(*ia, *ib, span);
+            }
             return true;
         }
 

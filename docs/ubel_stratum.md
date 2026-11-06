@@ -1741,3 +1741,34 @@ headers say: before S5c the four `ok_` ones do not compile, `err_operator_bound_
 accepted and runs, and the other three `err_` ones fail with `TYPE-122` for the unknown operator
 trait. The mutation pass is described under `tests/operators.rs` in `docs/ubel_stratum_rd.md`.
 The added lines were checked for em dashes and first or second person.
+
+A twenty-eighth delivery (traits slice S5d) touched `sema/type_infer.rs` (`index_site`,
+`expect_int_index`, `report_not_indexable`, the rewritten Index and Assign arms, native
+satisfaction and `native_operator_args` for the built-in indexables, the index-trait impl rules,
+and the tuple case of `structurally_compatible`; `element_type_of` is gone),
+`sema/type_infer/impl_patterns.rs`, `error_management/errors/types/mod.rs` (the new
+`NotIndexable`, the `Index` and `IndexSet` rows of the operator table and their messages),
+`interpreter/eval/user_ops.rs` (`user_index`, `user_index_set`), `interpreter/eval/expr.rs` (the
+index and index-assignment arms, a negative index on a write, the explicit `index` and
+`index_set` calls through a bound, `native_index_set`) and `rd_parser/src/prelude.rs`. The
+prelude gains two `@tier(low)` traits, `Index<Idx, Out>` (`index`) and `IndexSet<Idx, Val>`
+(`index_set`). A struct or enum that implements them is what `a[i]` and `a[i] = v` call, a type
+has one impl per kind of index (filed with the operator impls), `a[i] += v` needs both sides, and
+`List`, arrays, `Dictionary` and strings satisfy the traits natively. The built-in indexables are
+typed (a `Dictionary` by its key, a string gives a `char`, a tuple read by a literal gives that
+item, an index has to be an `int`), what the run time cannot index or assign through is the new
+`TYPE-137` `NotIndexable`, a negative index on a write counts from the end, and tuple types
+unify (the unifier had no tuple case, so two identical tuple types built apart were a mismatch;
+found while testing a tuple-indexed impl, verified on the baseline). It added `tests/index.rs`
+(47 tests), one prelude unit test and seven fixtures (`ok_index_isolated`, `ok_index_combined`,
+`err_index_isolated`, `err_index_combined`, `ok_index_builtin_isolated`,
+`err_index_builtin_isolated`, `err_index_unbounded_isolated`). The workspace has 1186 passing tests in 34 suites (S5c had 1138 in 33), 0 failed, 0 ignored,
+run in an independent fresh clone of live after the bundle was applied with the scaffold script.
+A sweep of 392 `.ubl` files against a binary built from live before S5d found that none of the
+385 files that existed before changed stage, diagnostics, exit code or output (2 fail lexing, 8
+fail parsing, 147 stop at sema, 228 are clean and run). The seven new fixtures behave as their
+headers say: before S5d, `err_index_builtin_isolated` and `err_index_unbounded_isolated` are
+accepted, `ok_index_builtin_isolated` is accepted and panics at run time on the negative write
+(index 18446744073709551615), and the other four fail in sema on the unknown index trait
+(`TYPE-122`). The mutation pass is described under `tests/index.rs` in `docs/ubel_stratum_rd.md`.
+The added lines were checked for em dashes and first or second person.
