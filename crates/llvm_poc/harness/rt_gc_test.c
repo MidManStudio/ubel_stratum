@@ -1,7 +1,7 @@
 /* crates/llvm_poc/harness/rt_gc_test.c
  *
  * Tests for the collector's large objects, the extended size classes and the array
- * allocator (roadmap A5). Run one test per process so a failure or an abort in one cannot
+ * allocator (roadmap A5), and for the string helpers (str_helpers). Run one test per process so a failure or an abort in one cannot
  * hide another and each starts with an empty heap:
  *
  *     rt_gc_test <name>      or      rt_gc_test all   (runs every test in its own child)
@@ -945,6 +945,79 @@ static void t_global_roots(void) {
     EXPECT_LIVE(0, "all regions removed");
 }
 
+/* ------------------------------------------------------- string helpers (A9) */
+
+/* A string object is { int64 length, bytes } with no terminator. `mk` builds one in a caller-owned buffer. */
+static void *mk(int64_t *buf, const char *text, size_t len) {
+    int64_t n = (int64_t)len;
+    memcpy(buf, &n, 8);
+    memcpy((char *)buf + 8, text, len);
+    return buf;
+}
+
+/* ubel_str_contains / starts_with / ends_with against Rust's str methods (the interpreter's). The answers
+ * below are the ones Rust gives; the last two blocks put the bytes a longer needle would need right behind
+ * (or in front of) a short string, so a helper that trusts the needle's length instead of the string's
+ * would read past it and still match. */
+static void t_str_helpers(void) {
+    static const struct {
+        const char *s, *t;
+        int contains, starts, ends;
+    } cases[] = {
+        {"", "", 1, 1, 1},
+        {"", "a", 0, 0, 0},
+        {"a", "", 1, 1, 1},
+        {"abc", "abc", 1, 1, 1},
+        {"abc", "abcd", 0, 0, 0},
+        {"abcd", "abc", 1, 1, 0},
+        {"abcd", "bcd", 1, 0, 1},
+        {"ab", "b", 1, 0, 1},
+        {"ab", "a", 1, 1, 0},
+        {"ab", "ba", 0, 0, 0},
+        {"abc", "ax", 0, 0, 0},
+        {"xay", "az", 0, 0, 0},
+        {"xabx", "ab", 1, 0, 0},
+        {"aaab", "aab", 1, 0, 1},
+        {"abab", "abab", 1, 1, 1},
+        {"ababab", "babab", 1, 0, 1},
+        {"mississippi", "issip", 1, 0, 0},
+        {"mississippi", "sip", 1, 0, 0},
+        {"mississippi", "ippi", 1, 0, 1},
+        {"mississippi", "miss", 1, 1, 0},
+        {"mississippi", "mississippi!", 0, 0, 0},
+        {"h\xc3\xa9llo w\xc3\xb6rld", "w\xc3\xb6r", 1, 0, 0},
+        {"h\xc3\xa9llo", "\xc3\xa9", 1, 0, 0},
+        {"\xc3\xa9", "\xc3\xa9", 1, 1, 1},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int64_t sb[8], tb[8];
+        void *s = mk(sb, cases[i].s, strlen(cases[i].s));
+        void *t = mk(tb, cases[i].t, strlen(cases[i].t));
+        CHECK(ubel_str_contains(s, t) == cases[i].contains, "contains(\"%s\", \"%s\") != %d", cases[i].s, cases[i].t, cases[i].contains);
+        CHECK(ubel_str_starts_with(s, t) == cases[i].starts, "starts_with(\"%s\", \"%s\") != %d", cases[i].s, cases[i].t, cases[i].starts);
+        CHECK(ubel_str_ends_with(s, t) == cases[i].ends, "ends_with(\"%s\", \"%s\") != %d", cases[i].s, cases[i].t, cases[i].ends);
+    }
+
+    /* "ab" with "cd" right behind it in memory, and the needle "abcd": no method may match */
+    int64_t buf[8], nb[8];
+    memset(buf, 0, sizeof buf);
+    int64_t two = 2;
+    memcpy(buf, &two, 8);
+    memcpy((char *)buf + 8, "abcd", 4);
+    void *ab = buf, *abcd = mk(nb, "abcd", 4);
+    CHECK(!ubel_str_starts_with(ab, abcd), "starts_with read past the end of the string");
+    CHECK(!ubel_str_contains(ab, abcd), "contains read past the end of the string");
+
+    /* "cd" with two zero bytes right in front of its bytes (the high bytes of its length), and the needle
+     * "\0\0cd": ends_with must not look in front of the string */
+    int64_t cb[8], zb[8];
+    memset(cb, 0, sizeof cb);
+    memcpy(cb, &two, 8);
+    memcpy((char *)cb + 8, "cd", 2);
+    void *cd = cb, *zzcd = mk(zb, "\0\0cd", 4);
+    CHECK(!ubel_str_ends_with(cd, zzcd), "ends_with read in front of the string");
+}
+
 static const test tests[] = {
     {"classes", t_classes, NULL},
     {"large_basic", t_large_basic, NULL},
@@ -961,6 +1034,7 @@ static const test tests[] = {
     {"clock_alias", t_clock_alias, NULL},
     {"stress_mode", t_stress_mode, NULL},
     {"global_roots", t_global_roots, NULL},
+    {"str_helpers", t_str_helpers, NULL},
 };
 #define NTESTS (sizeof tests / sizeof tests[0])
 

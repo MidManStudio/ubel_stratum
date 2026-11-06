@@ -1,0 +1,8 @@
+// Not supported yet: `contains`, `starts_with` or `ends_with` with an argument that is not a string. Sema
+// accepts it (it checks only the number of arguments) and the interpreter answers false; the emitter
+// refuses instead of copying that.
+// expect-refusal: with an argument that is not a string
+fn main() void {
+    let s = "a1b"
+    println(s.contains(1))
+}

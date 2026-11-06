@@ -457,6 +457,28 @@ check that it can fail, `Ty::Str` was taken out of the pointer mask: the output 
 `label-71(label-72)` instead of `fn7(v1)` (freed and reused memory). Mutants of `ubel_str_eq` and of
 the minus sign in `ubel_i64_len` are caught too.
 
+**String methods (A9, provisional).** The methods that read a string and allocate nothing work: `len` (the
+byte length stored in the object, as in the interpreter: `"é".len()` is 2 and `"日本".len()` is 6),
+`is_empty`, `contains`, `starts_with` and `ends_with`. They hold no borrow of the string, so they are legal
+in every tier and on arena strings, as receiver and as argument; sema needs no change (it checks only the
+argument count of a built-in string method, so an arena argument passes). `len` and `is_empty` are inline
+loads of the stored length; the other three call `ubel_str_contains`, `ubel_str_starts_with` and
+`ubel_str_ends_with`, which work on bytes (a valid UTF-8 needle can only match at a character boundary, so
+the answers are the interpreter's). An empty needle is found everywhere and a needle longer than the string
+nowhere, as in Rust; `contains` is a plain scan, O(n*m) in the worst case where Rust's search is linear. The
+receiver is evaluated before the argument, like the interpreter. Refused: `contains`, `starts_with` and
+`ends_with` with an argument that is not a string (sema accepts it and the interpreter answers `false`; the
+emitter does not copy that); the methods that build a new string (`to_upper`, `to_lower`, `trim`,
+`trim_start`, `trim_end`, `replace`: the allocation rule is not decided, and Rust's case mapping and `trim`
+are Unicode-aware); and the ones that return a list (`chars`, `split`: refused as a value of type
+`List<string>`). The interpreter has no `find` and no `substring`. Not probed: methods that come from the
+prelude traits (such as `lt`); they fall under the catch-all refusal by construction, not by a test.
+Checked by `examples/27_string_methods` (byte lengths, empty needles, restarting partial matches, receivers
+that are literals, calls, fields, captures and arena strings, a 100,000-byte string, 400,000 allocations),
+`rt_gc_test str_helpers` (a table of answers Rust gives, and a string with the rest of the needle right
+behind it in memory, so a helper that trusts the needle's length reads past the string and matches) and the
+refusal examples `u_string_value` (now `to_upper`), `u_string_list` and `u_string_method_arg`.
+
 **Scannable arenas (provisional).** A `with arena` block is created with `ubel_arena_create` unless
 an object allocated in it has a pointer-typed field (a string, struct, enum or closure: a struct or
 enum literal with such a field, or a closure that captures such a value), in which case it is created
@@ -906,9 +928,10 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
 3. ~~**Strings as values** (interpolation that builds one, `==`, printing one).~~ Done (A6, see
    "Strings" above), after deciding D3b and after large-object support in the collector
    (`docs/GC_LARGE_OBJECTS.md`: a string can exceed 512 bytes, and the GC path uses the same
-   allocator). Then string `+` and ordering (A6b). Open: strings built in arenas need the D3b sema
-   patch (re-issued with A6b) and string methods (`len`, `contains`, ...). A string field in an arena
-   object is done (scannable arenas).
+   allocator). Then string `+` and ordering (A6b). Strings built in arenas (the D3b sema patch) and a
+   string field in an arena object (scannable arenas) are done. String methods: the ones that read a
+   string are done (A9, see "String methods" above); `match` on a string and the ones that build a
+   string are open.
 4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
    (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
    it the target program (A8). Capturing closures followed (A7b). Open: captures of strings, structs,
@@ -946,6 +969,18 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-06: A9, the string methods that read a string, provisional. `len`, `is_empty`, `contains`,
+  `starts_with` and `ends_with`, in every tier and on arena strings; bytes, like the interpreter (checked:
+  `"日本".len()` is 6 in both). `examples/27_string_methods`, `rt_gc_test str_helpers` (16 tests), refusal
+  examples `u_string_value` (repurposed to `to_upper`), `u_string_list`, `u_string_method_arg`. 63 of 63
+  locally at 64-bit and 32-bit; example 27 under `UBEL_GC_STRESS=1` is identical at both widths (400,212
+  collections, one per allocation); fixtures unchanged (165 ok, 169 err). Mutants of the three helpers (first
+  byte only, no restart after a partial match, wrong offsets, empty needle, dropped length checks) and of the
+  emitted IR (operands swapped at all 62 call sites, results inverted, `is_empty` inverted) are caught; the
+  dropped length check in `contains` survives because the loop bound already covers it. The first version of
+  the example missed a dropped length check in `starts_with` (the bytes behind the string did not match), which
+  is why the harness test has the layout case. Found: the interpreter has no `find` and no `substring`, and
+  its `contains` family answers `false` for a non-string argument. Not run: CI on real runners, Termux, macOS.
 - 2026-11-04: GC hardening, step 3: global roots, provisional. `ubel_gc_add_root(addr, bytes)` and
   `ubel_gc_remove_root(addr)`: the registered memory is scanned word by word at every collection, like the stack;
   regions are keyed by start address (adding the same start changes the length); a NULL address, under one word,

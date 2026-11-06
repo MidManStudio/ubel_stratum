@@ -1,0 +1,7 @@
+// Not supported yet: a string method that returns a list (`chars`, `split`): lists are not in the
+// emitter's subset, so the call is refused as a value of type `List<string>` before the method is looked at.
+// expect-refusal: values of type `List<string>`
+fn main() void {
+    let s = "a,b,c"
+    println(s.split(",").len())
+}

@@ -1,0 +1,145 @@
+// String methods that read a string and allocate nothing (A9, provisional): `len`, `is_empty`,
+// `contains`, `starts_with` and `ends_with`. They hold no borrow of the string, so they are legal in every
+// tier and on arena strings, as receiver and as argument. `len` is the length in BYTES, as in the
+// interpreter (`"é".len()` is 2). An empty needle is found everywhere and a needle longer than the string
+// nowhere. The search runs over UTF-8 bytes, which answers like the interpreter's search because a valid
+// UTF-8 needle can only match at a character boundary. Receiver first, then argument.
+struct Doc {
+    title: string
+    body:  string
+}
+
+fn trace(tag: string, s: string) string {
+    println(tag, s)
+    return s
+}
+
+fn repeat(s: string, n: int) string {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out += s
+        i += 1
+    }
+    return out
+}
+
+fn has_both(s: string, a: string, b: string) bool {
+    return s.contains(a) && s.contains(b)
+}
+
+fn make_prefix_check(prefix: string) fn(string) bool {
+    return fn(s: string) s.starts_with(prefix)
+}
+
+fn make_inside_check(hay: string) fn(string) bool {
+    return fn(t: string) hay.contains(t)
+}
+
+@tier(low)
+fn low_probe(s: string, t: string) int {
+    let mut n = 0
+    if s.contains(t) {
+        n += 1
+    }
+    if s.starts_with(t) {
+        n += 2
+    }
+    if s.ends_with(t) {
+        n += 4
+    }
+    if s.is_empty() {
+        n += 8
+    }
+    return n + s.len() * 16
+}
+
+@tier(mid)
+fn mid_probe(s: string) bool {
+    return s.starts_with("a") && s.ends_with("z") && !s.is_empty()
+}
+
+@tier(mid)
+fn arena_probe(n: int) int {
+    with arena(4KB) {
+        let a = $"item-{n}"
+        let b = $"-{n}"
+        let mut hits = 0
+        if a.ends_with(b) {
+            hits += 1
+        }
+        if a.contains("item") {
+            hits += 10
+        }
+        if "xitem-7y".contains(a) {
+            hits += 100
+        }
+        if a.starts_with(a) && a.contains(a) && a.ends_with(a) {
+            hits += 1000
+        }
+        return hits + a.len() * 10000
+    }
+}
+
+fn main() void {
+    // byte length, not characters
+    println("".len(), "abc".len(), "é".len(), "日本".len(), "héllo wörld".len())
+    println("".is_empty(), "a".is_empty(), " ".is_empty())
+
+    // contains: the empty needle, a longer needle, partial matches that restart
+    let hay = "héllo wörld"
+    println(hay.contains("wör"), hay.contains(""), hay.contains("xyz"), "".contains(""), "".contains("a"))
+    println("aaab".contains("aab"), "abab".contains("abab"), "ab".contains("abc"), "mississippi".contains("issip"))
+    println(hay.contains("é"), hay.contains("e"), hay.contains("ö"), hay.contains("d"), hay.contains("h"))
+
+    // starts_with and ends_with at both boundaries
+    println(hay.starts_with("hé"), hay.starts_with(""), hay.starts_with(hay), hay.starts_with(hay + "!"), "".starts_with(""), "".starts_with("a"))
+    println(hay.ends_with("rld"), hay.ends_with(""), hay.ends_with(hay), hay.ends_with("x" + hay), "".ends_with(""), "".ends_with("a"))
+    println(hay.starts_with("e"), hay.ends_with("l"), hay.starts_with("héllo wörld "), hay.ends_with(" héllo wörld"))
+
+    // receivers and arguments that are built, read from fields, or returned by calls
+    let n = 42
+    println($"n={n}".len(), $"n={n}".contains("42"), $"n={n}".ends_with("42"), "ab".len() + "cde".len())
+    let d = Doc { title = "Report", body = "the quick brown fox" }
+    println(d.title.len(), d.body.contains("quick"), d.title.starts_with("Rep"), d.body.ends_with(d.title), has_both(d.body, "quick", "fox"))
+    println(trace("recv", "hello").contains(trace("arg", "ell")))
+    println(trace("recv", "hello").starts_with(trace("arg", "he")), trace("recv", "").is_empty())
+
+    // captured strings, as receiver and as argument
+    let starts_re = make_prefix_check("re")
+    println(starts_re("report"), starts_re("xre"), starts_re(""), starts_re("r"))
+    let inside = make_inside_check("the quick brown fox")
+    println(inside("quick"), inside("slow"), inside(""), inside("the quick brown fox!"))
+
+    // every tier
+    println(low_probe("banana", "an"), low_probe("banana", "ba"), low_probe("banana", "na"), low_probe("", ""), low_probe("é", "é"))
+    println(mid_probe("abcz"), mid_probe("abc"), mid_probe("az"), mid_probe(""))
+    println(arena_probe(7), arena_probe(8), arena_probe(123))
+
+    // long strings: a 100,000-byte string is a large object in the GC heap
+    let line = repeat("0123456789", 100)
+    let big = repeat(line, 100) + "end"
+    println(big.len(), big.contains("9end"), big.contains("9012"), big.contains("0124"), big.starts_with("0123456789"), big.ends_with("89end"), big.ends_with("9end0"))
+
+    // strings built in a loop and read at once, across many collections
+    let keep = Doc { title = "k" + $"{n}", body = "needle" }
+    let mut hits = 0
+    let mut i = 0
+    while i < 200000 {
+        let s = "item-" + $"{i}"
+        if s.contains("-1") {
+            hits += 1
+        }
+        if s.starts_with("item-9") {
+            hits += 2
+        }
+        if s.ends_with("99") {
+            hits += 3
+        }
+        if s.len() == 10 {
+            hits += 5
+        }
+        i += 1
+    }
+    println(hits, keep.title, keep.body.contains("dle"), keep.title.len())
+}

@@ -453,6 +453,9 @@ impl<'a> Emitter<'a> {
         if self.uses_str {
             out.push_str("declare i32  @ubel_str_eq(ptr, ptr)\n");
             out.push_str("declare i32  @ubel_str_cmp(ptr, ptr)\n");
+            out.push_str("declare i32  @ubel_str_contains(ptr, ptr)\n");
+            out.push_str("declare i32  @ubel_str_starts_with(ptr, ptr)\n");
+            out.push_str("declare i32  @ubel_str_ends_with(ptr, ptr)\n");
             out.push_str("declare i64  @ubel_i64_len(i64)\n");
             out.push_str("declare void @ubel_i64_write(ptr, i64)\n");
             out.push_str("declare void @ubel_put(ptr, ptr, i64)\n");
@@ -2097,6 +2100,19 @@ impl<'a> Emitter<'a> {
                 }
             }
         }
+        // `s.len()`, `s.contains(t)`, ...: a method call on a string. A callee that names a declared type
+        // (`Color.make()`) keeps the old refusal below.
+        if let ExprKind::Field { target, field } = callee.kind {
+            let names_a_type = match target.kind {
+                ExprKind::Ident(n) => {
+                    self.lookup(n).is_none() && (self.struct_ids.contains_key(n) || self.enum_ids.contains_key(n))
+                }
+                _ => false,
+            };
+            if !names_a_type {
+                return self.str_method(e, callee, target, field, args);
+            }
+        }
         let name = match callee.kind {
             ExprKind::Ident(n) => n,
             _ => return unsupported(callee.span, "calling anything but a named function"),
@@ -2146,6 +2162,61 @@ impl<'a> Emitter<'a> {
             self.inst(&format!("{t} = call {} @ubel_{name}({}){boundary}", sig.ret.ir(), ops.join(", ")));
             Ok(Val { v: t, ty: sig.ret })
         }
+    }
+
+    /// A method call on a string (docs/LLVM_POC.md, "Strings"): the ones that read the string and allocate
+    /// nothing, so they carry no borrow and are legal in every tier. `len` is the byte length the object
+    /// stores (the interpreter's `len` is bytes too); `is_empty` is `len == 0`; `contains`, `starts_with`
+    /// and `ends_with` take one string and call a runtime helper. The receiver is evaluated first, then the
+    /// argument. A receiver that is not a string keeps the old refusal (`h.run(4)` on a struct field).
+    fn str_method(&mut self, e: &Expr, callee: &Expr, target: &Expr, field: &str, args: &[Arg]) -> R<Val> {
+        let recv = self.expr(target)?;
+        if recv.ty != Ty::Str {
+            return unsupported(callee.span, "calling anything but a named function");
+        }
+        let helper = match field {
+            "len" | "is_empty" => None,
+            "contains" => Some("ubel_str_contains"),
+            "starts_with" => Some("ubel_str_starts_with"),
+            "ends_with" => Some("ubel_str_ends_with"),
+            "to_upper" | "to_lower" | "trim" | "trim_start" | "trim_end" | "replace" => {
+                return unsupported(callee.span, format!("the string method `{field}` (it builds a new string; only `len`, `is_empty`, `contains`, `starts_with` and `ends_with` so far)"));
+            }
+            _ => {
+                return unsupported(callee.span, format!("the method `{field}` on a string (only `len`, `is_empty`, `contains`, `starts_with` and `ends_with` so far)"));
+            }
+        };
+        let want = if helper.is_some() { 1 } else { 0 };
+        if args.len() != want {
+            return Err(CompileError::at(e.span, "wrong number of arguments"));
+        }
+        self.uses_str = true;
+        let Some(helper) = helper else {
+            let n = self.fresh();
+            self.inst(&format!("{n} = load i64, ptr {}", recv.v));
+            if field == "len" {
+                return Ok(Val { v: n, ty: Ty::I64 });
+            }
+            let t = self.fresh();
+            self.inst(&format!("{t} = icmp eq i64 {n}, 0"));
+            return Ok(Val { v: t, ty: Ty::I1 });
+        };
+        let ae = match args[0].kind {
+            ArgKind::Positional(x) => x,
+            ArgKind::Named { .. } => return unsupported(args[0].span, "named arguments"),
+        };
+        let arg = self.expr(ae)?;
+        if arg.ty != Ty::Str {
+            return unsupported(
+                ae.span,
+                format!("`{field}` with an argument that is not a string (the interpreter answers false there)"),
+            );
+        }
+        let c = self.fresh();
+        self.inst(&format!("{c} = call i32 @{helper}(ptr {}, ptr {})", recv.v, arg.v));
+        let t = self.fresh();
+        self.inst(&format!("{t} = icmp ne i32 {c}, 0"));
+        Ok(Val { v: t, ty: Ty::I1 })
     }
 
     // ── closures (A7) ────────────────────────────────────────────

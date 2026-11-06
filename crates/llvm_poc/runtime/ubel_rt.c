@@ -64,6 +64,35 @@ int32_t ubel_str_cmp(const void *a, const void *b) {
     return la < lb ? -1 : (la > lb ? 1 : 0);
 }
 
+/* String methods that read their operands and allocate nothing (docs/LLVM_POC.md, "Strings"). They work on
+ * bytes, like the interpreter (Rust's str::len / contains / starts_with / ends_with): a valid UTF-8 needle
+ * can only match at a character boundary, so a byte search gives the same answers. An empty needle is found
+ * everywhere (contains, starts_with and ends_with all answer 1); a needle longer than the string nowhere.
+ * `contains` is a plain scan, O(n*m) in the worst case where Rust's search is linear. */
+
+int32_t ubel_str_contains(const void *s, const void *t) {
+    int64_t n = *(const int64_t *)s, m = *(const int64_t *)t;
+    if (m == 0) return 1;
+    if (m > n) return 0;
+    const unsigned char *h = (const unsigned char *)s + 8, *p = (const unsigned char *)t + 8;
+    for (int64_t i = 0; i + m <= n; i++) {
+        if (h[i] == p[0] && memcmp(h + i, p, (size_t)m) == 0) return 1;
+    }
+    return 0;
+}
+
+int32_t ubel_str_starts_with(const void *s, const void *t) {
+    int64_t n = *(const int64_t *)s, m = *(const int64_t *)t;
+    if (m > n) return 0;
+    return memcmp((const char *)s + 8, (const char *)t + 8, (size_t)m) == 0;
+}
+
+int32_t ubel_str_ends_with(const void *s, const void *t) {
+    int64_t n = *(const int64_t *)s, m = *(const int64_t *)t;
+    if (m > n) return 0;
+    return memcmp((const char *)s + 8 + (n - m), (const char *)t + 8, (size_t)m) == 0;
+}
+
 /* Number of characters `v` takes in decimal, minus sign included. */
 int64_t ubel_i64_len(int64_t v) {
     uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;

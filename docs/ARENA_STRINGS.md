@@ -73,5 +73,12 @@ Tests (`tests/fixtures`): `ok_arena_string_basic`, `ok_arena_string_concat_outer
 `err_arena_string_accumulate`, `err_arena_string_by_value_param`. All five err fixtures are accepted by
 the unpatched build, so they fail without the change.
 
-Not covered: method-call arguments (a separate loop in `type_infer`), closures capturing an arena
-string, format specs on an arena string hole, `&string` parameters.
+Not covered: method-call arguments of methods other than the built-in string ones (a separate loop in
+`type_infer`), closures capturing an arena string, format specs on an arena string hole, `&string`
+parameters.
+
+Checked 2026-11-06 (A9): the built-in string methods that read a string (`len`, `is_empty`, `contains`,
+`starts_with`, `ends_with`) are accepted on an arena string as receiver and as argument, in `@tier(mid)`
+inside `with arena`; sema checks only their argument count, and they allocate nothing, so no borrow is
+created. The methods that build a new string are open: by reading `type_infer` (not probed), sema types their
+result with the receiver's arena tag, which differs from rule S4 (a copy is always a GC string).

@@ -1,7 +1,9 @@
-// Not supported yet: a method call on a string (`len`, `contains`, ...). The emitter only calls named
-// functions and closures held in locals, and strings have no methods in the emitter yet.
-// expect-refusal: calling anything but a named function
+// Not supported yet: a string method that builds a new string (`to_upper`, `to_lower`, `trim`,
+// `trim_start`, `trim_end`, `replace`). `len`, `is_empty`, `contains`, `starts_with` and `ends_with`
+// allocate nothing and work (27_string_methods); these need a place to allocate, and the rule for
+// that is not decided yet.
+// expect-refusal: the string method `to_upper`
 fn main() void {
     let s = "hello"
-    println(s.len())
+    println(s.to_upper())
 }
