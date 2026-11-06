@@ -37,6 +37,8 @@
 //! - `@tier(low)` → `@tier(mid)` call: forbidden
 //! - a `static` may only be read or written from `@tier(high)` code
 //!   (`TIER-015`)
+//! - a `@tier(low)` function may call only a closure it created itself: a local bound by an
+//!   immutable `let` straight to a lambda in that function (`TIER-017`, decision D2)
 //!
 //! A call that resolves to a method (`value.method()`, `Type.make()`, a call
 //! through a trait bound, a qualified call) has no entry in the resolution map
@@ -79,12 +81,16 @@ pub fn check<'ast>(
 struct TierChecker<'a> {
     ctx:          &'a SemaContext,
     errors:       &'a mut ErrorManager,
+    /// D2: the statement span of every immutable `let` bound straight to a lambda. Name resolution
+    /// records a `let`'s local with that span as its `defined_at`, so a call of a local can be
+    /// matched to one of these (see `check_closure_call`).
+    lambda_lets:  std::collections::HashSet<Span>,
     current_tier: TierAnnotation,
 }
 
 impl<'a> TierChecker<'a> {
     fn new(ctx: &'a SemaContext, errors: &'a mut ErrorManager) -> Self {
-        TierChecker { ctx, errors, current_tier: TierAnnotation::High }
+        TierChecker { ctx, errors, current_tier: TierAnnotation::High, lambda_lets: std::collections::HashSet::new() }
     }
 
     // ── Top level ─────────────────────────────────────────────────
@@ -217,6 +223,19 @@ impl<'a> TierChecker<'a> {
     }
 
     fn check_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) {
+        // D2: note an immutable `let` bound straight to a lambda, so that a call of that local from a
+        // LOW function is known to call a closure LOW made itself (see `check_closure_call`).
+        if let StmtKind::Let {
+            mutable: false,
+            binding: crate::ast::statements::BindingTarget::Ident(_),
+            value,
+            ..
+        } = &stmt.kind
+        {
+            if matches!(value.kind, ExprKind::Lambda(_)) {
+                self.lambda_lets.insert(stmt.span);
+            }
+        }
         match &stmt.kind {
             // Rule: `with arena(…)` / `with pool<T>(count)` only in MID
             // tier — MEMORY_MODEL.md §11: pool follows "the same
@@ -322,6 +341,16 @@ impl<'a> TierChecker<'a> {
 
             // Rule: cross-tier call restrictions.
             ExprKind::Call { callee, args } => {
+                // D2: a call of a local or a parameter by its plain name calls a closure. Only an
+                // identifier callee is looked at: the emitter refuses any other callee in LOW, and a
+                // span can be shared by unrelated nodes in a hand-built tree.
+                if let ExprKind::Ident(_) = callee.kind {
+                    if let Some(callee_def_id) = self.ctx.resolutions.get(callee.span) {
+                        if callee_def_id.0 < self.ctx.symbols.len() {
+                            self.check_closure_call(callee_def_id, expr.span);
+                        }
+                    }
+                }
                 self.check_expr(callee);
                 // Look up callee's DefId from the resolution map using the
                 // callee expression's span, then check its tier.
@@ -441,6 +470,40 @@ impl<'a> TierChecker<'a> {
                     self.check_expr(fb);
                 }
             }
+        }
+    }
+
+    /// D2 (docs/LLVM_POC.md, "The tier of a closure"). A call whose callee is a local or a parameter
+    /// calls a closure. A closure has the tier of the function it is created in and a function type
+    /// carries no tier, so a LOW function may call one only if it made it itself: a local bound by an
+    /// immutable `let` straight to a lambda in this function (a lambda written inside it is walked at
+    /// the same tier and may call it too). A parameter, a `mut` binding, a closure that came back from
+    /// a call (even from a LOW function) and anything else could belong to a higher tier. MID and HIGH
+    /// may call any closure: handing one down to a MID function that calls it is the callback pattern,
+    /// so the by-name rule of `tier_call_forbidden` is deliberately not applied to closures.
+    fn check_closure_call(&mut self, callee_def_id: DefId, call_span: Span) {
+        let def = self.ctx.symbols.lookup(callee_def_id);
+        let reason = match &def.kind {
+            DefKind::Param { .. } => {
+                "it is a parameter, and a function type carries no tier, so it could be a closure from a higher tier"
+            }
+            DefKind::Local { mutable: true } => {
+                "it is a `mut` binding, which can be assigned a closure from a higher tier"
+            }
+            DefKind::Local { mutable: false } => {
+                if self.lambda_lets.contains(&def.defined_at) {
+                    return;
+                }
+                "it was not bound by a `let` straight to a lambda in this function, so its tier is not known"
+            }
+            _ => return,
+        };
+        if self.current_tier == TierAnnotation::Low {
+            self.errors.add_tier_error(TierError::LowCallsUnknownClosure {
+                name:   def.name.clone(),
+                reason: reason.to_string(),
+                span:   call_span,
+            });
         }
     }
 

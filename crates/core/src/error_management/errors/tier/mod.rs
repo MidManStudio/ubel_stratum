@@ -157,6 +157,19 @@ pub enum TierError {
         span:   Span,
     },
 
+    // ── Closures ─────────────────────────────────────────────────────
+    /// A `@tier(low)` function called a closure whose tier it cannot know (decision D2,
+    /// docs/LLVM_POC.md, "The tier of a closure"). A closure has the tier of the function it is
+    /// created in, and a function type carries no tier, so the only closure a LOW function can
+    /// know to be LOW is one it made itself: a local bound by an immutable `let` straight to a
+    /// lambda. A parameter, a `mut` binding or a closure that came back from a call could belong
+    /// to a higher tier, and LOW runs nothing that is not LOW. MID and HIGH may call any closure.
+    LowCallsUnknownClosure {
+        name:   String,
+        reason: String,
+        span:   Span,
+    },
+
     // ── Trait method tiers ───────────────────────────────────────────
     /// A method of an `impl Trait for Type` has a tier different from the one
     /// the trait declares for it. A call through a bound is checked against the
@@ -192,6 +205,7 @@ impl TierError {
             TierError::OwnershipWrapperOutsideLowTier { span, .. } => *span,
             TierError::StaticAccessOutsideHigh { span, .. } => *span,
             TierError::TraitMethodTierMismatch { span, .. } => *span,
+            TierError::LowCallsUnknownClosure { span, .. } => *span,
         }
     }
 
@@ -272,6 +286,12 @@ impl TierError {
                 "`Pool.new()` requires an enclosing `with pool<T>(count) { }` block to supply \
                  its element type and capacity".to_string(),
 
+            TierError::LowCallsUnknownClosure { name, reason, .. } =>
+                format!(
+                    "`@tier(low)` code cannot call the closure `{}`: {}",
+                    name, reason
+                ),
+
             TierError::StaticAccessOutsideHigh { name, actual, .. } =>
                 format!(
                     "the static `{}` can only be used from `@tier(high)` code; this function is `@tier({})`",
@@ -344,6 +364,13 @@ impl TierError {
             TierError::StaticAccessOutsideHigh { .. } =>
                 Some("read the static in a `@tier(high)` function and pass the value in as a parameter, or return a result for a `@tier(high)` caller to store".to_string()),
 
+            TierError::LowCallsUnknownClosure { name, .. } =>
+                Some(format!(
+                    "bind the closure in this function with `let {} = fn(...) ...` (not `mut`), \
+                     or call it from a `@tier(mid)` or `@tier(high)` function",
+                    name
+                )),
+
             TierError::OwnershipWrapperOutsideLowTier { wrapper, .. } =>
                 Some(format!(
                     "annotate this function with `@tier(low)`, or receive the `{}` as a parameter \
@@ -400,6 +427,7 @@ impl crate::error_management::render::Diagnosable for TierError {
             TierError::OwnershipWrapperOutsideLowTier { .. } => "TIER-014",
             TierError::StaticAccessOutsideHigh { .. }        => "TIER-015",
             TierError::TraitMethodTierMismatch { .. }        => "TIER-016",
+            TierError::LowCallsUnknownClosure { .. }         => "TIER-017",
         }
     }
     fn span(&self) -> Span { self.span() }
