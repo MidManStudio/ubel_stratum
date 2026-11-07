@@ -1,0 +1,15 @@
+// Not supported on purpose: a `match` on a string that is used as a value and has no `_` or name arm. Sema
+// accepts it, and when no arm matches the interpreter does not fail: it gives a unit value, so `f("c")` below
+// prints an empty line. Native code cannot copy that for an `int`, so the emitter refuses. As a statement,
+// without a catch-all, the same `match` is fine (28_string_match).
+// expect-refusal: used as a value without a `_` or name arm
+fn f(s: string) int {
+    return match s {
+        "a" => 1,
+        "b" => 2,
+    }
+}
+
+fn main() void {
+    println(f("a"), f("b"))
+}

@@ -479,6 +479,24 @@ that are literals, calls, fields, captures and arena strings, a 100,000-byte str
 behind it in memory, so a helper that trusts the needle's length reads past the string and matches) and the
 refusal examples `u_string_value` (now `to_upper`), `u_string_list` and `u_string_method_arg`.
 
+**String match (A9b, provisional).** `match` on a string works. The arms are string literals (plain or
+verbatim), `a | b` of string literals, `_`, and a plain name that binds the string (a catch-all). The tests run
+in arm order as a chain of `ubel_str_eq` calls, so the first matching arm wins, as in the interpreter (a
+repeated literal, and any arm after a catch-all, never runs); the scrutinee is evaluated once. Matching
+allocates nothing, so it works in every tier. The cost is the number of literals times a length compare and,
+when the lengths agree, a `memcmp`; there is no hashing and no decision tree. Refused: guards (`where`, as for
+enums), `mut` bindings, and any other pattern kind. **When no arm matches, the interpreter does not fail: it
+gives a unit value and carries on** (`println(f("c"))` prints an empty line), and sema does not ask for a
+catch-all on a string `match`. Native code cannot copy a unit for an `int`, so a `match` used as a value must end
+in `_` or a name (refused otherwise, `u_match_string_value`); used as a statement without one, nothing happens
+when no arm matches, as in the interpreter. Found: sema rejects a `match` whose scrutinee is an arena string (it
+types the literal patterns `&arena string` and reports that they cannot outlive the block), so that case never
+reaches the emitter; see `docs/ARENA_STRINGS.md`. Checked by `examples/28_string_match` (literals including the
+empty string, non-ASCII and escapes, or-patterns, a repeated literal, a name that binds, strings in and out of
+enums, statements with block arms and `return`, scrutinees that are calls, concatenations, interpolations,
+fields and captured strings, every tier, long strings, 200,000 matches across many collections) and the
+refusal examples `u_enum_string` (now an integer `match`), `u_match_string_guard` and `u_match_string_value`.
+
 **Scannable arenas (provisional).** A `with arena` block is created with `ubel_arena_create` unless
 an object allocated in it has a pointer-typed field (a string, struct, enum or closure: a struct or
 enum literal with such a field, or a closure that captures such a value), in which case it is created
@@ -930,8 +948,8 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    (`docs/GC_LARGE_OBJECTS.md`: a string can exceed 512 bytes, and the GC path uses the same
    allocator). Then string `+` and ordering (A6b). Strings built in arenas (the D3b sema patch) and a
    string field in an arena object (scannable arenas) are done. String methods: the ones that read a
-   string are done (A9, see "String methods" above); `match` on a string and the ones that build a
-   string are open.
+   string are done (A9, see "String methods" above), and so is `match` on a string (A9b, see "String
+   match"); the methods that build a string are open.
 4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
    (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
    it the target program (A8). Capturing closures followed (A7b). Open: captures of strings, structs,
@@ -969,6 +987,19 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-07: A9b, `match` on a string, provisional. String literal arms, `|` of literals, `_` and a name that
+  binds, as a chain of `ubel_str_eq` tests in arm order (first match wins, scrutinee evaluated once), in every
+  tier. `examples/28_string_match`; refusal examples `u_enum_string` (repurposed: `match` on an integer, the
+  name is historical; it used to test `match` on a string, see 2026-10-31), `u_match_string_guard`,
+  `u_match_string_value`. 66 of 66 locally at 64-bit and 32-bit; example 28 under `UBEL_GC_STRESS=1` identical
+  at both widths and at -O0 and -O2 (200,229 collections, one per allocation); fixtures unchanged (165 ok, 169
+  err). Eight mutants of the lowering (only the first alternative of `|` tested, last arm wins, catch-all
+  routed to the end, binding not stored, every literal sent to the first arm, test polarity inverted, a trap
+  where nothing matches, the value-form refusal removed) are all caught. Found: when no arm matches the
+  interpreter does not fail, it gives a unit value and carries on, and sema does not ask for a catch-all on a
+  string `match`; the emitter refuses a value-form `match` without one and lets a statement fall through.
+  Found: sema rejects a `match` on an arena string (the literal patterns are typed `&arena string`); not
+  changed, see `docs/ARENA_STRINGS.md`. Not run: CI on real runners, Termux, macOS.
 - 2026-11-06: A9, the string methods that read a string, provisional. `len`, `is_empty`, `contains`,
   `starts_with` and `ends_with`, in every tier and on arena strings; bytes, like the interpreter (checked:
   `"日本".len()` is 6 in both). `examples/27_string_methods`, `rt_gc_test str_helpers` (16 tests), refusal

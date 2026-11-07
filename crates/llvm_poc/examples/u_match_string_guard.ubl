@@ -1,0 +1,13 @@
+// Not supported yet: a `where` guard on an arm of a `match` on a string (the enum `match` refuses guards too).
+// expect-refusal: `where` guards in `match` arms
+fn kind(s: string) int {
+    return match s {
+        "a" => 1,
+        x where x.len() > 3 => 2,
+        _ => 0,
+    }
+}
+
+fn main() void {
+    println(kind("a"), kind("long!"), kind("sh"))
+}

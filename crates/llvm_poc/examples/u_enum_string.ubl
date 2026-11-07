@@ -1,14 +1,14 @@
-// Not supported yet: `match` on a string. The emitter matches on enum values only. (The file name is
-// historical: strings in enum payloads work now, see 19_strings and 25_arena_scan.)
-// expect-refusal: `match` on anything but an enum value
-fn kind(s: string) int {
-    return match s {
-        "a" => 1,
-        "b" => 2,
+// Not supported yet: `match` on an integer. The emitter matches on enum and string values only. (The file
+// name is historical: it used to test `match` on a string, which works now, see 28_string_match.)
+// expect-refusal: `match` on anything but an enum or a string value
+fn kind(n: int) int {
+    return match n {
+        1 => 10,
+        2 => 20,
         _ => 0,
     }
 }
 
 fn main() void {
-    println(kind("a"), kind("z"))
+    println(kind(1), kind(9))
 }

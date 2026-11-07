@@ -1756,7 +1756,8 @@ impl<'a> Emitter<'a> {
         let sv = self.expr(scrutinee)?;
         let eid = match sv.ty {
             Ty::Enum(i) => i,
-            _ => return unsupported(scrutinee.span, "`match` on anything but an enum value"),
+            Ty::Str => return self.match_str(sv, arms, span, want_value),
+            _ => return unsupported(scrutinee.span, "`match` on anything but an enum or a string value"),
         };
         let en = self.enums[eid].clone();
 
@@ -1916,6 +1917,126 @@ impl<'a> Emitter<'a> {
                 let _ = span;
                 Ok(Val::void())
             }
+        }
+    }
+
+    /// `match` on a string (A9b, docs/LLVM_POC.md "String match"). Patterns: a string literal, `a | b` of
+    /// string literals, `_`, and a plain name that binds the string (a catch-all). Lowered to a chain of
+    /// `ubel_str_eq` tests in arm order, so the first matching arm wins, like the interpreter; the scrutinee is
+    /// evaluated once. Refused: guards, `mut` bindings, and any other pattern. The interpreter gives no value
+    /// when no arm matches (it does not fail), which native code cannot copy for a value of a known type, so a
+    /// `match` used as a value must end in a catch-all; used as a statement without one, nothing happens when
+    /// no arm matches, as in the interpreter. Sema does not ask for a catch-all on a string `match`.
+    fn match_str(&mut self, sv: Val, arms: &[MatchArm], span: Span, want_value: bool) -> R<Val> {
+        // Resolve every pattern before emitting IR, so refusals come first. Each entry: (the literals to
+        // test, empty for the catch-all; the name that binds the whole string; arm index).
+        let mut lowered: Vec<(Vec<String>, Option<String>, usize)> = Vec::new();
+        let mut has_default = false;
+        for (ai, arm) in arms.iter().enumerate() {
+            if has_default {
+                break; // nothing after a catch-all can run
+            }
+            if arm.guard.is_some() {
+                return unsupported(arm.span, "`where` guards in `match` arms");
+            }
+            match arm.pattern.kind {
+                PatternKind::Wildcard => {
+                    lowered.push((Vec::new(), None, ai));
+                    has_default = true;
+                }
+                PatternKind::Ident { name, mutable } => {
+                    if mutable {
+                        return unsupported(arm.pattern.span, "`mut` bindings in patterns");
+                    }
+                    lowered.push((Vec::new(), Some(name.to_string()), ai));
+                    has_default = true;
+                }
+                PatternKind::Literal(lit) => {
+                    lowered.push((vec![Self::str_pattern(lit, arm.pattern.span)?], None, ai));
+                }
+                PatternKind::Or(alts) => {
+                    let mut lits = Vec::new();
+                    for alt in alts {
+                        match alt.kind {
+                            PatternKind::Literal(lit) => lits.push(Self::str_pattern(lit, alt.span)?),
+                            _ => return unsupported(alt.span, "anything but string literals inside `|` in a `match` on a string"),
+                        }
+                    }
+                    lowered.push((lits, None, ai));
+                }
+                _ => {
+                    return unsupported(
+                        arm.pattern.span,
+                        "this kind of pattern in a `match` on a string (only string literals, `|`, `_` and names so far)",
+                    )
+                }
+            }
+        }
+        if want_value && !has_default {
+            return unsupported(
+                span,
+                "a `match` on a string used as a value without a `_` or name arm (the interpreter gives no value when no arm matches)",
+            );
+        }
+
+        self.uses_str = true;
+        let end = self.label("match.end");
+        let mut arm_labels: Vec<String> = Vec::new();
+        for _ in &lowered {
+            let l = self.label("match.arm");
+            arm_labels.push(l);
+        }
+        for (idx, (lits, _, _)) in lowered.iter().enumerate() {
+            for lit in lits {
+                let p = self.static_str(lit);
+                let c = self.fresh();
+                self.inst(&format!("{c} = call i32 @ubel_str_eq(ptr {}, ptr {})", sv.v, p.v));
+                let t = self.fresh();
+                self.inst(&format!("{t} = icmp ne i32 {c}, 0"));
+                let next = self.label("match.next");
+                self.term(&format!("br i1 {t}, label %{}, label %{next}", arm_labels[idx]));
+                self.begin(&next);
+            }
+        }
+        // No literal matched: the catch-all (always the last arm lowered), or the end of a statement.
+        match lowered.iter().position(|(lits, _, _)| lits.is_empty()) {
+            Some(di) => self.term(&format!("br label %{}", arm_labels[di])),
+            None => self.term(&format!("br label %{end}")),
+        }
+
+        let mut slot: Option<(String, Ty)> = None;
+        for (idx, (_, whole, ai)) in lowered.iter().enumerate() {
+            self.begin(&arm_labels[idx]);
+            self.scopes.push(HashMap::new());
+            if let Some(name) = whole {
+                let local = self.declare(name, Ty::Str);
+                self.inst(&format!("store ptr {}, ptr {local}", sv.v));
+            }
+            let produced = self.match_arm_body(arms[*ai].body, want_value, &mut slot, arms[*ai].span)?;
+            self.scopes.pop();
+            if !self.terminated {
+                if want_value && !produced {
+                    return Err(CompileError::at(arms[*ai].span, "this `match` arm has no value, but the `match` is used as one"));
+                }
+                self.term(&format!("br label %{end}"));
+            }
+        }
+        self.begin(&end);
+        match slot {
+            Some((slot, ty)) if want_value => {
+                let out = self.fresh();
+                self.inst(&format!("{out} = load {}, ptr {slot}", ty.ir()));
+                Ok(Val { v: out, ty })
+            }
+            _ => Ok(Val::void()),
+        }
+    }
+
+    /// The text of a pattern literal in a `match` on a string; any other literal is refused.
+    fn str_pattern(lit: Literal, span: Span) -> R<String> {
+        match lit {
+            Literal::Str(s) | Literal::VerbatimStr(s) => Ok(s.to_string()),
+            _ => unsupported(span, "a pattern that is not a plain string literal in a `match` on a string"),
         }
     }
 

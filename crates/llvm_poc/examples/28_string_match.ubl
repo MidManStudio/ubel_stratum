@@ -1,0 +1,193 @@
+// `match` on a string (A9b, provisional). Patterns: a string literal, `|` of string literals, `_`, and a
+// plain name that binds the string. The arms are tried in order and the first match wins; the scrutinee is
+// evaluated once. A `match` used as a value must end in a catch-all (the interpreter gives no value when no arm
+// matches, which native code cannot copy), used as a statement it may not, and nothing happens then. Guards
+// (`where`) and other pattern kinds are refused. Matching allocates nothing, so it works in every tier.
+enum Color {
+    Red
+    Green
+    Blue
+    Other(string)
+}
+
+struct Cmd {
+    verb: string
+    arg:  string
+}
+
+fn trace(tag: string, s: string) string {
+    println(tag, s)
+    return s
+}
+
+fn repeat(s: string, n: int) string {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out += s
+        i += 1
+    }
+    return out
+}
+
+fn code(s: string) int {
+    return match s {
+        "a" => 1,
+        "bc" => 2,
+        "" => 3,
+        "é" => 4,
+        "x\ny" => 5,
+        "q\"r" => 6,
+        _ => 0,
+    }
+}
+
+fn bucket(s: string) int {
+    return match s {
+        "a" | "b" => 1,
+        "c" | "d" | "e" => 2,
+        "b" | "z" => 3,
+        _ => 0,
+    }
+}
+
+fn first_wins(s: string) int {
+    return match s {
+        "a" => 1,
+        "a" => 2,
+        _ => 0,
+        "b" => 3,
+    }
+}
+
+fn echo(s: string) string {
+    return match s {
+        "hi" => "hello",
+        other => other + "!",
+    }
+}
+
+fn parse(s: string) Color {
+    return match s {
+        "red" => Color.Red,
+        "green" => Color.Green,
+        "blue" => Color.Blue,
+        other => Color.Other(other),
+    }
+}
+
+fn name(c: Color) string {
+    return match c {
+        Color.Red => "R",
+        Color.Green => "G",
+        Color.Blue => "B",
+        Color.Other(s) => s,
+    }
+}
+
+fn announce(s: string) int {
+    match s {
+        "go" => {
+            return 1
+        }
+        "stop" => {
+            println("stopping")
+        }
+        _ => {}
+    }
+    return 0
+}
+
+fn log_only(s: string) void {
+    match s {
+        "a" => println("A"),
+        "b" => println("B"),
+    }
+}
+
+fn make_router(pre: string) fn(string) int {
+    return fn(s: string) match s {
+        "x" => 1,
+        _ => match pre {
+            "p" => 2,
+            _ => 3,
+        },
+    }
+}
+
+@tier(low)
+fn lowf(s: string) int {
+    return match s {
+        "go" => 1,
+        "stop" => 2,
+        _ => 0,
+    }
+}
+
+@tier(mid)
+fn midf(s: string) int {
+    return match s {
+        "m" | "n" => 1,
+        _ => 0,
+    }
+}
+
+fn main() void {
+    // literals: empty, non-ASCII, escapes, near misses
+    println(code("a"), code("bc"), code(""), code("é"), code("x\ny"), code("q\"r"), code("A"), code("b"), code("a "), code("é "))
+
+    // or-patterns, and an arm that repeats an earlier literal never runs
+    println(bucket("a"), bucket("b"), bucket("c"), bucket("e"), bucket("z"), bucket("f"))
+    println(first_wins("a"), first_wins("b"), first_wins("c"))
+
+    // a name binds the string; strings in and out of enums
+    println(echo("hi"), echo("yo"), echo(""))
+    println(name(parse("red")), name(parse("green")), name(parse("blue")), name(parse("teal")), name(parse("")))
+
+    // statements: block arms, `return` in an arm, no catch-all
+    println(announce("go"), announce("stop"), announce("?"))
+    log_only("a")
+    log_only("b")
+    log_only("c")
+    println("after log_only")
+
+    // scrutinees that are calls, concatenations, interpolations, fields and results of closures
+    let n = 7
+    println(match trace("scrutinee", "b") {
+        "a" | "b" => "first",
+        "b" | "c" => "second",
+        _ => "none",
+    })
+    let cmd = Cmd { verb = "add", arg = "5" }
+    println(match cmd.verb { "add" => 1, "sub" => 2, _ => 0 }, match cmd.arg + cmd.verb { "5add" => "joined", _ => "no" })
+    println(match $"n={n}" { "n=7" => "seven", _ => "other" }, match $"n={n}" { "n=8" => "eight", _ => "other" })
+
+    // closures (captured string as scrutinee) and every tier
+    let a = make_router("p")
+    let b = make_router("q")
+    println(a("x"), a("y"), b("y"), lowf("go"), lowf("stop"), lowf("?"), midf("m"), midf("n"), midf("x"))
+
+    // long scrutinees and a long pattern
+    let line = repeat("0123456789", 100)
+    let big = repeat(line, 100)
+    println(match big { "0123456789" => "short", _ => "no" }, match big + "end" { "x" => 1, _ => 0 })
+    println(match repeat("0123456789", 7) { "0123456789012345678901234567890123456789012345678901234567890123456789" => "70 bytes", _ => "no" })
+    println(match repeat("0123456789", 7) + "!" { "0123456789012345678901234567890123456789012345678901234567890123456789" => "70 bytes", _ => "no" })
+
+    // strings built in a loop and matched at once, across many collections
+    let mut hits = 0
+    let mut i = 0
+    while i < 200000 {
+        let r = i % 7
+        let s = $"k{r}"
+        let v = match s {
+            "k0" => 1,
+            "k1" | "k2" => 2,
+            "k3" => 3,
+            _ => 0,
+        }
+        hits += v
+        i += 1
+    }
+    println(hits)
+}

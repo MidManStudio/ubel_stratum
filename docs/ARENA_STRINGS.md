@@ -82,3 +82,11 @@ Checked 2026-11-06 (A9): the built-in string methods that read a string (`len`, 
 inside `with arena`; sema checks only their argument count, and they allocate nothing, so no borrow is
 created. The methods that build a new string are open: by reading `type_infer` (not probed), sema types their
 result with the receiver's arena tag, which differs from rule S4 (a copy is always a GC string).
+
+Found 2026-11-07 (A9b): `match` on an arena string is rejected by sema. In
+`with arena(1KB) { let a = $"k{n}"; return match a { "k1" => 10, _ => 0 } }` each literal pattern is typed
+`&arena string` and reported as "scoped to a `with arena(...)` block and cannot outlive it". Comparing a string
+with a literal pattern reads it and creates no borrow, so peeling the arena tag as `peel_arena_str` does for
+`==` would be sound here too; that is a change in `type_infer`, which the owner edits, and it is not made. Until
+then, a string built in an arena can be matched by first copying it with `+` (a GC string, rule S4) or compared
+with `==`.
