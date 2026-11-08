@@ -1,0 +1,160 @@
+// Payload-free enum variants (E1, provisional). A variant with no payload is a static constant object (the
+// tag and zeroed slots), never allocated: it is legal in every tier, including `@tier(low)` and `@tier(mid)`
+// outside an arena, where building an enum value used to be refused, and a million of them cost no
+// allocation. A variant with a payload is still an object built where it is written. Nothing writes into an
+// enum object after it is built, so the one object per variant is shared.
+enum Light {
+    Red
+    Yellow
+    Green
+}
+
+enum Shape {
+    Dot
+    Circle(int)
+    Line(int, int)
+}
+
+enum Token {
+    Num(int)
+    Plus
+    Minus
+}
+
+struct Lamp {
+    on:    Light
+    spare: Light
+}
+
+fn next(l: Light) Light {
+    return match l {
+        Light.Red => Light.Green,
+        Light.Green => Light.Yellow,
+        Light.Yellow => Light.Red,
+    }
+}
+
+fn name(l: Light) string {
+    return match l {
+        Light.Red => "red",
+        Light.Yellow => "yellow",
+        Light.Green => "green",
+    }
+}
+
+fn weigh(t: Token) int {
+    return match t {
+        Token.Num(n) => n,
+        Token.Plus => 100,
+        Token.Minus => 200,
+    }
+}
+
+fn area(s: Shape) int {
+    return match s {
+        Shape.Dot => 0,
+        Shape.Circle(r) => 3 * r * r,
+        Shape.Line(a, b) => a + b,
+    }
+}
+
+fn make(n: int) Shape {
+    if n == 0 {
+        return Shape.Dot
+    }
+    if n == 1 {
+        return Shape.Circle(5)
+    }
+    return Shape.Line(n, 2)
+}
+
+@tier(low)
+fn low_next(l: Light) Light {
+    return match l {
+        Light.Red => Light.Green,
+        Light.Green => Light.Yellow,
+        Light.Yellow => Light.Red,
+    }
+}
+
+@tier(low)
+fn low_pick(n: int) Light {
+    if n == 0 {
+        return Light.Red
+    }
+    return Light.Green
+}
+
+@tier(mid)
+fn mid_pick(n: int) Shape {
+    if n == 0 {
+        return Shape.Dot
+    }
+    return Shape.Dot
+}
+
+@tier(mid)
+fn arena_lamp(n: int) int {
+    with arena(1KB) {
+        let on = Light.Green
+        let spare = Light.Yellow
+        let a = match on {
+            Light.Red => 1,
+            Light.Yellow => 2,
+            Light.Green => 3,
+        }
+        let b = match spare {
+            Light.Red => 10,
+            Light.Yellow => 20,
+            Light.Green => 30,
+        }
+        return a + b + n
+    }
+}
+
+fn main() void {
+    // construction, match, and a payload variant next to payload-free ones
+    println(name(Light.Red), name(Light.Yellow), name(Light.Green), name(next(Light.Red)), name(next(next(Light.Red))))
+    println(area(Shape.Dot), area(Shape.Circle(2)), area(Shape.Line(3, 4)), area(make(0)), area(make(1)), area(make(7)))
+
+    // a mixed enum whose payload-free variants are not the first: Plus and Minus carry tags 1 and 2
+    println(weigh(Token.Num(7)), weigh(Token.Plus), weigh(Token.Minus), weigh(Token.Num(-1)))
+
+    // every tier
+    println(name(low_next(Light.Red)), name(low_next(Light.Green)), name(low_pick(0)), name(low_pick(1)), area(mid_pick(0)), area(mid_pick(3)))
+    println(arena_lamp(0), arena_lamp(1))
+
+    // in a struct, in a closure, and kept across a collection
+    let lamp = Lamp { on = Light.Green, spare = next(Light.Green) }
+    println(name(lamp.on), name(lamp.spare))
+    let c = Light.Green
+    let f = fn(x: int) match c {
+        Light.Green => x + 1,
+        _ => x,
+    }
+    println(f(41))
+
+    // a million payload-free values: nothing is allocated for them
+    let mut l = Light.Red
+    let mut reds = 0
+    let mut i = 0
+    while i < 1000000 {
+        l = next(l)
+        let isred = match l {
+            Light.Red => 1,
+            _ => 0,
+        }
+        reds += isred
+        i += 1
+    }
+    println(reds, name(l))
+
+    // payload variants are still built on the heap, in a loop, across collections
+    let mut sum = 0
+    let mut j = 0
+    while j < 100000 {
+        sum += area(make(j % 5))
+        j += 1
+    }
+    println(sum)
+}

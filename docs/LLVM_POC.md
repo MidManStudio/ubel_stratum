@@ -414,12 +414,19 @@ references (`&L T?`).
 
 **Enums (slice 4).** Enums with payload-free and tuple-payload variants, constructors
 (`Expr.Add(a, b)`, `Color.Red`), and `match` as a statement or an expression. **Provisional
-layout:** every enum value is an object, payload-free variants included: an 8-byte tag (the
+layout:** every enum value is a pointer to an object: an 8-byte tag (the
 variant's position in the declaration), then as many 8-byte payload slots as the widest variant has,
 so all values of one enum have one size. A pointer payload sits at the start of its slot. The
 collector mask depends on the variant (only some slots hold pointers), so it is computed per
 variant from the target's layout, like a struct's. Allocation sites follow the struct rule: inside
-`with arena` bump allocation, in HIGH the GC heap, elsewhere refused. A variant that carries
+`with arena` bump allocation, in HIGH the GC heap, elsewhere refused (for a variant with a payload). **A
+variant with no payload (E1, provisional) is not allocated at all:** it is a static constant object (its tag
+and zeroed slots, `@.enumv.Enum.Variant`) outside the heap, like a string literal, so it is legal in every
+tier, including LOW and MID outside an arena, where building an enum value used to be refused, and the
+collector ignores pointers to it. Nothing writes into an enum object after it is built, so one object per
+variant is shared. Measured once, on a 3,000,000-step loop over a three-variant enum at -O2: 3,000,001
+allocations, 48 MB and 11 collections (about 25 ms) before, none of them (about 10 ms) after; that loop is all
+construction, so it is a best case. A variant that carries
 a discriminant is treated as payload-free (sema validates the value and nothing reads it back).
 `match` lowers to a `switch` on the tag; a tag no arm covers traps, so a hole in sema's
 exhaustiveness check cannot become undefined behaviour. Patterns supported: `Enum.Variant(a, _)`,
@@ -1021,6 +1028,18 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-08: E1 (from `docs/GOOSE_STUDY.md` F2, roadmap D4), payload-free enum variants as static objects,
+  provisional. `enum_ctor` returns a private constant `@.enumv.Enum.Variant` (tag, zeroed slots, emitted after
+  the enum types) instead of allocating, for every variant without a payload, in unit-only and in mixed enums.
+  `examples/31_enum_unit`: payload-free variants in HIGH, `@tier(low)`, `@tier(mid)` outside an arena, inside
+  `with arena`, in a struct, a closure and a million-step loop, mixed with payload variants. Identical to
+  the interpreter at -O0, -O2 and under ASan+UBSan at 64-bit and 32-bit. Four mutants (tag always 0 in both
+  initializer shapes, variant index off by one, allocation restored) are caught; the mixed-enum one first
+  survived because `Shape.Dot` is variant 0, and `Token`, whose payload-free variants are 1 and 2, fixed that. Not done: the plain-integer
+  form for unit-only enums (a value is still a pointer, to a static object), and the roadmap D4 row still
+  says "keep the uniform object". Found: sema rejects an arena-scoped enum value flowing into a struct field
+  (`Lamp { on = Light.Green, .. }` inside `with arena` gives "`&arena Light` ... cannot outlive it"), which is
+  D6, not E1. Not run: CI on real runners, Termux, macOS.
 - 2026-11-07: A9c, the string methods that build a string, provisional. `to_upper`, `to_lower`, `trim`,
   `trim_start`, `trim_end` and `replace` with Rust's full Unicode semantics, through tables generated from the
   standard library (`scripts/gen_unicode.rs`, `runtime/ubel_unicode.h`, Unicode 15.0.0), each result a new GC

@@ -180,7 +180,12 @@ is no allocation and the representation stays uniform. (b) is our own idea, not 
 nothing relies on the identity or mutability of an enum object.
 
 *Cost and risk.* Emitter-only for (a) and (b); the sema rules do not change. The equivalence loop and the
-existing enum examples are the test. Not tried.
+existing enum examples are the test.
+
+*Status (2026-11-08).* Option (b) is implemented as E1, for every payload-free variant, in unit-only enums too:
+a variant is a static constant object and nothing is allocated (`examples/31_enum_unit`, LLVM_POC.md "Enums" and
+Log). Option (a), a plain integer for unit-only enums, is not done: such a value is still a pointer, now to a
+static object. On a 3,000,000-step loop over a three-variant enum, allocations went from 3,000,001 to 0.
 
 ### F3. Reserved contiguous arena regions (an experiment, not a proposal)
 
@@ -312,8 +317,8 @@ choice; arena values holding pointers to GC data through scannable arenas; no pr
 
 ## 9. Suggested experiments (none started)
 
-- **E1 (small).** Payload-free variants as static singletons or plain integers (F2); count allocations in the
-  enum examples before and after; the equivalence loop is the test.
+- **E1 (small), done 2026-11-08.** Payload-free variants as static singletons (F2, option b); allocations
+  counted before and after; the equivalence loop is the test. The plain-integer form (option a) is open.
 - **E2 (medium).** D1 v2 prototype in a scratch clone (F1): result tagged with the innermost arena of the
   arguments tied to `L`; the `pick` case must be rejected when the result is stored outside the arena and
   accepted inside it. Sema is in files the owner edits, so it ends as an anchored patch.

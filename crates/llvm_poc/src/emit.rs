@@ -297,6 +297,10 @@ struct Emitter<'a> {
     enum_ids: HashMap<String, usize>,
     esized: BTreeSet<usize>,
     emasked: BTreeSet<(usize, usize)>,
+    /// Payload-free variants that have a static singleton object (E1): (enum, variant).
+    estatics: BTreeSet<(usize, usize)>,
+    /// The IR of those singletons: emitted after the enum types, which a struct initializer needs defined.
+    estatic_ir: String,
     /// Which structs are allocated somewhere, so only their helper functions are emitted.
     sized: BTreeSet<usize>,
     masked: BTreeSet<usize>,
@@ -396,6 +400,8 @@ impl<'a> Emitter<'a> {
             enum_ids: HashMap::new(),
             esized: BTreeSet::new(),
             emasked: BTreeSet::new(),
+            estatics: BTreeSet::new(),
+            estatic_ir: String::new(),
             sized: BTreeSet::new(),
             masked: BTreeSet::new(),
             uses_gc: false,
@@ -498,6 +504,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(out, "%enum.{} = type {{ i64, [{} x i64] }}", en.name, en.slots);
             }
         }
+        out.push_str(&self.estatic_ir);
         if self.uses_bump {
             out.push_str("%ubel_arena = type { ptr, ptr, ptr, i64 }\n");
         }
@@ -1704,7 +1711,10 @@ impl<'a> Emitter<'a> {
 
     /// `Enum.Variant(a, b)` and the payload-free `Enum.Variant`. Arguments are evaluated first,
     /// in order; then the object is allocated (same site rules as a struct literal), the tag
-    /// stored, and the payload stored slot by slot.
+    /// stored, and the payload stored slot by slot. A variant without a payload is not allocated at all
+    /// (E1, docs/LLVM_POC.md "Enums"): it is a static constant object with the tag and zeroed slots, outside
+    /// the heap like a string literal, so it is legal in every tier and the collector ignores pointers to it.
+    /// Nothing writes into an enum object after it is built, so sharing one object per variant is safe.
     fn enum_ctor(&mut self, e: &Expr, eid: usize, vi: usize, args: &[Arg]) -> R<Val> {
         let fields = self.enums[eid].variants[vi].fields.clone();
         if args.len() != fields.len() {
@@ -1713,6 +1723,21 @@ impl<'a> Emitter<'a> {
                 e.span,
                 format!("the variant `{v}` takes {} value(s), found {}", fields.len(), args.len()),
             ));
+        }
+        if fields.is_empty() {
+            let ename = self.enums[eid].name.clone();
+            let vname = self.enums[eid].variants[vi].name.clone();
+            let slots = self.enums[eid].slots;
+            let name = format!("@.enumv.{ename}.{vname}");
+            if self.estatics.insert((eid, vi)) {
+                let init = if slots == 0 {
+                    format!("{{ i64 {vi} }}")
+                } else {
+                    format!("{{ i64 {vi}, [{slots} x i64] zeroinitializer }}")
+                };
+                let _ = writeln!(self.estatic_ir, "{name} = private constant %enum.{ename} {init}, align 8");
+            }
+            return Ok(Val { v: name, ty: Ty::Enum(eid) });
         }
         let arena = self.alloc_site(e.span, "an enum value")?;
         if fields.iter().any(|f| f.is_ptr()) {
