@@ -126,6 +126,7 @@ use crate::sema::symbol_table::{DefId, DefKind};
 use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
 
 mod impl_patterns;
+mod dyn_trait;
 use self::impl_patterns::{ImplGuard, ImplPattern};
 use std::rc::Rc;
 
@@ -583,6 +584,15 @@ struct InferCtx<'a> {
     /// Obligations already reported, so one mistake reached twice (a call
     /// inferred more than once) is one diagnostic.
     reported_obligations: HashSet<(Span, DefId)>,
+    /// Written `dyn Trait` types already lowered, by position, so one written
+    /// type is reported once however often it is lowered.
+    dyn_seen:         HashSet<Span>,
+    /// `dyn Trait` types waiting for their trait's methods to be collected,
+    /// to be checked for object safety (`TYPE-138`).
+    dyn_uses:         Vec<(DefId, Span)>,
+    /// The element type an array literal is coerced to: set by a `let` whose
+    /// written type is a list of `dyn`, taken by the literal.
+    array_elem_hint:  Option<TypeId>,
     /// Dictionary key mistakes already reported, by line and key type.
     reported_dict_keys: HashSet<(usize, TypeId)>,
     /// The prelude traits (`PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Clone`),
@@ -752,6 +762,9 @@ impl<'a> InferCtx<'a> {
             param_names:       HashMap::new(),
             pending_obligations: Vec::new(),
             reported_obligations: HashSet::new(),
+            dyn_seen:          HashSet::new(),
+            dyn_uses:          Vec::new(),
+            array_elem_hint:   None,
             reported_dict_keys: HashSet::new(),
             prelude_traits:    HashMap::new(),
             prelude_defs:      HashMap::new(),
@@ -929,6 +942,10 @@ impl<'a> InferCtx<'a> {
             SemaType::Fallible(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Fallible(e)) }
             SemaType::Task(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Task(e)) }
             SemaType::Optional(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Optional(e)) }
+            SemaType::Dyn { trait_def, args: targs } => {
+                let targs: Vec<TypeId> = targs.iter().map(|t| self.substitute(*t, args)).collect();
+                self.ctx.types.insert(SemaType::Dyn { trait_def, args: targs })
+            }
             SemaType::GcRef(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::GcRef(e)) }
             // InlineList/Linqerizer/Reference were missing here entirely
             // until now — same bug class as the `structurally_compatible`
@@ -1449,6 +1466,7 @@ impl<'a> InferCtx<'a> {
                 let elem_id = self.ast_type_to_sema(elem);
                 self.ctx.types.intern(SemaType::Slice(elem_id))
             }
+            TypeKind::Dyn { name, args } => self.lower_dyn_type(name, args, ty.span),
             TypeKind::Fallible(inner) => {
                 let inner_id = self.ast_type_to_sema(inner);
                 self.ctx.types.intern(SemaType::Fallible(inner_id))
@@ -2236,6 +2254,8 @@ impl<'a> InferCtx<'a> {
     fn bound_status(&mut self, ty: TypeId, trait_def: DefId) -> Option<bool> {
         let ty = self.peel_wrappers(ty);
         if ty == TypeId::ERROR { return Some(true); }
+        // A `dyn Trait` has the trait and every trait it builds on, and no other.
+        if let Some(bs) = self.dyn_bounds(ty) { return Some(bs.iter().any(|b| b.trait_def == trait_def)); }
         if let Some(name) = self.prelude_traits.get(&trait_def).copied() {
             return self.prelude_status(name, ty);
         }
@@ -2340,6 +2360,11 @@ impl<'a> InferCtx<'a> {
             // head's numbering, so the receiver's own arguments go in.
             SemaType::Named { def, args: recv } => match self.trait_impl_args.get(&(trait_def, def)).cloned() {
                 Some(a) => a.iter().map(|t| self.substitute(*t, &recv)).collect(),
+                None    => return Some(true),
+            },
+            SemaType::Dyn { .. } => match self.dyn_bounds(ty)
+                .and_then(|bs| bs.into_iter().find(|b| b.trait_def == trait_def)) {
+                Some(b) => b.args,
                 None    => return Some(true),
             },
             SemaType::Param(_) => match self.current_bounds.get(&ty)
@@ -3041,7 +3066,7 @@ impl<'a> InferCtx<'a> {
                 ArgKind::Named { value, .. } => value.span,
             };
             if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
-                self.unify(*param_ty, arg_ty, arg_span);
+                self.unify_coerce(*param_ty, arg_ty, arg_span);
             }
         }
     }
@@ -3173,6 +3198,9 @@ impl<'a> InferCtx<'a> {
         let known: Option<Vec<TypeId>> = match self.ctx.types.get(ty).clone() {
             SemaType::Named { def, args: recv } => self.trait_impl_args.get(&(trait_def, def)).cloned()
                 .map(|a| a.iter().map(|t| self.substitute(*t, &recv)).collect()),
+            SemaType::Dyn { .. } => self.dyn_bounds(ty)
+                .and_then(|bs| bs.into_iter().find(|b| b.trait_def == trait_def))
+                .map(|b| b.args),
             SemaType::Param(_) => self.current_bounds.get(&ty)
                 .and_then(|bs| bs.iter().find(|b| b.trait_def == trait_def))
                 .map(|b| b.args.clone()),
@@ -3195,6 +3223,7 @@ impl<'a> InferCtx<'a> {
     /// does not cascade into this one.
     fn type_implements(&mut self, ty: TypeId, trait_def: DefId) -> bool {
         if ty == TypeId::ERROR { return true; }
+        if let Some(bs) = self.dyn_bounds(ty) { return bs.iter().any(|b| b.trait_def == trait_def); }
         if let Some(name) = self.prelude_traits.get(&trait_def).copied() {
             return self.prelude_status(name, ty).unwrap_or(true);
         }
@@ -3391,6 +3420,8 @@ impl<'a> InferCtx<'a> {
         self.register_trait_impls(program);
         self.impls_registered = true;
         self.check_impl_supertraits();
+        // `dyn` types written before their trait was collected.
+        self.check_dyn_uses(true);
         // Requirements raised by signatures that had to wait for the impls.
         self.check_obligations();
     }
@@ -3621,7 +3652,7 @@ impl<'a> InferCtx<'a> {
                             if matches!(target_type.kind,
                                 TypeKind::List(..) | TypeKind::Dictionary(..) | TypeKind::Set(..)
                                 | TypeKind::Queue(..) | TypeKind::Stack(..) | TypeKind::Optional(..)
-                                | TypeKind::Slice(..) | TypeKind::Function(..))
+                                | TypeKind::Slice(..) | TypeKind::Function(..) | TypeKind::Dyn { .. })
                             {
                                 self.report_unsupported(impl_patterns::TARGET_FOR_EXTEND, target_type.span);
                             }
@@ -4532,11 +4563,25 @@ impl<'a> InferCtx<'a> {
     fn infer_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) -> TypeId {
         match &stmt.kind {
             StmtKind::Let { binding, ty, value, .. } => {
+                // For an array literal, the written type is lowered first, so the
+                // elements can be coerced one by one when it is a list of `dyn`
+                // (`let shapes: List<dyn Shape> = [Circle { .. }, Square { .. }]`).
+                // Any other `let` keeps its order.
+                let pre_ann = match (ty, &value.kind) {
+                    (Some(ann), ExprKind::Array(_)) => Some(self.ast_type_to_sema(ann)),
+                    _ => None,
+                };
+                if let Some(a) = pre_ann {
+                    self.array_elem_hint = self.array_hint_elem(a);
+                }
                 let rhs_ty = self.infer_expr(value);
                 let bind_ty = match ty {
                     Some(ann) => {
-                        let ann_id = self.ast_type_to_sema(ann);
-                        self.unify(ann_id, rhs_ty, stmt.span);
+                        let ann_id = match pre_ann {
+                            Some(a) => a,
+                            None    => self.ast_type_to_sema(ann),
+                        };
+                        self.unify_coerce(ann_id, rhs_ty, stmt.span);
                         ann_id
                     }
                     None => rhs_ty,
@@ -4553,7 +4598,7 @@ impl<'a> InferCtx<'a> {
                         SemaType::Fallible(inner) => *inner,
                         _ => expected,
                     };
-                    self.unify(expected_inner, ret, stmt.span);
+                    self.unify_coerce(expected_inner, ret, stmt.span);
                 }
                 // NOT void_ty(): a block's trailing statement type matters
                 // for expression-bodied lambdas (`fn(x) x * 2`), which unify
@@ -4746,7 +4791,8 @@ impl<'a> InferCtx<'a> {
             }
             SemaType::Unknown => self.fresh_var(),
             SemaType::Var(n) if !self.int_lit_vars.contains_key(&n) => self.fresh_var(),
-            SemaType::Named { .. } | SemaType::Param(_) if self.is_user_type(ty) || matches!(self.ctx.types.get(ty), SemaType::Param(_)) => {
+            SemaType::Named { .. } | SemaType::Param(_) | SemaType::Dyn { .. }
+                if self.is_user_type(ty) || matches!(self.ctx.types.get(ty), SemaType::Param(_) | SemaType::Dyn { .. }) => {
                 let (name, text) = if write { ("IndexSet", "[]=") } else { ("Index", "[]") };
                 // A program that declares its own `Index` has no prelude trait
                 // to require, and the index is left unchecked (`None`).
@@ -4810,7 +4856,7 @@ impl<'a> InferCtx<'a> {
             SemaType::Dictionary(k, v)   => self.ctx.types.insert(SemaType::Tuple(vec![k, v])),
             SemaType::Str | SemaType::Tuple(_) | SemaType::Unknown => self.fresh_var(),
             SemaType::Var(n) if !self.int_lit_vars.contains_key(&n) => self.fresh_var(),
-            SemaType::Named { .. } | SemaType::Param(_) => self.user_iteration_item(ty, span),
+            SemaType::Named { .. } | SemaType::Param(_) | SemaType::Dyn { .. } => self.user_iteration_item(ty, span),
             _ => {
                 self.report_not_iterable(ty, NotIterableKind::Other, span);
                 self.unknown()
@@ -4828,6 +4874,8 @@ impl<'a> InferCtx<'a> {
     fn user_iteration_item(&mut self, ty: TypeId, span: Span) -> TypeId {
         let kind = if matches!(self.ctx.types.get(ty), SemaType::Param(_)) {
             NotIterableKind::Param
+        } else if matches!(self.ctx.types.get(ty), SemaType::Dyn { .. }) {
+            NotIterableKind::Other
         } else {
             NotIterableKind::UserType
         };
@@ -5005,7 +5053,7 @@ impl<'a> InferCtx<'a> {
                 // immediately pile a second, less useful TypeMismatch on
                 // top of the same problem.
                 if !self.check_assign_arena_escape(target, target_ty, value_ty, expr.span) {
-                    self.unify(target_ty, value_ty, expr.span);
+                    self.unify_coerce(target_ty, value_ty, expr.span);
                 }
                 self.void_ty()
             }
@@ -5290,7 +5338,7 @@ impl<'a> InferCtx<'a> {
                                         for (arg, elem_ty) in args.iter().zip(elem_tys.iter()) {
                                             if let ArgKind::Positional(e) = &arg.kind {
                                                 let arg_ty = self.infer_expr(e);
-                                                self.unify(*elem_ty, arg_ty, e.span);
+                                                self.unify_coerce(*elem_ty, arg_ty, e.span);
                                             }
                                         }
                                         return self.maybe_arena_ref(enum_ty);
@@ -5463,6 +5511,11 @@ impl<'a> InferCtx<'a> {
                                 }
                             }
 
+                            // An element handed to a collection of `dyn` has to
+                            // implement the trait; the other element types are
+                            // not checked here, as before.
+                            self.check_dyn_element_arg(kind, field, bare_ty, args);
+
                             // A key handed to a dictionary whose own key type is
                             // not written anywhere (`let d = Dictionary.new()`)
                             // must be `Hash`: the annotation check cannot see
@@ -5527,6 +5580,13 @@ impl<'a> InferCtx<'a> {
                         // runtime panic for an argument type that lacks the
                         // method (slice S1b, D6).
                         let bare_recv = self.peel_wrappers(receiver_ty);
+                        // A `dyn` receiver: the method comes from the trait, as
+                        // through a bound, at the tier the trait declares.
+                        if let Some(bounds) = self.dyn_bounds(bare_recv) {
+                            return self.call_through_bounds(
+                                bare_recv, &bounds, field, args, callee.span, expr.span,
+                            );
+                        }
                         if matches!(self.ctx.types.get(bare_recv), SemaType::Param(_)) {
                             return match self.current_bounds.get(&bare_recv).cloned() {
                                 Some(bounds) => self.call_through_bounds(
@@ -5822,13 +5882,25 @@ impl<'a> InferCtx<'a> {
                 self.unwrap_task(inner_ty, expr.span)
             }
             ExprKind::As { expr: inner, ty } => {
-                self.infer_expr(inner);
-                self.ast_type_to_sema(ty)
+                let inner_ty = self.infer_expr(inner);
+                let target = self.ast_type_to_sema(ty);
+                // `x as dyn Shape` is a written coercion: the value has to
+                // implement the trait. Any other cast is as unchecked as before.
+                self.try_dyn_coercion(target, inner_ty, expr.span);
+                target
             }
 
             ExprKind::Array(elems) => {
+                let hint = self.array_elem_hint.take();
                 let elem_ty = if elems.is_empty() {
                     self.fresh_var()
+                } else if let Some(h) = hint {
+                    // Written as a list of `dyn`: each element is coerced.
+                    for e in elems.iter() {
+                        let ty = self.infer_expr(e);
+                        self.unify_coerce(h, ty, e.span);
+                    }
+                    h
                 } else {
                     let first = self.infer_expr(elems[0]);
                     for e in &elems[1..] {
@@ -5901,7 +5973,7 @@ impl<'a> InferCtx<'a> {
                                         match field_tys.iter().find(|(n, _)| n == f.name) {
                                             Some((_, t)) => {
                                                 let val_ty = self.infer_expr(f.value);
-                                                self.unify(*t, val_ty, f.span);
+                                                self.unify_coerce(*t, val_ty, f.span);
                                             }
                                             None => {
                                                 self.infer_expr(f.value);
@@ -6706,6 +6778,11 @@ impl<'a> InferCtx<'a> {
                     for b in bs.iter().filter(|b| b.trait_def == trait_def) { out.push(b.args.clone()); }
                 }
             }
+            SemaType::Dyn { .. } => {
+                if let Some(bs) = self.dyn_bounds(ty) {
+                    for b in bs.iter().filter(|b| b.trait_def == trait_def) { out.push(b.args.clone()); }
+                }
+            }
             SemaType::Named { args: recv, .. } => {
                 let Some(key) = self.operator_left_key(ty) else { return out; };
                 let impls = self.operator_impls.get(&(trait_def, key)).cloned().unwrap_or_default();
@@ -6781,7 +6858,9 @@ impl<'a> InferCtx<'a> {
         if l == TypeId::ERROR { return None; }
         let r = rhs.map(|r| self.peel_wrappers(r));
         let is_param = matches!(self.ctx.types.get(l), SemaType::Param(_));
+        let is_dyn   = matches!(self.ctx.types.get(l), SemaType::Dyn { .. });
         let ours = is_param
+            || is_dyn
             || self.is_user_type(l)
             || (r.is_some_and(|r| self.is_user_type(r)) && self.operator_left_key(l).is_some());
         if !ours { return None; }
@@ -6947,7 +7026,7 @@ impl<'a> InferCtx<'a> {
             SemaType::Dictionary(a, b) =>
                 self.count_ref_lifetime(a, name) + self.count_ref_lifetime(b, name),
             SemaType::Tuple(ts) => ts.iter().map(|t| self.count_ref_lifetime(*t, name)).sum(),
-            SemaType::Named { args, .. } =>
+            SemaType::Named { args, .. } | SemaType::Dyn { args, .. } =>
                 args.iter().map(|t| self.count_ref_lifetime(*t, name)).sum(),
             SemaType::Function { params, return_type, .. } =>
                 params.iter().map(|t| self.count_ref_lifetime(*t, name)).sum::<usize>()
@@ -6967,7 +7046,9 @@ impl<'a> InferCtx<'a> {
     fn can_carry_ref(&self, ty: TypeId, seen: &mut HashSet<DefId>) -> bool {
         match self.ctx.types.get(ty).clone() {
             SemaType::Reference { .. } | SemaType::Function { .. } | SemaType::Task(_)
-            | SemaType::Param(_) | SemaType::Var(_) | SemaType::Unknown => true,
+            | SemaType::Param(_) | SemaType::Var(_) | SemaType::Unknown
+            // Any implementing type, so any reference it holds.
+            | SemaType::Dyn { .. } => true,
             SemaType::List(a) | SemaType::Set(a) | SemaType::Queue(a) | SemaType::Stack(a)
             | SemaType::InlineList(a) | SemaType::Linqerizer(a) | SemaType::Slice(a)
             | SemaType::Pool(a) | SemaType::Handle(a) | SemaType::Fallible(a)
@@ -7113,7 +7194,7 @@ impl<'a> InferCtx<'a> {
                             Some(def) if self.param_is_borrow_only(def, resolved, arg_idx) => self.strip_arena_borrow(arg_ty),
                             _ => arg_ty,
                         };
-                        self.unify(*param_ty, arg_ty, arg_span);
+                        self.unify_coerce(*param_ty, arg_ty, arg_span);
                     }
                 }
                 if let Some(per_param) = callee_def.and_then(|d| self.generic_bounds.get(&d).cloned()) {
@@ -7203,7 +7284,7 @@ impl<'a> InferCtx<'a> {
                 }
             }
         }
-        self.unify(field_ty, val_ty, span);
+        self.unify_coerce(field_ty, val_ty, span);
     }
 
     fn unify(&mut self, a: TypeId, b: TypeId, span: Span) {
@@ -7318,6 +7399,23 @@ impl<'a> InferCtx<'a> {
                 self.unify(*ia, *ib, span);
             }
             self.unify(ra, rb, span);
+            return true;
+        }
+
+        // `dyn Trait<A>` against `dyn Trait<B>`: the same trait, and the
+        // arguments unify. Two different traits are different types; there is
+        // no conversion from one `dyn` type to another.
+        let dyn_pair: Option<(DefId, Vec<TypeId>, DefId, Vec<TypeId>)> = {
+            match (self.ctx.types.get(a), self.ctx.types.get(b)) {
+                (SemaType::Dyn { trait_def: ta, args: aa },
+                 SemaType::Dyn { trait_def: tb, args: ab }) =>
+                    Some((*ta, aa.clone(), *tb, ab.clone())),
+                _ => None,
+            }
+        };
+        if let Some((ta, aa, tb, ab)) = dyn_pair {
+            if ta != tb || aa.len() != ab.len() { return false; }
+            for (x, y) in aa.iter().zip(ab.iter()) { self.unify(*x, *y, span); }
             return true;
         }
 

@@ -21,7 +21,7 @@
 | Decision | Chosen |
 |---|---|
 | **D1** kind of trait | **A**, nominal traits with explicit `impl Trait for Type`. |
-| **D2** dispatch | **Both** static and dynamic. Static first (S1), `dyn Trait` in the last slice (S6). Whether `dyn` is `HIGH` only (B) or every tier (C) is settled when S6 starts. |
+| **D2** dispatch | **Both** static and dynamic. Static first (S1), `dyn Trait` in the last slice (S6). Settled at S6: every tier (C). |
 | **D3** coherence | The recommended v1 answers: one impl per trait and type, overlap is an error, an inherent method beats a trait method, two traits supplying one name is an error at an unqualified call and is resolved with `Trait.method(value)`. The orphan rule, blanket impls and C#-style explicit implementation are **deferred** until there is more context. |
 | **D4** trait contents | **All four levels**: methods and defaults, generic traits and supertraits, associated types, required fields and associated constants. Built in stages (S1, S3, and a later slice for the last level, which needs its field-layout interaction with ECS and arenas checked first). |
 | **D5** built-in protocols | The recommendation: lift the six derives into prelude traits (S2); `Display`/`Debug`, `Iterable`, operators one at a time, each its own decision (S5). |
@@ -49,7 +49,7 @@
 | **S5b** | **Built** | `Iterator<T>`: a prelude trait (`@tier(low)`, `fn next(self) T?`) that a struct or enum can implement so that `for x in value` calls `next` until it returns `null`. `Queue`, `Stack` and `Dictionary` become iterable, and a `for` over anything that cannot be walked is `TYPE-135`. See "What S5b settled" below. |
 | **S5c** | **Built** | Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` (generic in the right operand and the result, `Mul<Rhs, Out>`) and `Neg<Out>`, `BitNot<Out>`, prelude traits (`@tier(low)`) that a struct or enum implements so that `a + b`, `a *= b`, `-a` and `~a` call it. A type has one impl of an operator trait per kind of right operand, and a number or a string on the left can take a struct or an enum on the right (`2.0 * v`). A bound such as `T: Add<T, T>` is satisfied by numbers, strings and impls; an operator with no impl is `TYPE-136` and one on an unbounded type parameter is `TYPE-131`. See "What S5c settled" below. |
 | **S5d** | **Built** | `Index<Idx, Out>` and `IndexSet<Idx, Val>`, two `@tier(low)` prelude traits: a struct or enum that implements them is what `a[i]` and `a[i] = v` call (`a[i] += v` needs both), a type has one impl per kind of index, and `List`, arrays, `Dictionary` and strings satisfy them natively. The built-in indexables are typed as well (a `Dictionary` by its key, a string gives a `char`, an index has to be an `int`), what the run time cannot index is `TYPE-137`, a negative index on a write counts from the end, and tuple types now unify. See "What S5d settled" below. |
-| S6 | Planned | `dyn Trait`. As in section 4. |
+| **S6** | **Built** | `dyn Trait` and `dyn Trait<A>`: a type for a value of any type that implements the trait, written in every tier (`dyn Shape`, `&dyn Shape`, `Unique<dyn Shape>`; the tier wrapper comes from where the value is built, not from the type). The trait has to be object safe by Rust's rule (`TYPE-138`). A value becomes a `dyn` value by coercion at a typed site: a `let` with a written type, an argument, a return, an assignment, a struct or enum field, an element handed to a collection, an array literal on the right of a `let`, and `x as dyn Trait` (`TYPE-126` when the type does not implement the trait). A call, an operator, an index and a `for` on a `dyn` value go through the trait as through a bound, at the tier the trait declares. The run time needed no change. See "What S6 settled". |
 
 ### What S1a settled that the options did not
 
@@ -470,8 +470,8 @@ What reading the code established before this was decided:
   once the signatures are collected) it still prints as `<generic param #N>`; this
   is parked.
 - **For S6.** A trait with generic methods has no single vtable entry per method, so
-  it is not usable as `dyn Trait` under the rule Rust applies. Whether Ubel takes
-  that rule is decided when S6 starts.
+  it is not usable as `dyn Trait` under the rule Rust applies. S6 took that rule (see
+  "What S6 settled").
 
 ### What S3d settled
 
@@ -823,6 +823,81 @@ Decided 2026-11-05.
   missing `Dictionary` key still panics at run time. Indexing a `Pool` is `TYPE-137`, not a
   handle lookup.
 
+### What S6 settled
+
+Decided 2026-11-06, as three questions with a recommendation each.
+
+- **Every tier (D2 option C), chosen over `HIGH` only.** `dyn Trait` can be written in `HIGH`,
+  `MID` and `LOW` code. A tier wrapper is never written in a type (the tier lives in the
+  reference, `MEMORY_MODEL.md` section 2), so `dyn Shape` is written the same way everywhere and
+  sema gives it the wrapper of the place the value was built. What `LOW` code writes is what it
+  already writes for other types: `&dyn Body`, `&mut dyn Body`, `Unique<dyn Body>`,
+  `Shared<dyn Body>` and `SyncShared<dyn Body>`. A `dyn` is also a generic argument
+  (`List<dyn Shape>`, `Dictionary<string, dyn Shape>`, `Bag<T>` holding `List<dyn Convert<T>>`).
+  Cost of choosing every tier over `HIGH` only: a `dyn` value meets the escape, borrow and move
+  passes. An arena value cannot be written into a binding or field of a bare `dyn` type (`TIER-004`,
+  the same as for a concrete type, because a written type cannot name the arena), so a `MID`
+  function borrows such a value as `&dyn Body`; borrow elision applies as for any other type, and a
+  function that returns a `dyn` never gets it, because the result could hold the reference.
+- **Rust's object-safety rule, chosen over a subset of callable methods.** A trait is usable as
+  `dyn` when each of its methods takes `self`, has no generic parameters of its own and does not
+  mention `Self` in a parameter or the result (nested too, as in `List<Self>` or
+  `dyn Convert<Self>`), and the same holds for every trait it builds on. Anything else is
+  `TYPE-138` at the written `dyn` type; one diagnostic lists every offending method as
+  `Trait.method`. Cost: a trait with an associated function (`fn kind() string`) cannot be `dyn`
+  at all, because Ubel has no `where Self: Sized` to exempt one method, so the trait is split in
+  two. Of the prelude, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Clone` and `Hash` (through `Eq`)
+  are not usable as `dyn`; `Display`, `Iterator<T>`, the twelve operator traits, `Index` and
+  `IndexSet` are. The check runs once the methods of the trait are collected, so a trait declared
+  below the code that names it is still checked, and a written type is reported once however
+  often it is lowered (a function result type is lowered twice).
+- **Implicit coercion at typed sites (chosen as recommended).** A value of a type that implements
+  the trait is accepted where `dyn Trait` is expected: a `let` with a written type, a call
+  argument (functions and methods), a `return`, an assignment, a struct field, an enum payload
+  (tuple or struct form), an element handed to a collection, an array literal on the right of a
+  `let` whose written type is a list, array or slice with a `dyn` in its element type (each
+  element is coerced; the written type may be a `type` alias or `&dyn T`), and the written
+  `x as dyn Trait`. A value of an optional type is accepted for an optional `dyn`. An integer
+  literal is an `int` and needs `Show for int`, as any other `int`. The collection methods that
+  take an element are checked for a `dyn` element: `List.push` and `set`, `Queue.enqueue`,
+  `Stack.push`, `InlineList.push` and `Dictionary.set` (the value). Those methods had no argument
+  check at all, and the check applies only to a `dyn` element, so the other element types are
+  unchanged. The helper is `unify_coerce` in `sema/type_infer/dyn_trait.rs`. It looks through the
+  wrappers present on both sides, then asks for the trait as an ordinary bound obligation, so a
+  missing impl is `TYPE-126` with the argument agreement and conditional impls the bound check
+  already has. It never adds or removes a wrapper (`Circle` does not become `Unique<dyn Shape>`,
+  a `Unique<Circle>` or `&Circle` does not become a bare `dyn Shape`), never converts one `dyn`
+  type to another (`TYPE-101`, also for the same trait with other arguments) and never turns
+  `List<Circle>` into `List<dyn Shape>` (the invariance every generic has).
+- **Syntax.** `dyn Trait` and `dyn Trait<A, B>`, the trait named by a single identifier. `dyn`
+  is a contextual word: it begins a type only when an identifier follows, so it stays usable as
+  a name (`let dyn = 5`, `fn keep(dyn: int)`). `&dyn Shape` needed a guard in the lifetime-label
+  heuristic of `parse_type.rs`, which would otherwise have read `dyn` as a label. One trait per
+  `dyn`; `dyn A + B` is not parsed.
+- **A call through `dyn`** resolves against the trait and every trait it builds on, at the tier
+  the trait declares (the rule a bound follows, `TIER-005`), and the call is recorded as a trait
+  call so the run time runs the trait method. A `dyn` satisfies a bound of its trait and of its
+  supertraits, with the arguments agreeing (`describe<T: Named>(p)` with a `dyn Pet`; a
+  `dyn Convert<int>` does not satisfy `T: Convert<string>`). An operator, an index and a `for` on
+  a `dyn` of the matching trait work as through a bound (`dyn Add<V, V>`, `dyn Index<int, int>`,
+  `dyn Iterator<int>`, with the item typed); a wrong right operand is `TYPE-136` and a `dyn` with
+  no `Iterator` in a `for` is `TYPE-135`. `==` on a `dyn` is identity, as on any struct, and `<` is
+  `TYPE-118`.
+- **Run time.** No change. The interpreter already finds a method from the type name of the value
+  (`dispatch_key`), through a bound as well, so a `dyn` value is the value itself and `as dyn`
+  passes it through.
+- **`impl` and `extend` for a `dyn` type** are `TYPE-129`.
+- **Not built.** Conversion from `dyn Sub` to `dyn Super`, `dyn A + B` and a downcast to the
+  concrete type. An array literal is coerced only on the right of a `let`; as a call argument, a
+  `return` value or a struct field it is typed by its own elements first, so
+  `[Circle { .. }, Square { .. }]` there is `TYPE-101` (a binding with a written type first
+  works). A `dyn` in an arena stays the borrow form described above. The representation a
+  compiled backend needs, a pointer paired with a table of the methods of the trait, is not built
+  and the interpreter does not need it.
+- **Found on the way, not part of S6.** Indexing an `InlineList` passes sema and panics at run
+  time ("cannot index InlineList with int"), on the baseline too and for an `int` element. It is
+  parked with the other sema-accepts, run-time-panics cases.
+
 ### D7: what has to be specified before S4
 
 Two facts found while building S1a bear on the tier design.
@@ -1038,7 +1113,7 @@ exact-count tests, and the docs updated in the same bundle.
 | Later | Associated types, blanket impls, impls for `Option`-like wrappers and for `Pool` and `Handle`. The order is chosen with the project owner. | D4 ii |
 | **S4** | Tier on trait method signatures, in two deliveries, both built: S4a carries tiers to methods and checks calls on a concrete receiver; S4b puts the tier on traits. | D7 |
 | **S5** | Language-item traits, one decision and one delivery each: `Display`/`Debug`, `Iterable<T>`, operators. | D5 C |
-| **S6** | `dyn Trait` in `HIGH`. | D2 B |
+| **S6** | `dyn Trait` in every tier. | D2 C |
 
 Indicative new diagnostics for S1, codes assigned when built:
 `TraitMethodMissing`, `UnknownTraitMethod`, `TraitMethodSignatureMismatch`,

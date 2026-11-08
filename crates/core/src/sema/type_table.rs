@@ -131,6 +131,14 @@ pub enum SemaType {
     Task(TypeId),
     /// `T?` — optional / nullable.
     Optional(TypeId),
+    /// `dyn Trait<args>`: a value of any type that implements the trait, the
+    /// type known only at run time. Not a pointer by itself: the tier wrapper
+    /// (`GcRef`, `ArenaRef`, `OwnedRef`, `Unique`, ...) comes from where the
+    /// value was built, like every other type (MEMORY_MODEL.md section 2).
+    Dyn {
+        trait_def: DefId,
+        args:      Vec<TypeId>,
+    },
 
     // ── References ───────────────────────────────────────────────
     /// A GC-managed reference (HIGH tier).  No lifetime needed.
@@ -284,6 +292,9 @@ impl SemaType {
                     .or_else(|| table.get(*v).scope_ref_kind(table))
             }
             SemaType::Tuple(ts) => ts.iter().find_map(|t| table.get(*t).scope_ref_kind(table)),
+            SemaType::Dyn { args, .. } => {
+                args.iter().find_map(|t| table.get(*t).scope_ref_kind(table))
+            }
             SemaType::Named { args, .. } => {
                 args.iter().find_map(|t| table.get(*t).scope_ref_kind(table))
             }
@@ -360,6 +371,22 @@ impl SemaType {
 
             SemaType::Array { len, elem } =>
                 format!("[{}]{}", len, table.get(*elem).display(table, symbols)),
+
+            SemaType::Dyn { trait_def, args } => {
+                let name = &symbols.lookup(*trait_def).name;
+                if args.is_empty() {
+                    format!("dyn {}", name)
+                } else {
+                    format!(
+                        "dyn {}<{}>",
+                        name,
+                        args.iter()
+                            .map(|t| table.get(*t).display(table, symbols))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )
+                }
+            }
 
             SemaType::Optional(t) => format!("{}?", table.get(*t).display(table, symbols)),
             SemaType::Fallible(t) => format!("{}!", table.get(*t).display(table, symbols)),

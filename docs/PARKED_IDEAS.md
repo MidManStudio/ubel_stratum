@@ -281,7 +281,7 @@ against the real source and parts don't:
   own type vs. validated construction, not yet decided. Building
   dyn-trait dispatch semantics on a construct that isn't itself settled
   is premature; this part of the proposal is speculative, not
-  ready-to-build, however clean it sounds.
+  ready-to-build, however clean it sounds. Slice S6 settled the written form instead: `dyn Trait` is written bare in every tier and the wrapper comes from where the value is built (`docs/TRAITS_DESIGN.md`, "What S6 settled"); `FfiSpan<dyn Trait>` stays parked.
 - **C++20-concept-style lightweight bound predicates** (`where T:
   Moveable and not HighTierOnly`) — not checked against anything, pure
   syntax suggestion, no current Ubel Stratum equivalent to compare

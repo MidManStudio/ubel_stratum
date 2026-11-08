@@ -216,7 +216,7 @@ fn check_type_lifetimes<'ast>(
             check_type_lifetimes(k, declared, errors);
             check_type_lifetimes(v, declared, errors);
         }
-        TypeKind::Named { args, .. } => {
+        TypeKind::Named { args, .. } | TypeKind::Dyn { args, .. } => {
             for a in args {
                 check_type_lifetimes(a, declared, errors);
             }

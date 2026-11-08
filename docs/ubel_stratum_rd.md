@@ -498,6 +498,35 @@ first run of the new tests found three mistakes in the tests themselves (a `Uniq
 by its first index, an `L` literal suffix Ubel does not have, and a tuple literal as the first
 call argument, which does not parse).
 
+
+### `tests/dyn_trait.rs`
+
+**What it does:** Integration tests for `dyn Trait`, slice S6 (73 tests). Programs go
+through `check_source` for stage, codes, messages and suggestions and through the interpreter for
+run-time values.
+
+**Decisions:**
+- Run time: a list, a dictionary, a queue and a stack of `dyn`, an array literal coerced element by
+  element (also through a `type` alias and for `&dyn`), a field, an enum payload (tuple and struct
+  form), an optional, `as dyn`, an assignment, a parameter and a return, a method argument, an
+  untyped lambda parameter, a default method, a supertrait method, a generic trait
+  (`dyn Convert<int>`), a bound satisfied by a `dyn`, built-in types behind `dyn`, a generic struct
+  holding a `dyn` of its parameter, and `+`, `[]`, `for` and `Display` on a `dyn` of the matching
+  trait.
+- Tiers: `&dyn`, `Unique<dyn>`, `Shared<dyn>` and `SyncShared<dyn>` in `LOW`, a local borrowed as
+  `&dyn` in `LOW`, an arena value borrowed as `&dyn` in `MID`, `TIER-005` through `dyn` for a
+  `LOW` caller of a `MID` or `HIGH` method, `TIER-004` for an arena value written into a bare
+  `dyn`, and the arena borrow that is not elided for a function returning `dyn`.
+- Errors: `TYPE-138` for each way a trait is not object safe (no `self`, generic method, `Self`
+  in a parameter, in the result, nested, through a supertrait), every violation in one
+  diagnostic, the prelude traits, a trait declared after its use, one report per written type
+  (parameter, method signature and function result); `TYPE-126` at every coercion site;
+  `TYPE-101` for a missing conversion between `dyn` types, between arguments, to a type, a
+  wrapper that would be removed and a list of the wrong element type; `TYPE-122`, `TYPE-108`,
+  `TYPE-104`, `TYPE-118`, `TYPE-129`, `TYPE-135`, `TYPE-136` and `LIFETIME-001` through `dyn`.
+
+**Mutation pass:** three passes over `sema/type_infer/dyn_trait.rs`, `sema/type_infer.rs`, `sema/type_infer/impl_patterns.rs`, `sema/type_table.rs`, `rd_parser/parsers/parse_type.rs` and `errors/types/mod.rs`. The last pass ran 64 mutants and 63 were caught. The first pass left 19 survivors, each classified: seven were missing tests (a function result type reported once, an optional of a type for an optional `dyn`, a `&Circle` and a `Unique<Circle>` that must not lose their wrapper, `List.set`, `InlineList.push` and the method-argument site) and the tests were added; ten were redundant, equivalent or dead and were deleted (the equal-types early exit, the hint reset, the special cases for an unknown type and a literal variable, and four wrapper lock-step arms that no program reaches); one, the array hint, was simplified so that every part of it is exercised. Later passes found the `deep_apply` arm dead, a literal-variable guard equivalent, and two of the three impl-target arms repeating each other, and those were deleted. The one survivor of the last pass is the `dyn` arm of `count_ref_lifetime`: the match is exhaustive so the arm has to exist, and it only changes the result for a lifetime named inside the arguments of the borrowed parameter itself, which no test pins. The first run of the new tests found one mistake in the tests themselves (a square's area is `side * side`).
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in
@@ -695,7 +724,8 @@ the same text.
 ### `cursor.rs`, `parsers/parse_type.rs`
 
 **What it does:** `cursor.rs` is the token cursor every parser shares;
-`parse_type.rs` parses type expressions, generic arguments and generic
+`parse_type.rs` parses type expressions (including `dyn Trait`, a contextual word handled in the
+`Ident` arm, with a guard in the lifetime-label check), generic arguments and generic
 declaration parameters.
 
 **Decisions:**

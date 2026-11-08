@@ -1,0 +1,13 @@
+// tests/fixtures/err_dyn_object_safety_prelude_isolated.ubl
+// The prelude traits follow the same rule. `PartialEq` has `fn eq(self, other:
+// Self) bool`, so `dyn PartialEq` is not allowed; `Display`, `Iterator<T>`, the
+// operator traits and the index traits take `self` only and are.
+// Expected: sema FAIL (NotObjectSafe, TYPE-138).
+
+fn compare(a: dyn PartialEq) int {
+    return 0
+}
+
+fn main() void {
+    println(1)
+}

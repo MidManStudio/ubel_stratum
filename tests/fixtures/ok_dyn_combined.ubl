@@ -1,0 +1,142 @@
+// tests/fixtures/ok_dyn_combined.ubl
+// `dyn` beside the traits that shipped before it: a supertrait whose method is
+// called through `dyn Pet`, a generic trait (`dyn Convert<int>`), a `dyn`
+// handed to a function bounded by a trait it stands for, built-in types behind
+// `dyn` (an impl for `int` and `string`, and the native `Display`), the
+// operator traits (`+` on a `dyn Add<V, V>`), `Index` (`i[4]`), `Iterator` (a
+// `for` over a `dyn Iterator<int>`), a `type` alias of a list of `dyn`, a
+// trait declared after the code that names it as `dyn`, and a generic struct
+// holding a `dyn` of its own parameter.
+// Expected: sema OK, interpret OK.
+
+type Pets = List<dyn Pet>
+
+fn legs_of(ps: Pets) int {
+    let mut t = 0
+    for p in ps {
+        t = t + p.legs()
+    }
+    return t
+}
+
+trait Named {
+    fn name(self) string
+}
+
+trait Pet: Named {
+    fn legs(self) int
+}
+
+trait Convert<T> {
+    fn conv(self) T
+}
+
+trait Show {
+    fn show(self) string
+}
+
+struct Dog {
+    n: string,
+}
+
+struct Bird {
+    n: string,
+}
+
+impl Named for Dog { fn name(self) string { return self.n } }
+impl Pet for Dog { fn legs(self) int { return 4 } }
+impl Convert<int> for Dog { fn conv(self) int { return 40 } }
+
+impl Named for Bird { fn name(self) string { return self.n } }
+impl Pet for Bird { fn legs(self) int { return 2 } }
+impl Convert<int> for Bird { fn conv(self) int { return 20 } }
+
+impl Show for int { fn show(self) string { return "int!" } }
+impl Show for string { fn show(self) string { return "str!" } }
+
+struct Bag<T> {
+    items: List<dyn Convert<T>>,
+}
+
+struct V {
+    x: int,
+}
+
+impl Add<V, V> for V {
+    fn add(self, rhs: V) V {
+        return V { x = self.x + rhs.x }
+    }
+}
+
+impl Index<int, int> for V {
+    fn index(self, idx: int) int {
+        return self.x * 10 + idx
+    }
+}
+
+impl Display for V {
+    fn to_string(self) string {
+        return "V"
+    }
+}
+
+struct Counter {
+    n: int,
+    max: int,
+}
+
+impl Iterator<int> for Counter {
+    fn next(self) int? {
+        if self.n >= self.max {
+            return null
+        }
+        self.n = self.n + 1
+        return self.n * 10
+    }
+}
+
+fn describe<T: Named>(x: T) string {
+    return x.name()
+}
+
+fn main() void {
+    let pets: Pets = [Dog { n = "rex" }, Bird { n = "tweet" }]
+    assert(legs_of(pets) == 6, "an alias of a list of dyn, trait declared later")
+    for p in pets {
+        println(p.name())
+        println(describe(p))
+    }
+
+    let cs: List<dyn Convert<int>> = List.new()
+    cs.push(Dog { n = "a" })
+    cs.push(Bird { n = "b" })
+    let mut t = 0
+    for c in cs {
+        t = t + c.conv()
+    }
+    assert(t == 60, "a dyn of a generic trait")
+
+    let b: Bag<int> = Bag { items = List.new() }
+    b.items.push(Dog { n = "x" })
+    assert(b.items[0].conv() == 40, "a generic struct holding a dyn of its parameter")
+
+    let a: dyn Show = 5
+    let s: dyn Show = "hi"
+    assert(a.show() == "int!", "an impl for int, behind dyn")
+    assert(s.show() == "str!", "an impl for string, behind dyn")
+    let d: dyn Display = 7
+    assert(d.to_string() == "7", "native Display behind dyn")
+
+    let add: dyn Add<V, V> = V { x = 5 }
+    let sum = add + V { x = 7 }
+    assert(sum.x == 12, "an operator on a dyn of its trait")
+    let idx: dyn Index<int, int> = V { x = 3 }
+    assert(idx[4] == 34, "an index on a dyn of Index")
+    let it: dyn Iterator<int> = Counter { n = 0, max = 3 }
+    let mut seen = 0
+    for v in it {
+        seen = seen + v
+    }
+    assert(seen == 60, "a for over a dyn Iterator")
+    println("done")
+}

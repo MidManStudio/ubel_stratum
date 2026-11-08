@@ -1,0 +1,30 @@
+// tests/fixtures/err_dyn_mismatch_isolated.ubl
+// There is no conversion from one `dyn` type to another: a `dyn Shape` is not
+// a `dyn Named`, even though the circle behind it implements both.
+// Expected: sema FAIL (TypeMismatch, TYPE-101).
+
+trait Shape {
+    fn area(self) int
+}
+
+trait Named {
+    fn name(self) string
+}
+
+struct Circle {
+    r: int,
+}
+
+impl Shape for Circle {
+    fn area(self) int { return self.r }
+}
+
+impl Named for Circle {
+    fn name(self) string { return "circle" }
+}
+
+fn main() void {
+    let s: dyn Shape = Circle { r = 1 }
+    let n: dyn Named = s
+    println(n.name())
+}

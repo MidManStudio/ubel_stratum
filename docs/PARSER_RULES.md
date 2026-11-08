@@ -838,6 +838,27 @@ A method counts as writing a tier when it, its `impl`, or a tier block around th
 carries a `@tier` attribute (a tier block merges its own `@tier` into the attributes of
 the item it wraps); a written tier that differs from the trait's is `TIER-016`.
 
+
+### 5.12 `dyn Trait`, a contextual word at the start of a type
+
+`parse_type_inner` reads `dyn Trait` and `dyn Trait<A, B>` into `TypeKind::Dyn { name, args }`.
+
+- `dyn` is not a lexer keyword. It is an ordinary identifier that begins a type only when another
+  identifier follows it, checked in the `Ident` arm before the primitive names. A lone `dyn`, or
+  one followed by anything else, is the name `dyn` as before, so `let dyn = 5` and
+  `fn keep(dyn: int)` still parse. No fixture used `dyn` as a name when this was added.
+- The trait is one identifier with optional generic arguments (`try_parse_generic_args`).
+  `dyn A + B` is not parsed; the `+` is left to the caller and reported there.
+- `try_eat_lifetime_label` reads `&name Type` as a reference with a lifetime label, and `dyn`
+  followed by an identifier has that shape, so `&dyn Shape` would have become the label `dyn` and
+  the type `Shape`. The function returns `None` for `dyn` followed by an identifier. A lifetime
+  cannot be named `dyn`.
+- The exhaustive matches over `TypeKind` that needed a `Dyn` arm are in `lifetime_check.rs` (the
+  arguments are walked, so an undeclared lifetime inside them is `LIFETIME-001`) and in sema type
+  lowering (`ast_type_to_sema`); the `extend` target check reports it as unsupported. The
+  interpreter's cast function already passes a value through for an unknown target, so
+  `x as dyn Trait` needs nothing there.
+
 ## 6. LINQ Query Parsing — Removed
 
 There used to be a dedicated LINQ sub-parser here (`from x in expr where

@@ -1,0 +1,26 @@
+// tests/fixtures/err_dyn_object_safety_self_isolated.ubl
+// A method that mentions `Self` outside its receiver (`fn same(self, other:
+// Self) bool`) cannot be used as `dyn`: the other argument would have to be
+// the same concrete type as the receiver, and a `dyn` value does not say
+// which that is.
+// Expected: sema FAIL (NotObjectSafe, TYPE-138).
+
+trait Same {
+    fn same(self, other: Self) bool
+}
+
+struct P {
+    x: int,
+}
+
+impl Same for P {
+    fn same(self, other: P) bool { return self.x == other.x }
+}
+
+fn check(a: dyn Same) int {
+    return 1
+}
+
+fn main() void {
+    println(check(P { x = 1 }))
+}

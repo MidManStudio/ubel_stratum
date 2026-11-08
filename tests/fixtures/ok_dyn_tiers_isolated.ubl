@@ -1,0 +1,56 @@
+// tests/fixtures/ok_dyn_tiers_isolated.ubl
+// `dyn` in every tier. The tier wrapper is not written in a type; it comes
+// from where the value is built, so `LOW` code writes `&dyn Body` and
+// `Unique<dyn Body>`, a `MID` function borrows an arena value as `&dyn Body`,
+// and a `HIGH` function writes a bare `dyn`. A call through `dyn` is checked
+// at the tier the trait declares, the rule a bound already follows.
+// Expected: sema OK, interpret OK.
+
+@tier(low)
+trait Body {
+    fn mass(self) int
+}
+
+@tier(low) {
+    struct Rock {
+        m: int,
+    }
+
+    impl Body for Rock {
+        fn mass(self) int {
+            return self.m
+        }
+    }
+}
+
+@tier(low)
+fn weigh(b: &dyn Body) int {
+    return b.mass()
+}
+
+@tier(low)
+fn own(b: Unique<dyn Body>) int {
+    return b.mass()
+}
+
+@tier(low)
+fn low_unique() int {
+    let u: Unique<dyn Body> = Unique.new(Rock { m = 2 })
+    return own(u)
+}
+
+@tier(mid)
+fn in_arena() int {
+    with arena(256) {
+        let r = Rock { m = 3 }
+        return weigh(&r)
+    }
+}
+
+fn main() void {
+    let r = Rock { m = 7 }
+    assert(weigh(&r) == 7, "a borrowed dyn in LOW")
+    assert(low_unique() == 2, "a Unique dyn in LOW")
+    assert(in_arena() == 3, "an arena value borrowed as dyn in MID")
+    println("done")
+}

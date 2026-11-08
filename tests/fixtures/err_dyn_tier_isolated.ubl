@@ -1,0 +1,27 @@
+// tests/fixtures/err_dyn_tier_isolated.ubl
+// A call through `dyn` is checked at the tier the trait declares, as a call
+// through a bound is. `Shape`'s methods are HIGH, so a LOW function cannot call
+// `area` on a `&dyn Shape`.
+// Expected: sema FAIL (TIER-005).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Circle {
+    r: int,
+}
+
+impl Shape for Circle {
+    fn area(self) int { return self.r }
+}
+
+@tier(low)
+fn peek(s: &dyn Shape) int {
+    return s.area()
+}
+
+fn main() void {
+    let c = Circle { r = 1 }
+    println(peek(&c))
+}

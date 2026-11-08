@@ -151,8 +151,12 @@ verified safe.
   compile error instead of a run-time panic. A struct or enum can also implement `Index` and
   `IndexSet`, so `a[i]`, `a[i] = v` and `a[i] += v` call it (one impl per kind of index, and a
   `List` or a `Dictionary` satisfies the same bounds); `List`, `Dictionary`, string and tuple
-  indexing is typed, and indexing what the run time cannot index is a compile error. Next:
-  associated types, and `dyn Trait`
+  indexing is typed, and indexing what the run time cannot index is a compile error. A `dyn Trait`
+  type (`dyn Shape`, `&dyn Shape`, `Unique<dyn Shape>`) holds a value of any type that implements
+  the trait, in every tier: a list can hold a circle and a square, a call on an element runs its own
+  impl, a trait that cannot work that way (a method with no `self`, a generic method, or `Self` in a
+  signature) is a compile error, and a value whose type does not implement the trait is a compile
+  error instead of a run-time panic. Next: associated types
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to

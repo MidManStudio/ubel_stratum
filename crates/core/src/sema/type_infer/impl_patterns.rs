@@ -150,7 +150,7 @@ impl<'a> InferCtx<'a> {
     }
 
     /// The types directly inside `ty`.
-    fn type_children(&self, ty: TypeId) -> Vec<TypeId> {
+    pub(super) fn type_children(&self, ty: TypeId) -> Vec<TypeId> {
         match self.ctx.types.get(ty) {
             SemaType::List(e) | SemaType::Set(e) | SemaType::Queue(e) | SemaType::Stack(e)
             | SemaType::InlineList(e) | SemaType::Linqerizer(e) | SemaType::Slice(e)
@@ -159,6 +159,7 @@ impl<'a> InferCtx<'a> {
             | SemaType::Unique(e) | SemaType::Shared(e) | SemaType::SyncShared(e) => vec![*e],
             SemaType::Dictionary(k, v) => vec![*k, *v],
             SemaType::Tuple(ts) => ts.clone(),
+            SemaType::Dyn { args, .. } => args.clone(),
             SemaType::Array { elem, .. } => vec![*elem],
             SemaType::ArenaRef { inner, .. } | SemaType::PoolRef { inner, .. }
             | SemaType::OwnedRef { inner, .. } | SemaType::Reference { inner, .. } => vec![*inner],
@@ -170,6 +171,13 @@ impl<'a> InferCtx<'a> {
             SemaType::Named { args, .. } => args.clone(),
             _ => Vec::new(),
         }
+    }
+
+    /// Whether `ty` mentions the type parameter numbered `idx` (a trait's
+    /// abstract `Self`, for the object-safety rule).
+    pub(super) fn mentions_param_index(&self, ty: TypeId, idx: usize) -> bool {
+        matches!(self.ctx.types.get(ty), SemaType::Param(i) if *i == idx)
+            || self.type_children(ty).into_iter().any(|c| self.mentions_param_index(c, idx))
     }
 
     fn mentions_param(&self, ty: TypeId) -> bool {

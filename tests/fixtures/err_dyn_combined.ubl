@@ -1,0 +1,20 @@
+// tests/fixtures/err_dyn_combined.ubl
+// `dyn` beside the operator traits: `a + 3` on a `dyn Add<V, V>` has no impl
+// for an `int` right operand, the same TYPE-136 a struct gets.
+// Expected: sema FAIL (OperatorNotImplemented, TYPE-136).
+
+struct V {
+    x: int,
+}
+
+impl Add<V, V> for V {
+    fn add(self, rhs: V) V {
+        return V { x = self.x + rhs.x }
+    }
+}
+
+fn main() void {
+    let a: dyn Add<V, V> = V { x = 5 }
+    let s = a + 3
+    println(1)
+}

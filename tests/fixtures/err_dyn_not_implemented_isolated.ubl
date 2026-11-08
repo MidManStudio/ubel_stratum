@@ -1,0 +1,30 @@
+// tests/fixtures/err_dyn_not_implemented_isolated.ubl
+// An element handed to a `List<dyn Shape>` has to implement `Shape`. Before
+// this, a collection method's arguments were not checked, so `Rock` would have
+// been accepted and the later `area()` call would have panicked at run time.
+// Expected: sema FAIL (UnsatisfiedBound, TYPE-126).
+
+trait Shape {
+    fn area(self) int
+}
+
+struct Circle {
+    r: int,
+}
+
+struct Rock {
+    w: int,
+}
+
+impl Shape for Circle {
+    fn area(self) int { return self.r }
+}
+
+fn main() void {
+    let shapes: List<dyn Shape> = List.new()
+    shapes.push(Circle { r = 1 })
+    shapes.push(Rock { w = 2 })
+    for s in shapes {
+        println(s.area())
+    }
+}

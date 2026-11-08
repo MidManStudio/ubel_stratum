@@ -181,6 +181,18 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 let name = name.clone();
                 self.cursor.advance();
 
+                // `dyn Trait` and `dyn Trait<A>`. Contextual: `dyn` is the
+                // keyword only when an identifier follows it, so it is still
+                // an ordinary name everywhere else (docs/PARSER_RULES.md).
+                if name == "dyn" {
+                    if let TokenType::Ident(trait_name) = self.cursor.peek().clone() {
+                        self.cursor.advance();
+                        let trait_name = self.intern(&trait_name);
+                        let args = self.try_parse_generic_args();
+                        return Some(TypeKind::Dyn { name: trait_name, args });
+                    }
+                }
+
                 // Check primitive types first (match on string)
                 if let Some(prim) = Self::try_primitive(&name) {
                     return Some(prim);
@@ -529,6 +541,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         // the current Ident is a lifetime label.
         if let TokenType::Ident(name) = self.cursor.peek() {
             let name = name.clone();
+            // `&dyn Trait`: `dyn` starts the type, it is not a label.
+            if name == "dyn" && matches!(self.cursor.peek_nth(1), TokenType::Ident(_)) {
+                return None;
+            }
             let next = self.cursor.peek_nth(1);
             if self.token_can_start_type(next) {
                 self.cursor.advance();

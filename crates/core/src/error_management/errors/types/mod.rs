@@ -322,6 +322,16 @@ pub enum TypeError {
         span:      Span,
     },
 
+    /// `dyn Trait` written for a trait that cannot be used that way: a method
+    /// with no `self` receiver, with generic parameters of its own, or that
+    /// mentions `Self` outside the receiver, in the trait or in one it builds
+    /// on. `reasons` has one entry per offending method.
+    NotObjectSafe {
+        trait_name: String,
+        reasons:    Vec<String>,
+        span:       Span,
+    },
+
     OperatorNotImplemented {
         op:         &'static str,
         trait_name: &'static str,
@@ -487,6 +497,7 @@ impl TypeError {
             TypeError::NotIterable                 { span, .. } => *span,
             TypeError::OperatorNotImplemented      { span, .. } => *span,
             TypeError::NotIndexable                { span, .. } => *span,
+            TypeError::NotObjectSafe               { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -595,6 +606,9 @@ impl TypeError {
 
             TypeError::NotIndexable { type_name, write: true, .. } =>
                 format!("cannot assign through an index of a value of type `{}`", type_name),
+
+            TypeError::NotObjectSafe { trait_name, reasons, .. } =>
+                format!("the trait `{}` cannot be used as `dyn {}`: {}", trait_name, trait_name, reasons.join("; ")),
 
             TypeError::OperatorNotImplemented { trait_name: "Index", lhs, rhs: Some(rhs), .. } =>
                 format!("cannot index `{}` with `{}`: no `Index<Idx, Out>` impl for this index", lhs, rhs),
@@ -759,6 +773,9 @@ impl TypeError {
             TypeError::NotIndexable { write: true, .. } =>
                 Some("a `List`, an array, a `Dictionary`, and a struct or enum that implements `IndexSet<Idx, Val>` can be assigned through an index; a `string` and a tuple are read only".to_string()),
 
+            TypeError::NotObjectSafe { .. } =>
+                Some("a trait can be `dyn` when every method takes `self`, has no generic parameters of its own and does not mention `Self` outside the receiver; move the other methods to a separate trait".to_string()),
+
             TypeError::OperatorNotImplemented { trait_name: "Index", lhs, rhs: Some(rhs), available, .. } if available.is_empty() =>
                 Some(format!("add `impl Index<{}, Out> for {} {{ fn index(self, idx: {}) Out {{ .. }} }}`", rhs, lhs, rhs)),
 
@@ -849,6 +866,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::NotIterable { .. }                   => "TYPE-135",
             TypeError::OperatorNotImplemented { .. }        => "TYPE-136",
             TypeError::NotIndexable { .. }                  => "TYPE-137",
+            TypeError::NotObjectSafe { .. }                 => "TYPE-138",
         }
     }
     fn span(&self) -> Span { self.span() }

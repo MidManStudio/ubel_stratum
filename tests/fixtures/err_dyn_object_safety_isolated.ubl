@@ -1,0 +1,29 @@
+// tests/fixtures/err_dyn_object_safety_isolated.ubl
+// A trait with a method that has no `self` receiver (`fn kind() string`)
+// cannot be used as `dyn`: a call on a `dyn` value picks its impl from the
+// value, and `kind()` has no value to pick from. Rust's rule, so the trait is
+// split into one with the methods that take `self`. The diagnostic names the
+// method.
+// Expected: sema FAIL (NotObjectSafe, TYPE-138).
+
+trait Animal {
+    fn kind() string
+    fn legs(self) int
+}
+
+struct Dog {
+    n: int,
+}
+
+impl Animal for Dog {
+    fn kind() string { return "dog" }
+    fn legs(self) int { return 4 }
+}
+
+fn describe(a: dyn Animal) int {
+    return a.legs()
+}
+
+fn main() void {
+    println(describe(Dog { n = 1 }))
+}

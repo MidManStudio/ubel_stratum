@@ -84,6 +84,15 @@ pub enum TypeKind<'ast> {
     /// `T?` — an optional / nullable value
     Optional(&'ast Type<'ast>),
 
+    /// `dyn Trait` or `dyn Trait<A, B>`: a value of any type that implements
+    /// the trait, the type being known only at run time. `dyn` is a
+    /// contextual word, meaningful only at the start of a type, so it stays
+    /// usable as a name elsewhere (docs/TRAITS_DESIGN.md, "What S6 settled").
+    Dyn {
+        name: &'ast str,
+        args: &'ast [&'ast Type<'ast>],
+    },
+
     // ── Function type ─────────────────────────────────────────────
     /// `fn(A, B) C` or `fn(A, B) C!`
     Function(FunctionType<'ast>),

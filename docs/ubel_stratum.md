@@ -1772,3 +1772,26 @@ accepted, `ok_index_builtin_isolated` is accepted and panics at run time on the 
 (index 18446744073709551615), and the other four fail in sema on the unknown index trait
 (`TYPE-122`). The mutation pass is described under `tests/index.rs` in `docs/ubel_stratum_rd.md`.
 The added lines were checked for em dashes and first or second person.
+
+A twenty-ninth delivery (traits slice S6) added `dyn Trait`. `dyn Shape` and `dyn Shape<A>` are
+types for a value of any type that implements the trait, written in every tier; a tier wrapper is
+never written in a type, so `&dyn Shape` and `Unique<dyn Shape>` are what `LOW` code writes, and a
+plain `dyn Shape` is wrapped by where the value is built. `TypeKind::Dyn` and `SemaType::Dyn` are
+new. `dyn` is a contextual word (`parse_type.rs`, with a guard in `try_eat_lifetime_label` so that
+`&dyn Shape` is not read as a lifetime label). The work is in the new
+`sema/type_infer/dyn_trait.rs`: the object-safety check (`TYPE-138`, Rust's rule, run once the
+methods of the trait are collected), `unify_coerce` (implicit coercion at typed sites, which never
+changes a wrapper) and the bound, method, operator, index and `for` handling for a `dyn` receiver
+(`bound_status`, `type_implements`, `call_through_bounds`, `operator_site`, `index_site` and the
+`for` check each gained a `dyn` arm). The collection methods that take an element
+(`List.push` and `set`, `Queue.enqueue`, `Stack.push`, `InlineList.push`, `Dictionary.set`) check
+a `dyn` element against the trait, which they did for no element type before. `type_infer.rs`,
+`type_table.rs`, `impl_patterns.rs`, `lifetime_check.rs`, `ast/types.rs`, `parse_type.rs` and
+`errors/types/mod.rs` were touched; the interpreter was not. `crates/rd_parser/tests/dyn_trait.rs`
+has 73 tests and ten fixtures were added (`ok_dyn_isolated`, `ok_dyn_combined`,
+`ok_dyn_tiers_isolated` and seven `err_dyn_*`). Verification: the workspace has 1259
+tests in 35 suites and none fails; all 402 `.ubl` files that existed give the same stage,
+diagnostics, exit code and output as a binary built from live before the change; the last mutation pass over the new rules caught 63 of 64 mutants (one `count_ref_lifetime` arm stays unpinned), and every survivor of the earlier passes was given a test or deleted as redundant, equivalent or dead.
+The docs `TRAITS_DESIGN.md` ("What S6 settled"), `TRAITS_TIERS_SPEC.md`, `DIAGNOSTICS_RULES.md`
+(`TYPE-138` and the codes `dyn` reaches), `PARSER_RULES.md` (section 5.12), `PARKED_IDEAS.md` and
+`ubel_stratum_rd.md` were updated with it. The added lines were checked for em dashes and first or second person.

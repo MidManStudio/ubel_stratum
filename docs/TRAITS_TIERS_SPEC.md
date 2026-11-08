@@ -31,7 +31,7 @@ Out of scope, and why:
 
 | Item | Where it goes |
 |---|---|
-| `dyn Trait` | S6. Calls through `dyn` use the declared tier, the same rule as a call through a bound. |
+| `dyn Trait` | S6 (built). Calls through `dyn` use the declared tier, the same rule as a call through a bound. |
 | Operators, `for-in`, `Display` | S5. Each is an implicit method call; S5 reuses the lookup that S4 adds. |
 | Associated types | Deferred until S5 `Iterable` needs them. |
 | Impls for `Pool` and `Handle` | Reported as `TYPE-129` until a written `Pool<T>` or `Handle<T>` is a real type. |
@@ -244,7 +244,7 @@ Declared tier means the tier the trait gives the method.
 | higher | error | error | accepted, with a check per instantiation |
 
 - **A. Exact match.** One tier per trait method. A concrete call and a call
-  through a bound always see the same tier, and `dyn Trait` in S6 needs no
+  through a bound always see the same tier, and `dyn Trait` in S6 needed no
   extra rule. Cost: a type that could do the work at `LOW` cannot offer it to
   `LOW` callers through a `MID` trait method.
 - **B. At or below.** Sound with the existing rule, because a lower impl can
@@ -537,7 +537,7 @@ and no other `.ubl` file differs from the S4a result.
 
 ## 11. Deferred
 
-`dyn Trait` (S6); operators, `for-in` and `Display` (S5, which reuse the
+Operators, `for-in` and `Display` (S5, which reuse the
 call-site check of section 4.4); associated types; impls for `Pool` and
 `Handle`; tier-polymorphic traits; per-instantiation checking; a tier on a
 `where` clause.
