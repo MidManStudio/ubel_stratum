@@ -1,0 +1,8 @@
+// Not supported yet: `replace` with an argument that is not a string. Sema accepts it (it checks only the
+// number of arguments); the interpreter panics ("replace() arguments must be strings") when the call runs.
+// The emitter refuses at compile time instead.
+// expect-refusal: with an argument that is not a string (the interpreter panics there)
+fn main() void {
+    let s = "a1b"
+    println(s.replace(1, "x"))
+}

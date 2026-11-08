@@ -456,6 +456,12 @@ impl<'a> Emitter<'a> {
             out.push_str("declare i32  @ubel_str_contains(ptr, ptr)\n");
             out.push_str("declare i32  @ubel_str_starts_with(ptr, ptr)\n");
             out.push_str("declare i32  @ubel_str_ends_with(ptr, ptr)\n");
+            out.push_str("declare ptr  @ubel_str_to_upper(ptr)\n");
+            out.push_str("declare ptr  @ubel_str_to_lower(ptr)\n");
+            out.push_str("declare ptr  @ubel_str_trim(ptr)\n");
+            out.push_str("declare ptr  @ubel_str_trim_start(ptr)\n");
+            out.push_str("declare ptr  @ubel_str_trim_end(ptr)\n");
+            out.push_str("declare ptr  @ubel_str_replace(ptr, ptr, ptr)\n");
             out.push_str("declare i64  @ubel_i64_len(i64)\n");
             out.push_str("declare void @ubel_i64_write(ptr, i64)\n");
             out.push_str("declare void @ubel_put(ptr, ptr, i64)\n");
@@ -2285,31 +2291,54 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// A method call on a string (docs/LLVM_POC.md, "Strings"): the ones that read the string and allocate
-    /// nothing, so they carry no borrow and are legal in every tier. `len` is the byte length the object
-    /// stores (the interpreter's `len` is bytes too); `is_empty` is `len == 0`; `contains`, `starts_with`
-    /// and `ends_with` take one string and call a runtime helper. The receiver is evaluated first, then the
-    /// argument. A receiver that is not a string keeps the old refusal (`h.run(4)` on a struct field).
+    /// A method call on a string (docs/LLVM_POC.md, "Strings"). Two groups. The ones that read the string and
+    /// allocate nothing, so they carry no borrow and are legal in every tier: `len` is the byte length the
+    /// object stores (the interpreter's `len` is bytes too), `is_empty` is `len == 0`, `contains`,
+    /// `starts_with` and `ends_with` take one string and call a runtime helper. And the ones that build a new
+    /// string: `to_upper`, `to_lower`, `trim`, `trim_start`, `trim_end` and `replace` (two strings) call a
+    /// runtime helper that returns a new GC string, a copy even when nothing changes. Where the result lives is
+    /// the same rule as string `+`: always the GC heap, refused in `@tier(low)` and in `@tier(mid)` outside
+    /// `with arena`. Sema types such a result with the receiver's arena tag, so on an arena receiver the
+    /// result is stricter than it needs to be, never looser. The receiver is evaluated first, then the
+    /// arguments. A receiver that is not a string keeps the old refusal (`h.run(4)` on a struct field).
     fn str_method(&mut self, e: &Expr, callee: &Expr, target: &Expr, field: &str, args: &[Arg]) -> R<Val> {
         let recv = self.expr(target)?;
         if recv.ty != Ty::Str {
             return unsupported(callee.span, "calling anything but a named function");
         }
-        let helper = match field {
-            "len" | "is_empty" => None,
-            "contains" => Some("ubel_str_contains"),
-            "starts_with" => Some("ubel_str_starts_with"),
-            "ends_with" => Some("ubel_str_ends_with"),
-            "to_upper" | "to_lower" | "trim" | "trim_start" | "trim_end" | "replace" => {
-                return unsupported(callee.span, format!("the string method `{field}` (it builds a new string; only `len`, `is_empty`, `contains`, `starts_with` and `ends_with` so far)"));
-            }
+        // (runtime helper, number of string arguments, builds a new string)
+        let (helper, want, builds) = match field {
+            "len" | "is_empty" => (None, 0, false),
+            "contains" => (Some("ubel_str_contains"), 1, false),
+            "starts_with" => (Some("ubel_str_starts_with"), 1, false),
+            "ends_with" => (Some("ubel_str_ends_with"), 1, false),
+            "to_upper" => (Some("ubel_str_to_upper"), 0, true),
+            "to_lower" => (Some("ubel_str_to_lower"), 0, true),
+            "trim" => (Some("ubel_str_trim"), 0, true),
+            "trim_start" => (Some("ubel_str_trim_start"), 0, true),
+            "trim_end" => (Some("ubel_str_trim_end"), 0, true),
+            "replace" => (Some("ubel_str_replace"), 2, true),
             _ => {
-                return unsupported(callee.span, format!("the method `{field}` on a string (only `len`, `is_empty`, `contains`, `starts_with` and `ends_with` so far)"));
+                return unsupported(
+                    callee.span,
+                    format!("the method `{field}` on a string (only `len`, `is_empty`, `contains`, `starts_with`, `ends_with`, `to_upper`, `to_lower`, `trim`, `trim_start`, `trim_end` and `replace` so far)"),
+                );
             }
         };
-        let want = if helper.is_some() { 1 } else { 0 };
         if args.len() != want {
             return Err(CompileError::at(e.span, "wrong number of arguments"));
+        }
+        if builds {
+            let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+            match self.cur_tier {
+                TierAnnotation::Low => {
+                    return unsupported(callee.span, format!("the string method `{field}` in `@tier(low)` (it allocates in the GC heap, which LOW must not)"));
+                }
+                TierAnnotation::Mid if !in_arena => {
+                    return unsupported(callee.span, format!("the string method `{field}` in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"));
+                }
+                _ => {}
+            }
         }
         self.uses_str = true;
         let Some(helper) = helper else {
@@ -2322,19 +2351,27 @@ impl<'a> Emitter<'a> {
             self.inst(&format!("{t} = icmp eq i64 {n}, 0"));
             return Ok(Val { v: t, ty: Ty::I1 });
         };
-        let ae = match args[0].kind {
-            ArgKind::Positional(x) => x,
-            ArgKind::Named { .. } => return unsupported(args[0].span, "named arguments"),
-        };
-        let arg = self.expr(ae)?;
-        if arg.ty != Ty::Str {
-            return unsupported(
-                ae.span,
-                format!("`{field}` with an argument that is not a string (the interpreter answers false there)"),
-            );
+        let mut ops: Vec<String> = vec![format!("ptr {}", recv.v)];
+        for a in args {
+            let ae = match a.kind {
+                ArgKind::Positional(x) => x,
+                ArgKind::Named { .. } => return unsupported(a.span, "named arguments"),
+            };
+            let arg = self.expr(ae)?;
+            if arg.ty != Ty::Str {
+                let what = if builds { "the interpreter panics there" } else { "the interpreter answers false there" };
+                return unsupported(ae.span, format!("`{field}` with an argument that is not a string ({what})"));
+            }
+            ops.push(format!("ptr {}", arg.v));
+        }
+        let ops = ops.join(", ");
+        if builds {
+            let r = self.fresh();
+            self.inst(&format!("{r} = call ptr @{helper}({ops})"));
+            return Ok(Val { v: r, ty: Ty::Str });
         }
         let c = self.fresh();
-        self.inst(&format!("{c} = call i32 @{helper}(ptr {}, ptr {})", recv.v, arg.v));
+        self.inst(&format!("{c} = call i32 @{helper}({ops})"));
         let t = self.fresh();
         self.inst(&format!("{t} = icmp ne i32 {c}, 0"));
         Ok(Val { v: t, ty: Ty::I1 })

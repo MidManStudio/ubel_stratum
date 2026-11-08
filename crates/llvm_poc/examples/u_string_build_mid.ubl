@@ -1,0 +1,11 @@
+// Not supported yet: a string method that builds a new string in a `@tier(mid)` function outside
+// `with arena`. Where such a result should live there is not decided (string `+` is refused too).
+// expect-refusal: outside `with arena` (where it allocates is not decided yet)
+@tier(mid)
+fn tidy(s: string) int {
+    return s.trim().len()
+}
+
+fn main() void {
+    println(tidy("  hi  "))
+}

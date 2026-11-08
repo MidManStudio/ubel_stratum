@@ -24,6 +24,8 @@
 #include <sys/mman.h>
 #include <time.h>
 
+#include "ubel_unicode.h"
+
 #ifndef MAP_ANONYMOUS
 #define MAP_ANONYMOUS MAP_ANON
 #endif
@@ -91,6 +93,281 @@ int32_t ubel_str_ends_with(const void *s, const void *t) {
     int64_t n = *(const int64_t *)s, m = *(const int64_t *)t;
     if (m > n) return 0;
     return memcmp((const char *)s + 8 + (n - m), (const char *)t + 8, (size_t)m) == 0;
+}
+
+/* ---- String methods that build a new string (docs/LLVM_POC.md, "String methods that build a string").
+ *
+ * to_upper, to_lower, trim, trim_start, trim_end and replace are the interpreter's: Rust's str::to_uppercase,
+ * to_lowercase, trim, trim_start, trim_end and replace. Every result is a new GC string (mask 0); the
+ * arguments are only read, so the collector running inside the allocation cannot free them (they are reachable
+ * from the caller's frame, which the conservative scan covers). The case and whitespace tables are generated
+ * from Rust's standard library (scripts/gen_unicode.rs, ubel_unicode.h). A string is valid UTF-8, so decoding
+ * never fails; a stray byte is passed through unchanged rather than trusted. */
+
+#define BAD_BYTE 0x200000u /* a byte that is not part of a valid sequence travels as BAD_BYTE | byte */
+
+static uint32_t u8_next(const unsigned char *p, const unsigned char *end, int *len) {
+    unsigned c = p[0];
+    if (c < 0x80) {
+        *len = 1;
+        return c;
+    }
+    if (c >= 0xC2 && c <= 0xDF && p + 1 < end && (p[1] & 0xC0) == 0x80) {
+        *len = 2;
+        return ((c & 0x1Fu) << 6) | (p[1] & 0x3Fu);
+    }
+    if (c >= 0xE0 && c <= 0xEF && p + 2 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+        *len = 3;
+        return ((c & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+    }
+    if (c >= 0xF0 && c <= 0xF4 && p + 3 < end && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+        *len = 4;
+        return ((c & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+    }
+    *len = 1;
+    return BAD_BYTE | c;
+}
+
+static int u8_size(uint32_t cp) {
+    return cp >= BAD_BYTE || cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+}
+
+static int u8_put(unsigned char *o, uint32_t cp) {
+    if (cp >= BAD_BYTE) {
+        o[0] = (unsigned char)cp;
+        return 1;
+    }
+    if (cp < 0x80) {
+        o[0] = (unsigned char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        o[0] = (unsigned char)(0xC0 | (cp >> 6));
+        o[1] = (unsigned char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        o[0] = (unsigned char)(0xE0 | (cp >> 12));
+        o[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        o[2] = (unsigned char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    o[0] = (unsigned char)(0xF0 | (cp >> 18));
+    o[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+    o[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+    o[3] = (unsigned char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+static int in_ranges(const uint32_t (*r)[2], size_t n, uint32_t c) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (c < r[mid][0]) hi = mid;
+        else if (c > r[mid][1]) lo = mid + 1;
+        else return 1;
+    }
+    return 0;
+}
+
+/* The mapping of `c` (1 to 3 code points) into out[]; returns how many. */
+static int case_map(const uint32_t *cps, const uint32_t *vals, size_t n, uint32_t c, uint32_t out[3]) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (cps[mid] < c) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo < n && cps[lo] == c) {
+        uint32_t v = vals[lo];
+        if (v & 0x80000000u) {
+            int len = (int)((v >> 24) & 3u);
+            uint32_t off = v & 0xFFFFFFu;
+            for (int i = 0; i < len; i++) out[i] = ubel_case_pool[off + (uint32_t)i];
+            return len;
+        }
+        out[0] = v;
+        return 1;
+    }
+    out[0] = c;
+    return 1;
+}
+
+/* Rust's final-sigma context: skip Case_Ignorable characters, then ask whether the next one is cased. */
+static int ignorable_then_cased_before(const unsigned char *s, const unsigned char *p) {
+    while (p > s) {
+        const unsigned char *q = p - 1;
+        while (q > s && (*q & 0xC0) == 0x80) q--;
+        int len;
+        uint32_t cp = u8_next(q, p, &len);
+        if (len != (int)(p - q)) return 0; /* not a whole character: not cased */
+        if (in_ranges(ubel_ign, UBEL_IGN_N, cp)) {
+            p = q;
+            continue;
+        }
+        return in_ranges(ubel_cased, UBEL_CASED_N, cp);
+    }
+    return 0;
+}
+
+static int ignorable_then_cased_after(const unsigned char *p, const unsigned char *end) {
+    while (p < end) {
+        int len;
+        uint32_t cp = u8_next(p, end, &len);
+        if (in_ranges(ubel_ign, UBEL_IGN_N, cp)) {
+            p += len;
+            continue;
+        }
+        return in_ranges(ubel_cased, UBEL_CASED_N, cp);
+    }
+    return 0;
+}
+
+static void *new_string(int64_t len) {
+    unsigned char *p = (unsigned char *)ubel_gc_alloc_noscan((uint64_t)len + 8);
+    memcpy(p, &len, 8);
+    return p;
+}
+
+/* One pass over the string; with out == NULL it only counts. Returns the length of the result. */
+static int64_t case_pass(const unsigned char *s, const unsigned char *end, int upper, unsigned char *out) {
+    int64_t total = 0;
+    const unsigned char *p = s;
+    while (p < end) {
+        int len;
+        uint32_t cp = u8_next(p, end, &len);
+        uint32_t m[3];
+        int k;
+        if (cp < 0x80) {
+            m[0] = upper ? (cp >= 'a' && cp <= 'z' ? cp - 32 : cp) : (cp >= 'A' && cp <= 'Z' ? cp + 32 : cp);
+            k = 1;
+        } else if (!upper && cp == 0x3A3) {
+            /* capital sigma: final sigma at the end of a word, else sigma (Rust's only contextual mapping) */
+            int final = ignorable_then_cased_before(s, p) && !ignorable_then_cased_after(p + len, end);
+            m[0] = final ? 0x3C2 : 0x3C3;
+            k = 1;
+        } else if (upper) {
+            k = case_map(ubel_upper_cp, ubel_upper_val, UBEL_UPPER_N, cp, m);
+        } else {
+            k = case_map(ubel_lower_cp, ubel_lower_val, UBEL_LOWER_N, cp, m);
+        }
+        for (int i = 0; i < k; i++) {
+            if (out) total += u8_put(out + total, m[i]);
+            else total += u8_size(m[i]);
+        }
+        p += len;
+    }
+    return total;
+}
+
+static void *str_case(const void *sv, int upper) {
+    int64_t n = *(const int64_t *)sv;
+    const unsigned char *s = (const unsigned char *)sv + 8;
+    int64_t size = case_pass(s, s + n, upper, NULL);
+    unsigned char *r = (unsigned char *)new_string(size);
+    case_pass(s, s + n, upper, r + 8);
+    return r;
+}
+
+void *ubel_str_to_upper(const void *s) { return str_case(s, 1); }
+void *ubel_str_to_lower(const void *s) { return str_case(s, 0); }
+
+static void *str_copy_range(const unsigned char *from, const unsigned char *to) {
+    unsigned char *r = (unsigned char *)new_string((int64_t)(to - from));
+    memcpy(r + 8, from, (size_t)(to - from));
+    return r;
+}
+
+static const unsigned char *trim_front(const unsigned char *s, const unsigned char *end) {
+    while (s < end) {
+        int len;
+        uint32_t cp = u8_next(s, end, &len);
+        if (!in_ranges(ubel_ws, UBEL_WS_N, cp)) break;
+        s += len;
+    }
+    return s;
+}
+
+static const unsigned char *trim_back(const unsigned char *s, const unsigned char *end) {
+    while (end > s) {
+        const unsigned char *q = end - 1;
+        while (q > s && (*q & 0xC0) == 0x80) q--;
+        int len;
+        uint32_t cp = u8_next(q, end, &len);
+        if (len != (int)(end - q) || !in_ranges(ubel_ws, UBEL_WS_N, cp)) break;
+        end = q;
+    }
+    return end;
+}
+
+void *ubel_str_trim(const void *sv) {
+    int64_t n = *(const int64_t *)sv;
+    const unsigned char *s = (const unsigned char *)sv + 8, *end = s + n;
+    const unsigned char *a = trim_front(s, end);
+    return str_copy_range(a, trim_back(a, end));
+}
+
+void *ubel_str_trim_start(const void *sv) {
+    int64_t n = *(const int64_t *)sv;
+    const unsigned char *s = (const unsigned char *)sv + 8, *end = s + n;
+    return str_copy_range(trim_front(s, end), end);
+}
+
+void *ubel_str_trim_end(const void *sv) {
+    int64_t n = *(const int64_t *)sv;
+    const unsigned char *s = (const unsigned char *)sv + 8, *end = s + n;
+    return str_copy_range(s, trim_back(s, end));
+}
+
+/* Rust's str::replace: every non-overlapping match, scanning left to right. An empty needle matches at every
+ * character boundary, including the start and the end ("abc".replace("", "-") is "-a-b-c-"). */
+void *ubel_str_replace(const void *sv, const void *fv, const void *tv) {
+    int64_t n = *(const int64_t *)sv, m = *(const int64_t *)fv, k = *(const int64_t *)tv;
+    const unsigned char *h = (const unsigned char *)sv + 8, *f = (const unsigned char *)fv + 8, *t = (const unsigned char *)tv + 8;
+    int64_t matches = 0;
+    if (m == 0) {
+        for (const unsigned char *p = h; p < h + n;) {
+            int len;
+            u8_next(p, h + n, &len);
+            matches++;
+            p += len;
+        }
+        matches++; /* and one more at the end */
+    } else {
+        for (int64_t i = 0; i + m <= n;) {
+            if (h[i] == f[0] && memcmp(h + i, f, (size_t)m) == 0) {
+                matches++;
+                i += m;
+            } else {
+                i++;
+            }
+        }
+    }
+    unsigned char *r = (unsigned char *)new_string(n + matches * (k - m));
+    unsigned char *o = r + 8;
+    if (m == 0) {
+        for (const unsigned char *p = h;;) {
+            memcpy(o, t, (size_t)k);
+            o += k;
+            if (p >= h + n) break;
+            int len;
+            u8_next(p, h + n, &len);
+            memcpy(o, p, (size_t)len);
+            o += len;
+            p += len;
+        }
+    } else {
+        for (int64_t i = 0; i < n;) {
+            if (i + m <= n && h[i] == f[0] && memcmp(h + i, f, (size_t)m) == 0) {
+                memcpy(o, t, (size_t)k);
+                o += k;
+                i += m;
+            } else {
+                *o++ = h[i++];
+            }
+        }
+    }
+    return r;
 }
 
 /* Number of characters `v` takes in decimal, minus sign included. */

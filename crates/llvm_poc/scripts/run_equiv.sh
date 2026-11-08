@@ -41,6 +41,31 @@ command -v "$CARGO" >/dev/null 2>&1 || { echo "error: '$CARGO' not found; the em
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$out/target}"
 echo "compiler: $("$CLANG" --version | head -n 1)" >&2
 echo "cargo:    $("$CARGO" --version)" >&2
+
+# unicode-tables-begin
+# The tables behind `to_upper`, `to_lower` and `trim` come from the Rust standard library, and the interpreter
+# these examples are checked against uses the one of the toolchain that builds it. When this toolchain's
+# Unicode version differs from the one recorded in runtime/ubel_unicode.h, regenerate the header and
+# examples/29_string_unicode.ubl with this toolchain first, so the check compares like with like (commit the
+# regenerated files to keep them). See scripts/gen_unicode.rs.
+if command -v rustc >/dev/null 2>&1; then
+  gen="$out/gen_unicode"
+  if rustc --edition 2021 -O "$here/scripts/gen_unicode.rs" -o "$gen" >"$out/gen_unicode.log" 2>&1; then
+    have="$("$gen" --version)"
+    want="$(sed -n 's/^#define UBEL_UNICODE_VERSION "\(.*\)"$/\1/p' "$here/runtime/ubel_unicode.h")"
+    if [ "$have" != "$want" ]; then
+      echo "unicode:  tables are Unicode ${want:-?}, this toolchain has $have: regenerating" >&2
+      "$gen" "$here/runtime/ubel_unicode.h" "$here/examples/29_string_unicode.ubl" >"$out/gen_unicode.log" 2>&1 \
+        || { tail -n 20 "$out/gen_unicode.log" >&2; exit 1; }
+    else
+      echo "unicode:  tables match this toolchain (Unicode $have)" >&2
+    fi
+  else
+    echo "warning: scripts/gen_unicode.rs did not compile (see $out/gen_unicode.log); using the committed Unicode tables" >&2
+  fi
+fi
+# unicode-tables-end
+
 echo "building the emitter..." >&2
 "$CARGO" build --release --manifest-path "$here/Cargo.toml" >"$out/cargo.log" 2>&1 || { tail -n 30 "$out/cargo.log" >&2; exit 1; }
 bin="$CARGO_TARGET_DIR/release/ubel-llvm"

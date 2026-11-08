@@ -1,0 +1,108 @@
+// String methods that build a new string (A9c, provisional): `to_upper`, `to_lower`, `trim`, `trim_start`,
+// `trim_end` and `replace`. Each returns a new GC string (a copy, even when nothing changes), so it works in a
+// HIGH function and inside `with arena`, and is refused in LOW and in MID outside an arena, like string `+`.
+// The case mappings are Rust's full Unicode ones (`"straße".to_upper()` is `"STRASSE"`, a capital sigma at the
+// end of a word becomes `ς`), `trim` removes Unicode white space, and `replace` is non-overlapping, left to
+// right, with an empty needle matching at every character boundary. 29_string_unicode (generated) checks the
+// tables against the interpreter; this file has the readable cases and the contexts.
+struct Doc {
+    title: string
+    body:  string
+}
+
+fn trace(tag: string, s: string) string {
+    println(tag, s)
+    return s
+}
+
+fn repeat(s: string, n: int) string {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out += s
+        i += 1
+    }
+    return out
+}
+
+fn make_norm(suffix: string) fn(string) string {
+    return fn(s: string) s.trim().to_upper() + suffix
+}
+
+fn make_swap(needle: string) fn(string) string {
+    return fn(s: string) s.replace(needle, "<" + needle + ">")
+}
+
+@tier(mid)
+fn arena_build(n: int) int {
+    with arena(4KB) {
+        let a = $"  Ab{n}  "
+        let u = a.trim().to_upper()
+        let l = a.to_lower()
+        let r = u.replace("AB", "x")
+        println(u, l, r, u.len(), l.contains("ab"))
+        return r.len() + l.trim_start().len()
+    }
+}
+
+fn main() void {
+    // case: ASCII, Latin, the special mappings, and the final sigma in context
+    println("Hello, World 42".to_upper(), "Hello, World 42".to_lower(), "".to_upper(), "".to_lower())
+    println("straße".to_upper(), "ǅ".to_upper(), "ǅ".to_lower(), "ŉ".to_upper(), "ﬃ".to_upper(), "İ".to_lower().len())
+    println("ΑΣ".to_lower(), "ΑΣΑ".to_lower(), "Σ".to_lower(), "ΑΣ.".to_lower(), "ΑΣ ".to_lower(), "ΣΑΣ".to_lower(), "ΑΣ'Α".to_lower())
+    println("Α.Σ".to_lower(), "Α Σ".to_lower(), "Α'Σ".to_lower(), "Α.Σ.Α".to_lower())
+    println("привет мир".to_upper(), "ПРИВЕТ МИР".to_lower(), "日本語".to_upper(), "ა".to_upper().len())
+
+    // trim: ASCII, Unicode white space, and characters that only look like it
+    println("[" + "  x y  ".trim() + "]", "[" + "\t\n x \r\n".trim() + "]", "[" + "".trim() + "]", "[" + "   ".trim() + "]")
+    println("[" + " x ".trim_start() + "]", "[" + " x ".trim_end() + "]", "[" + " ".trim_start() + "]")
+    println("x".len(), " x ".trim().len(), "　x　".trim().len(), "x".trim().len(), "​x".trim().len(), "﻿x".trim().len())
+
+    // replace: overlapping needles, an empty needle, an empty replacement, no match, multi-byte
+    println("aaa".replace("aa", "b"), "abc".replace("", "-"), "".replace("", "x"), "abc".replace("b", ""), "abc".replace("zz", "y"))
+    println("héllo wörld".replace("ö", "oe"), "日本日本".replace("本", "x"), "a.b.c".replace(".", "::"), "aXbXc".replace("X", "XX"))
+    println("hello".replace("hello", ""), "hello".replace("hellos", "x"), "abab".replace("ab", "ba"), "ß".replace("ß", "SS"))
+
+    // chaining, and receivers that are calls, concatenations, interpolations, fields and captures
+    println("  Mixed Case  ".trim().to_upper().replace("CASE", "case").to_lower())
+    let n = 7
+    let d = Doc { title = "  Report  ", body = "the quick brown fox" }
+    println(d.title.trim().to_upper(), d.body.replace("quick", "slow").to_upper(), $"  n={n}  ".trim(), ("a" + " b ").trim().len())
+    println(trace("recv", "  Hello ").trim().replace(trace("from", "ell"), trace("to", "ELL")))
+    let norm = make_norm("!")
+    let swap = make_swap("o")
+    println(norm("  quiet "), norm(""), swap("foo boo"), swap("xyz"))
+
+    // a result is a new string: same text, equal, and usable in `match`
+    let s = "same"
+    println(s.trim() == s, s.to_lower() == s, s.to_upper() == s, s.replace("s", "s") == s)
+    println(match "  go ".trim() { "go" => "went", _ => "stayed" }, match "STOP".to_lower() { "stop" | "halt" => 1, _ => 0 })
+
+    // inside `with arena`: the receiver is an arena string, the result a GC string
+    println(arena_build(1), arena_build(23))
+
+    // long strings are large objects in the GC heap
+    let line = repeat("0123456789", 100)
+    let big = repeat(line, 100)
+    println(big.len(), (big + "end").to_upper().len(), big.replace("0123456789", "x").len(), big.replace("9012", "").len())
+    let padded = "   " + big + "   "
+    let head = "   " + big
+    let tail = big + "   "
+    println(padded.trim().len(), head.trim_start().len(), tail.trim_end().len(), repeat("ab", 50000).to_upper().len())
+    println(repeat("Straße ", 20000).to_upper().len(), repeat("ΑΣ ", 20000).to_lower().len(), repeat("é", 30000).replace("é", "é").len())
+
+    // strings built in a loop, across many collections: the helpers allocate while the caller holds strings
+    let mut total = 0
+    let mut hits = 0
+    let mut i = 0
+    while i < 100000 {
+        let t = $"  Item-{i} ".trim().to_upper()
+        let u = t.replace("ITEM", "x").to_lower()
+        total += t.len() + u.len()
+        if u.starts_with("x-9") {
+            hits += 1
+        }
+        i += 1
+    }
+    println(total, hits)
+}

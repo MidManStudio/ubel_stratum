@@ -80,8 +80,10 @@ parameters.
 Checked 2026-11-06 (A9): the built-in string methods that read a string (`len`, `is_empty`, `contains`,
 `starts_with`, `ends_with`) are accepted on an arena string as receiver and as argument, in `@tier(mid)`
 inside `with arena`; sema checks only their argument count, and they allocate nothing, so no borrow is
-created. The methods that build a new string are open: by reading `type_infer` (not probed), sema types their
-result with the receiver's arena tag, which differs from rule S4 (a copy is always a GC string).
+created. The methods that build a new string (A9c) are done as rule S4, a GC copy: sema types the result of such a
+method on an arena receiver with the receiver's arena tag (probed: `a.trim().to_upper()` cannot be returned out
+of the block), so the native result, a GC string, is stricter than its type needs, never looser. The
+alternative, allocating in the arena when the receiver is an arena string, is open and needs the owner's call.
 
 Found 2026-11-07 (A9b): `match` on an arena string is rejected by sema. In
 `with arena(1KB) { let a = $"k{n}"; return match a { "k1" => 10, _ => 0 } }` each literal pattern is typed

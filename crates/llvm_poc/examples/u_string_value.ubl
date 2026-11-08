@@ -1,9 +1,13 @@
-// Not supported yet: a string method that builds a new string (`to_upper`, `to_lower`, `trim`,
-// `trim_start`, `trim_end`, `replace`). `len`, `is_empty`, `contains`, `starts_with` and `ends_with`
-// allocate nothing and work (27_string_methods); these need a place to allocate, and the rule for
-// that is not decided yet.
-// expect-refusal: the string method `to_upper`
+// Not supported on purpose: a string method that builds a new string (`to_upper`, `to_lower`, `trim`,
+// `trim_start`, `trim_end`, `replace`) in a LOW function. The result is a new GC string, and LOW must not
+// allocate in the GC heap (string `+` is refused there for the same reason). In HIGH and inside
+// `with arena` they work (30_string_build).
+// expect-refusal: in `@tier(low)` (it allocates in the GC heap, which LOW must not)
+@tier(low)
+fn shout(s: string) int {
+    return s.to_upper().len()
+}
+
 fn main() void {
-    let s = "hello"
-    println(s.to_upper())
+    println(shout("hello"))
 }

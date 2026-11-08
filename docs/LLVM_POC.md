@@ -468,16 +468,14 @@ the answers are the interpreter's). An empty needle is found everywhere and a ne
 nowhere, as in Rust; `contains` is a plain scan, O(n*m) in the worst case where Rust's search is linear. The
 receiver is evaluated before the argument, like the interpreter. Refused: `contains`, `starts_with` and
 `ends_with` with an argument that is not a string (sema accepts it and the interpreter answers `false`; the
-emitter does not copy that); the methods that build a new string (`to_upper`, `to_lower`, `trim`,
-`trim_start`, `trim_end`, `replace`: the allocation rule is not decided, and Rust's case mapping and `trim`
-are Unicode-aware); and the ones that return a list (`chars`, `split`: refused as a value of type
-`List<string>`). The interpreter has no `find` and no `substring`. Not probed: methods that come from the
+emitter does not copy that); and the ones that return a list (`chars`, `split`: refused as a value of type
+`List<string>`). The methods that build a new string work too (A9c, below). The interpreter has no `find` and no `substring`. Not probed: methods that come from the
 prelude traits (such as `lt`); they fall under the catch-all refusal by construction, not by a test.
 Checked by `examples/27_string_methods` (byte lengths, empty needles, restarting partial matches, receivers
 that are literals, calls, fields, captures and arena strings, a 100,000-byte string, 400,000 allocations),
 `rt_gc_test str_helpers` (a table of answers Rust gives, and a string with the rest of the needle right
 behind it in memory, so a helper that trusts the needle's length reads past the string and matches) and the
-refusal examples `u_string_value` (now `to_upper`), `u_string_list` and `u_string_method_arg`.
+refusal examples `u_string_list` and `u_string_method_arg`.
 
 **String match (A9b, provisional).** `match` on a string works. The arms are string literals (plain or
 verbatim), `a | b` of string literals, `_`, and a plain name that binds the string (a catch-all). The tests run
@@ -496,6 +494,41 @@ empty string, non-ASCII and escapes, or-patterns, a repeated literal, a name tha
 enums, statements with block arms and `return`, scrutinees that are calls, concatenations, interpolations,
 fields and captured strings, every tier, long strings, 200,000 matches across many collections) and the
 refusal examples `u_enum_string` (now an integer `match`), `u_match_string_guard` and `u_match_string_value`.
+
+**String methods that build a string (A9c, provisional).** `to_upper`, `to_lower`, `trim`, `trim_start`,
+`trim_end` and `replace` work. Each calls a runtime helper (`ubel_str_to_upper`, ..., `ubel_str_replace`) that
+returns a **new GC string**, a copy even when nothing changes (rule S4, the same as string `+`). So they are
+legal in a HIGH function and inside `with arena`, and refused in `@tier(low)` and in `@tier(mid)` outside
+`with arena`, in the wording of the `+` refusals. Sema types the result of a method on an arena receiver with
+the receiver's arena tag (`a.trim().to_upper()` cannot be returned out of the block; probed), so on an arena
+receiver the GC copy is stricter than it needs to be, never looser. **That allocation rule is mine and is not
+confirmed by the owner** (the alternative is to allocate in the arena when the receiver is an arena string).
+The semantics are Rust's, because the interpreter calls Rust's own `str::to_uppercase`, `to_lowercase`,
+`trim`, `trim_start`, `trim_end` and `replace`: the full Unicode case mappings (`"straße".to_upper()` is
+`"STRASSE"`, `"ǅ"` maps to `"Ǆ"` and `"ǆ"`, `"ŉ".to_upper()` is `"ʼN"`, `"İ".to_lower()` is `"i̇"`), the
+final-sigma rule (`ΑΣ` lowercases to `ας` but `ΑΣΑ` to `ασα`; the context skips Case_Ignorable characters, so `Α.Σ`
+gives `α.ς`), `trim` removes Unicode White_Space (no-break space, U+3000, NEL; not U+200B or U+FEFF), and
+`replace` is non-overlapping, left to right, with an empty needle matching at every character boundary
+(`"abc".replace("", "-")` is `"-a-b-c-"`). The tables are `runtime/ubel_unicode.h` (53 KB), **generated** by
+`scripts/gen_unicode.rs` from the standard library of the toolchain that runs it: White_Space (10 ranges), the
+upper and lower mappings that differ from the identity (1,525 and 1,433 entries, with a 222-code-point pool for
+the expansions such as `ß` to `SS`), and the two sets the sigma rule consults. `Cased` and `Case_Ignorable` are
+not public on stable Rust, so the generator measures them through `str::to_lowercase`; a character that is both
+counts as ignorable, as in Rust's rule, so the table called `cased` holds the cased characters that are not
+ignorable, which is all the rule can find after skipping. Lookups are binary searches with an ASCII fast path;
+a stray byte that is not valid UTF-8 is passed through unchanged. **The tables are per toolchain**: the
+interpreter uses whatever Unicode version its Rust has, and the committed header is Unicode 15.0.0 (Rust 1.75,
+the only toolchain I had), while CI builds with the runner's stable Rust, which is newer. So `run_equiv.sh`
+compares its toolchain's Unicode version with the header's and regenerates the header and
+`examples/29_string_unicode.ubl` when they differ (tested by faking the version: the regenerated files were
+identical to the committed ones; commit the regenerated files to keep them). Characters added to Unicode after
+15.0 are therefore only as right as the last regeneration. Checked by `examples/29_string_unicode` (generated;
+528 `show` and 200 `replace` calls: every code point whose upper or lower mapping is not itself, so every table
+entry; the white-space set and look-alikes; the final-sigma rule around both edges of every Cased and
+Case_Ignorable range; random strings from a pool of awkward characters; random `replace` calls), by
+`examples/30_string_build` (readable cases, chaining, receivers of every kind, closures, an arena, 100 KB strings,
+a 100,000-iteration loop across many collections) and by the refusal examples `u_string_value` (repurposed:
+LOW), `u_string_build_mid` and `u_string_replace_arg`.
 
 **Scannable arenas (provisional).** A `with arena` block is created with `ubel_arena_create` unless
 an object allocated in it has a pointer-typed field (a string, struct, enum or closure: a struct or
@@ -949,7 +982,8 @@ What it needs, by part, in the order I would build it (reasoned, not yet measure
    allocator). Then string `+` and ordering (A6b). Strings built in arenas (the D3b sema patch) and a
    string field in an arena object (scannable arenas) are done. String methods: the ones that read a
    string are done (A9, see "String methods" above), and so is `match` on a string (A9b, see "String
-   match"); the methods that build a string are open.
+   match"), and the methods that build a string are done (A9c); `chars` and `split` stay refused because they
+   return lists.
 4. ~~**Non-capturing closures** passed to a MID function and called there (`cb(result)`).~~ Done
    (A7, see "Closures" above). This completed `build_and_eval` and `compile_expression`, and with
    it the target program (A8). Capturing closures followed (A7b). Open: captures of strings, structs,
@@ -987,6 +1021,25 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-07: A9c, the string methods that build a string, provisional. `to_upper`, `to_lower`, `trim`,
+  `trim_start`, `trim_end` and `replace` with Rust's full Unicode semantics, through tables generated from the
+  standard library (`scripts/gen_unicode.rs`, `runtime/ubel_unicode.h`, Unicode 15.0.0), each result a new GC
+  string (rule S4: my choice, not confirmed); refused in LOW and in MID outside an arena. `examples/29_string_unicode`
+  (generated) and `examples/30_string_build`; refusal examples `u_string_value` (repurposed: LOW),
+  `u_string_build_mid`, `u_string_replace_arg`. Both examples identical to the interpreter at -O0, -O2 and
+  under ASan+UBSan at 64-bit and 32-bit, and under `UBEL_GC_STRESS=1` (620,324 and 8,520 collections, one per
+  allocation). 26 mutants of the helpers (sigma always medial or always final, no skipping before or after the
+  sigma, a lost context side, ASCII and table off-by-ones, a binary search that is off by one or excludes either
+  range edge, a pool offset and an expansion length that are wrong, trimming one character only, overlapping
+  `replace` counts, a lost end match for the empty needle, a wrong 3-byte mask, a wrong lead byte, a wrong
+  length) are caught; one of them (no skipping before the sigma) only by the generated example, so the
+  hand-written one now has that case. Found: while the first probe of `Cased` said U+02B0 was not cased, the
+  rule skips ignorable characters before looking for a cased one, so the generator now measures what the rule
+  can find. Found, in core and not changed: the lexer has no `\u{...}` escape (any character can be written in
+  a literal as itself), and a call whose first argument is a parenthesised expression followed by a method
+  call fails to parse (`println((a + "y").len())` gives "unexpected `)`", while `println(1, (a + "y").len())`
+  and `let n = (a + "y").len()` are fine). Not run: CI on real runners, Termux, macOS; the tables against a
+  Rust newer than 1.75 (the regeneration path was tested by faking the version only).
 - 2026-11-07: A9b, `match` on a string, provisional. String literal arms, `|` of literals, `_` and a name that
   binds, as a chain of `ubel_str_eq` tests in arm order (first match wins, scrutinee evaluated once), in every
   tier. `examples/28_string_match`; refusal examples `u_enum_string` (repurposed: `match` on an integer, the
