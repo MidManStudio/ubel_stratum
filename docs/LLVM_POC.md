@@ -504,12 +504,21 @@ refusal examples `u_enum_string` (now an integer `match`), `u_match_string_guard
 
 **String methods that build a string (A9c, provisional).** `to_upper`, `to_lower`, `trim`, `trim_start`,
 `trim_end` and `replace` work. Each calls a runtime helper (`ubel_str_to_upper`, ..., `ubel_str_replace`) that
-returns a **new GC string**, a copy even when nothing changes (rule S4, the same as string `+`). So they are
-legal in a HIGH function and inside `with arena`, and refused in `@tier(low)` and in `@tier(mid)` outside
-`with arena`, in the wording of the `+` refusals. Sema types the result of a method on an arena receiver with
-the receiver's arena tag (`a.trim().to_upper()` cannot be returned out of the block; probed), so on an arena
-receiver the GC copy is stricter than it needs to be, never looser. **That allocation rule is mine and is not
-confirmed by the owner** (the alternative is to allocate in the arena when the receiver is an arena string).
+returns a **new string**, a copy even when nothing changes.
+**Where it lives** (decided by the owner, 2026-11-08): in the receiver's own arena when the receiver is an arena
+string, otherwise in the GC heap (before that decision it was always a GC copy, rule S4 as for string `+`).
+Sema types the result of a method on an arena receiver with the receiver's arena tag (`a.trim().to_upper()` cannot
+be returned out of the block; probed), and that tag carries the `ArenaId` of the receiver's arena, so the
+emitter allocates in exactly that arena: it learns which arena pointer an `ArenaId` stands for where it allocates
+an interpolated string in an arena (sema tags those with the innermost arena at that site), and forgets it when
+the block ends. A receiver from an OUTER arena used inside an inner block therefore gets its result in the outer
+arena, not the inner one (`examples/32_string_arena`, `nested`: a second inner arena reuses the first one's memory,
+so a misplaced result would read as garbage or trip the sanitizers). When the receiver's arena is not one of this
+function's open arenas (a borrowed `&arena string` parameter, a closure body) there is no arena pointer to
+allocate in, and the result is a GC copy, which is stricter than its type needs, never looser. The helpers take
+the arena as a last parameter (`NULL` means the GC heap), and the IR call shows the choice (`ptr %arena.N` or
+`ptr null`). The methods are legal in a HIGH function and inside `with arena`, and refused in `@tier(low)` and in
+`@tier(mid)` outside `with arena`, in the wording of the `+` refusals.
 The semantics are Rust's, because the interpreter calls Rust's own `str::to_uppercase`, `to_lowercase`,
 `trim`, `trim_start`, `trim_end` and `replace`: the full Unicode case mappings (`"straße".to_upper()` is
 `"STRASSE"`, `"ǅ"` maps to `"Ǆ"` and `"ǆ"`, `"ŉ".to_upper()` is `"ʼN"`, `"İ".to_lower()` is `"i̇"`), the
@@ -534,8 +543,13 @@ identical to the committed ones; commit the regenerated files to keep them). Cha
 entry; the white-space set and look-alikes; the final-sigma rule around both edges of every Cased and
 Case_Ignorable range; random strings from a pool of awkward characters; random `replace` calls), by
 `examples/30_string_build` (readable cases, chaining, receivers of every kind, closures, an arena, 100 KB strings,
-a 100,000-iteration loop across many collections) and by the refusal examples `u_string_value` (repurposed:
-LOW), `u_string_build_mid` and `u_string_replace_arg`.
+a 100,000-iteration loop across many collections), by `examples/32_string_arena` (all three kinds of arena
+receiver; zero GC allocations in the whole program) and by the refusal examples `u_string_value` (repurposed:
+LOW), `u_string_build_mid` and `u_string_replace_arg`. `rt_gc_test str_build_arena` (17 tests now) checks that a
+helper given an arena leaves the collector's allocation count alone and bumps the arena by the rounded size, and
+that one given NULL allocates exactly one GC object. An example may carry `// expect-ir: <text>` and
+`// expect-no-ir: <text>` lines, which `run_equiv.sh` checks against the emitted IR; 32 uses them to require that
+no building call passes a null arena.
 
 **Scannable arenas (provisional).** A `with arena` block is created with `ubel_arena_create` unless
 an object allocated in it has a pointer-typed field (a string, struct, enum or closure: a struct or
@@ -1028,6 +1042,19 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-08: A9c follow-up: the string-building methods allocate in the receiver's arena (owner's decision).
+  The helpers take an arena parameter; the emitter maps the sema `ArenaId` in a receiver's `&arena` type to the
+  open arena pointer. `examples/32_string_arena` (a receiver from an outer arena used in an inner block, 20,000
+  iterations in one arena) is identical to the interpreter at -O0, -O2 and under ASan+UBSan at 64-bit and 32-bit
+  and under `UBEL_GC_STRESS=1`, with zero GC allocations in the whole program; example 30 now makes 10 fewer GC
+  allocations than before (620,314 against 620,324) because its arena function allocates in the arena. Five
+  mutants (the innermost arena instead of the receiver's, always a GC copy, the mapping never recorded, the C
+  helper ignoring its arena, no 16-byte rounding) are all caught: the first by the nested example, the next two by
+  the IR directives, the last two by `rt_gc_test str_build_arena`; the example alone cannot see where a string
+  lives, which is why the harness test exists. New: `// expect-ir:` and `// expect-no-ir:` directives in
+  `run_equiv.sh`. Not tested: a closure body (the arena filter exists for it; closures that take arena strings are
+  refused elsewhere), and a borrowed `&arena string` parameter as receiver (falls back to a GC copy by
+  construction, not by a test).
 - 2026-11-08: E1 (from `docs/GOOSE_STUDY.md` F2, roadmap D4), payload-free enum variants as static objects,
   provisional. `enum_ctor` returns a private constant `@.enumv.Enum.Variant` (tag, zeroed slots, emitted after
   the enum types) instead of allocating, for every variant without a payload, in unit-only and in mixed enums.

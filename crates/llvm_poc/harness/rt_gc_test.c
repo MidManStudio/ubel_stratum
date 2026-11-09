@@ -1018,6 +1018,50 @@ static void t_str_helpers(void) {
     CHECK(!ubel_str_ends_with(cd, zzcd), "ends_with read in front of the string");
 }
 
+/* The string-building helpers allocate in the arena they are given, and in the GC heap when it is NULL. The
+ * arena path must not touch the collector's allocation count and must bump the arena by the rounded size of
+ * the result; the GC path must allocate exactly one object. */
+static void t_str_build_arena(void) {
+    ubel_arena *a = ubel_arena_create(0);
+    int64_t sb[16], fb[8], tb[8];
+    void *s = mk(sb, "  h\xc3\xa9llo \xc3\x9f  ", 13); /* "  héllo ß  ", 13 bytes */
+    void *from = mk(fb, "l", 1), *to = mk(tb, "LL", 2);
+    for (int which = 0; which < 6; which++) {
+        for (int in_arena = 0; in_arena < 2; in_arena++) {
+            ubel_gc_stats s0, s1;
+            ubel_gc_get_stats(&s0);
+            char *cur0 = a->cur;
+            void *r = NULL;
+            void *ar = in_arena ? (void *)a : NULL;
+            switch (which) {
+                case 0: r = ubel_str_to_upper(s, ar); break;
+                case 1: r = ubel_str_to_lower(s, ar); break;
+                case 2: r = ubel_str_trim(s, ar); break;
+                case 3: r = ubel_str_trim_start(s, ar); break;
+                case 4: r = ubel_str_trim_end(s, ar); break;
+                default: r = ubel_str_replace(s, from, to, ar); break;
+            }
+            ubel_gc_get_stats(&s1);
+            int64_t len = *(const int64_t *)r;
+            uint64_t rounded = ((uint64_t)len + 8 + 15u) & ~(uint64_t)15u;
+            if (in_arena) {
+                CHECK(s1.alloc_count == s0.alloc_count, "helper %d with an arena allocated in the GC heap", which);
+                CHECK((char *)r == cur0, "helper %d result is not where the arena was", which);
+                CHECK(a->cur == cur0 + rounded, "helper %d bumped the arena by %lld, expected %llu", which, (long long)(a->cur - cur0), (unsigned long long)rounded);
+            } else {
+                CHECK(s1.alloc_count == s0.alloc_count + 1, "helper %d without an arena did not allocate exactly one GC object", which);
+                CHECK(a->cur == cur0, "helper %d without an arena touched the arena", which);
+            }
+        }
+    }
+    /* the text is right in both places */
+    void *u = ubel_str_to_upper(s, a);
+    CHECK(*(const int64_t *)u == 13 && memcmp((const char *)u + 8, "  H\xc3\x89LLO SS  ", 13) == 0, "to_upper in an arena gave the wrong text");
+    void *t = ubel_str_trim(s, a);
+    CHECK(*(const int64_t *)t == 9 && memcmp((const char *)t + 8, "h\xc3\xa9llo \xc3\x9f", 9) == 0, "trim in an arena gave the wrong text");
+    ubel_arena_destroy(a);
+}
+
 static const test tests[] = {
     {"classes", t_classes, NULL},
     {"large_basic", t_large_basic, NULL},
@@ -1035,6 +1079,7 @@ static const test tests[] = {
     {"stress_mode", t_stress_mode, NULL},
     {"global_roots", t_global_roots, NULL},
     {"str_helpers", t_str_helpers, NULL},
+    {"str_build_arena", t_str_build_arena, NULL},
 };
 #define NTESTS (sizeof tests / sizeof tests[0])
 

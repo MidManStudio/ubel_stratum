@@ -205,6 +205,25 @@ for src in "$here"/examples/*.ubl "$here/../../examples/arena_demo/ast_builder.u
     continue
   fi
 
+  # `// expect-ir: <text>` and `// expect-no-ir: <text>` in an example say that the emitted IR must contain, or
+  # must not contain, that fixed string. They pin down choices the output cannot show, such as where a string
+  # is allocated (a null arena argument means the GC heap).
+  ir_problem=""
+  sed -n 's|^// expect-ir: *||p' "$src" > "$out/$name.expect-ir"
+  while IFS= read -r want_ir; do
+    [ -z "$want_ir" ] && continue
+    grep -qF -- "$want_ir" "$ll" || ir_problem="the emitted IR lacks: $want_ir"
+  done < "$out/$name.expect-ir"
+  sed -n 's|^// expect-no-ir: *||p' "$src" > "$out/$name.expect-no-ir"
+  while IFS= read -r nope; do
+    [ -z "$nope" ] && continue
+    if grep -qF -- "$nope" "$ll"; then ir_problem="the emitted IR contains: $nope"; fi
+  done < "$out/$name.expect-no-ir"
+  if [ -n "$ir_problem" ]; then
+    bad "$name" "$ir_problem"
+    continue
+  fi
+
   case "$name" in
     fail_*)
       if [ "$interp_status" -eq 0 ]; then bad "$name" "the interpreter was expected to fail but succeeded"; continue; fi

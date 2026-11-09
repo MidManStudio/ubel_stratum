@@ -80,10 +80,13 @@ parameters.
 Checked 2026-11-06 (A9): the built-in string methods that read a string (`len`, `is_empty`, `contains`,
 `starts_with`, `ends_with`) are accepted on an arena string as receiver and as argument, in `@tier(mid)`
 inside `with arena`; sema checks only their argument count, and they allocate nothing, so no borrow is
-created. The methods that build a new string (A9c) are done as rule S4, a GC copy: sema types the result of such a
-method on an arena receiver with the receiver's arena tag (probed: `a.trim().to_upper()` cannot be returned out
-of the block), so the native result, a GC string, is stricter than its type needs, never looser. The
-alternative, allocating in the arena when the receiver is an arena string, is open and needs the owner's call.
+created. The methods that build a new string (A9c) allocate in the receiver's own arena when the receiver is an arena
+string (the owner's decision, 2026-11-08), and in the GC heap otherwise. Sema types the result of such a method on an
+arena receiver with the receiver's arena tag (probed: `a.trim().to_upper()` cannot be returned out of the block),
+and the tag names the arena by its `ArenaId`, which the emitter maps to the open arena pointer, so the result lives
+exactly as long as its type says; a receiver from an outer arena gets its result in the outer arena. If the
+receiver's arena is not one of the current function's (a borrowed `&arena` parameter), the result is a GC copy,
+stricter than the type needs. See LLVM_POC.md, "String methods that build a string".
 
 Found 2026-11-07 (A9b): `match` on an arena string is rejected by sema. In
 `with arena(1KB) { let a = $"k{n}"; return match a { "k1" => 10, _ => 0 } }` each literal pattern is typed

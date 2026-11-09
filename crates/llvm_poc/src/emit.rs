@@ -350,6 +350,12 @@ struct Emitter<'a> {
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<LoopCtx>,
     arenas: Vec<String>,
+    /// For each arena of the current function that holds a string sema tracked: the sema `ArenaId` its `&arena`
+    /// strings carry, and the arena pointer. Filled where an interpolation is allocated in the arena (sema tags
+    /// it with the innermost arena there), dropped when the block ends. A string method that builds a string
+    /// from an arena receiver allocates in the receiver's own arena, found here; no entry means the receiver's
+    /// arena is not known in this function (a borrowed `&arena` parameter, say) and the result is a GC copy.
+    arena_ids: Vec<(usize, String)>,
     ret: Ty,
     cur_tier: TierAnnotation,
 }
@@ -429,6 +435,7 @@ impl<'a> Emitter<'a> {
             scopes: Vec::new(),
             loops: Vec::new(),
             arenas: Vec::new(),
+            arena_ids: Vec::new(),
             ret: Ty::Void,
             cur_tier: TierAnnotation::High,
         }
@@ -462,12 +469,12 @@ impl<'a> Emitter<'a> {
             out.push_str("declare i32  @ubel_str_contains(ptr, ptr)\n");
             out.push_str("declare i32  @ubel_str_starts_with(ptr, ptr)\n");
             out.push_str("declare i32  @ubel_str_ends_with(ptr, ptr)\n");
-            out.push_str("declare ptr  @ubel_str_to_upper(ptr)\n");
-            out.push_str("declare ptr  @ubel_str_to_lower(ptr)\n");
-            out.push_str("declare ptr  @ubel_str_trim(ptr)\n");
-            out.push_str("declare ptr  @ubel_str_trim_start(ptr)\n");
-            out.push_str("declare ptr  @ubel_str_trim_end(ptr)\n");
-            out.push_str("declare ptr  @ubel_str_replace(ptr, ptr, ptr)\n");
+            out.push_str("declare ptr  @ubel_str_to_upper(ptr, ptr)\n");
+            out.push_str("declare ptr  @ubel_str_to_lower(ptr, ptr)\n");
+            out.push_str("declare ptr  @ubel_str_trim(ptr, ptr)\n");
+            out.push_str("declare ptr  @ubel_str_trim_start(ptr, ptr)\n");
+            out.push_str("declare ptr  @ubel_str_trim_end(ptr, ptr)\n");
+            out.push_str("declare ptr  @ubel_str_replace(ptr, ptr, ptr, ptr)\n");
             out.push_str("declare i64  @ubel_i64_len(i64)\n");
             out.push_str("declare void @ubel_i64_write(ptr, i64)\n");
             out.push_str("declare void @ubel_put(ptr, ptr, i64)\n");
@@ -1238,6 +1245,7 @@ impl<'a> Emitter<'a> {
                     if !self.terminated {
                         self.inst(&format!("call void @ubel_arena_destroy(ptr {a})"));
                     }
+                    self.arena_ids.retain(|(_, p)| p != &a);
                     self.arenas.pop();
                     Ok(())
                 }
@@ -2366,6 +2374,16 @@ impl<'a> Emitter<'a> {
             }
         }
         self.uses_str = true;
+        // A string that builds from an arena receiver is allocated in the receiver's own arena, the one sema's
+        // tag names (so it may live exactly as long as the tag says); anything else is a GC copy. The arena
+        // must be one of this function's open arenas: a closure body has none of the enclosing function's.
+        let arena_ptr: Option<String> = if builds {
+            self.sema_arena_id(target)
+                .and_then(|id| self.arena_ids.iter().rev().find(|(i, _)| *i == id).map(|(_, p)| p.clone()))
+                .filter(|p| self.arenas.contains(p))
+        } else {
+            None
+        };
         let Some(helper) = helper else {
             let n = self.fresh();
             self.inst(&format!("{n} = load i64, ptr {}", recv.v));
@@ -2388,6 +2406,12 @@ impl<'a> Emitter<'a> {
                 return unsupported(ae.span, format!("`{field}` with an argument that is not a string ({what})"));
             }
             ops.push(format!("ptr {}", arg.v));
+        }
+        if builds {
+            ops.push(match &arena_ptr {
+                Some(a) => format!("ptr {a}"),
+                None => "ptr null".to_string(),
+            });
         }
         let ops = ops.join(", ");
         if builds {
@@ -2755,6 +2779,16 @@ impl<'a> Emitter<'a> {
     /// Inside `with arena` an interpolated string is allocated in the arena, which is only safe when
     /// sema tracks it as an arena value (D3b, docs/ARENA_STRINGS.md); sema types such a literal
     /// `&arena string`. Without that, a string could be returned out of the block with nothing to stop it.
+    fn sema_arena_id(&self, e: &Expr) -> Option<usize> {
+        match self.ctx.expr_types.get(&e.span) {
+            Some(&id) => match self.ctx.types.get(id) {
+                SemaType::ArenaRef { arena, .. } => Some(arena.0),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+
     fn sema_tags_arena_string(&self, e: &Expr) -> bool {
         match self.ctx.expr_types.get(&e.span) {
             Some(&id) => matches!(self.ctx.types.get(id), SemaType::ArenaRef { .. }),
@@ -2817,6 +2851,11 @@ impl<'a> Emitter<'a> {
                 e.span,
                 "building a string inside `with arena` while sema does not track arena strings (apply the D3b sema patch, docs/ARENA_STRINGS.md)",
             );
+        }
+        if let (Some(a), Some(id)) = (&arena, self.sema_arena_id(e)) {
+            if !self.arena_ids.iter().any(|(i, _)| *i == id) {
+                self.arena_ids.push((id, a.clone()));
+            }
         }
         let mut pieces: Vec<Piece> = Vec::new();
         for part in parts {

@@ -98,7 +98,8 @@ int32_t ubel_str_ends_with(const void *s, const void *t) {
 /* ---- String methods that build a new string (docs/LLVM_POC.md, "String methods that build a string").
  *
  * to_upper, to_lower, trim, trim_start, trim_end and replace are the interpreter's: Rust's str::to_uppercase,
- * to_lowercase, trim, trim_start, trim_end and replace. Every result is a new GC string (mask 0); the
+ * to_lowercase, trim, trim_start, trim_end and replace. Every result is a new string: in the arena the last
+ * parameter points to (the arena of an arena receiver), or a GC string (mask 0) when that is NULL. The
  * arguments are only read, so the collector running inside the allocation cannot free them (they are reachable
  * from the caller's frame, which the conservative scan covers). The case and whitespace tables are generated
  * from Rust's standard library (scripts/gen_unicode.rs, ubel_unicode.h). A string is valid UTF-8, so decoding
@@ -223,8 +224,21 @@ static int ignorable_then_cased_after(const unsigned char *p, const unsigned cha
     return 0;
 }
 
-static void *new_string(int64_t len) {
-    unsigned char *p = (unsigned char *)ubel_gc_alloc_noscan((uint64_t)len + 8);
+/* The arena fast path of the IR (ubel_arena_bump), for a size that is a multiple of 16. */
+static void *arena_bump(ubel_arena *a, uint64_t size) {
+    char *p = a->cur;
+    if ((uint64_t)(a->end - p) >= size) {
+        a->cur = p + size;
+        return p;
+    }
+    return ubel_arena_grow(a, size);
+}
+
+/* A new string object of `len` bytes: in `arena` when it is not NULL (the receiver's own arena, so the result
+ * lives exactly as long as sema says it may), else a GC object (mask 0: a string holds no pointers). */
+static void *new_string(void *arena, int64_t len) {
+    unsigned char *p = arena ? (unsigned char *)arena_bump((ubel_arena *)arena, ((uint64_t)len + 8 + 15u) & ~(uint64_t)15u)
+                             : (unsigned char *)ubel_gc_alloc_noscan((uint64_t)len + 8);
     memcpy(p, &len, 8);
     return p;
 }
@@ -260,20 +274,20 @@ static int64_t case_pass(const unsigned char *s, const unsigned char *end, int u
     return total;
 }
 
-static void *str_case(const void *sv, int upper) {
+static void *str_case(const void *sv, int upper, void *arena) {
     int64_t n = *(const int64_t *)sv;
     const unsigned char *s = (const unsigned char *)sv + 8;
     int64_t size = case_pass(s, s + n, upper, NULL);
-    unsigned char *r = (unsigned char *)new_string(size);
+    unsigned char *r = (unsigned char *)new_string(arena, size);
     case_pass(s, s + n, upper, r + 8);
     return r;
 }
 
-void *ubel_str_to_upper(const void *s) { return str_case(s, 1); }
-void *ubel_str_to_lower(const void *s) { return str_case(s, 0); }
+void *ubel_str_to_upper(const void *s, void *arena) { return str_case(s, 1, arena); }
+void *ubel_str_to_lower(const void *s, void *arena) { return str_case(s, 0, arena); }
 
-static void *str_copy_range(const unsigned char *from, const unsigned char *to) {
-    unsigned char *r = (unsigned char *)new_string((int64_t)(to - from));
+static void *str_copy_range(const unsigned char *from, const unsigned char *to, void *arena) {
+    unsigned char *r = (unsigned char *)new_string(arena, (int64_t)(to - from));
     memcpy(r + 8, from, (size_t)(to - from));
     return r;
 }
@@ -300,28 +314,28 @@ static const unsigned char *trim_back(const unsigned char *s, const unsigned cha
     return end;
 }
 
-void *ubel_str_trim(const void *sv) {
+void *ubel_str_trim(const void *sv, void *arena) {
     int64_t n = *(const int64_t *)sv;
     const unsigned char *s = (const unsigned char *)sv + 8, *end = s + n;
     const unsigned char *a = trim_front(s, end);
-    return str_copy_range(a, trim_back(a, end));
+    return str_copy_range(a, trim_back(a, end), arena);
 }
 
-void *ubel_str_trim_start(const void *sv) {
+void *ubel_str_trim_start(const void *sv, void *arena) {
     int64_t n = *(const int64_t *)sv;
     const unsigned char *s = (const unsigned char *)sv + 8, *end = s + n;
-    return str_copy_range(trim_front(s, end), end);
+    return str_copy_range(trim_front(s, end), end, arena);
 }
 
-void *ubel_str_trim_end(const void *sv) {
+void *ubel_str_trim_end(const void *sv, void *arena) {
     int64_t n = *(const int64_t *)sv;
     const unsigned char *s = (const unsigned char *)sv + 8, *end = s + n;
-    return str_copy_range(s, trim_back(s, end));
+    return str_copy_range(s, trim_back(s, end), arena);
 }
 
 /* Rust's str::replace: every non-overlapping match, scanning left to right. An empty needle matches at every
  * character boundary, including the start and the end ("abc".replace("", "-") is "-a-b-c-"). */
-void *ubel_str_replace(const void *sv, const void *fv, const void *tv) {
+void *ubel_str_replace(const void *sv, const void *fv, const void *tv, void *arena) {
     int64_t n = *(const int64_t *)sv, m = *(const int64_t *)fv, k = *(const int64_t *)tv;
     const unsigned char *h = (const unsigned char *)sv + 8, *f = (const unsigned char *)fv + 8, *t = (const unsigned char *)tv + 8;
     int64_t matches = 0;
@@ -343,7 +357,7 @@ void *ubel_str_replace(const void *sv, const void *fv, const void *tv) {
             }
         }
     }
-    unsigned char *r = (unsigned char *)new_string(n + matches * (k - m));
+    unsigned char *r = (unsigned char *)new_string(arena, n + matches * (k - m));
     unsigned char *o = r + 8;
     if (m == 0) {
         for (const unsigned char *p = h;;) {

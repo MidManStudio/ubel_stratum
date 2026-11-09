@@ -1,0 +1,66 @@
+// String-building methods on arena strings (A9c, provisional). `to_upper`, `to_lower`, `trim`, `trim_start`,
+// `trim_end` and `replace` on a string that lives in a `with arena` block allocate their result in that same
+// arena, the one the receiver's `&arena` type names, so the result may live exactly as long as its type says and
+// costs no GC allocation. On any other receiver the result is a GC string (30_string_build). The directives
+// below are checked against the emitted IR: every building call here passes an arena, none passes null.
+// expect-ir: call ptr @ubel_str_trim(
+// expect-ir: call ptr @ubel_str_to_upper(
+// expect-ir: call ptr @ubel_str_replace(
+// expect-no-ir: , ptr null)
+
+@tier(mid)
+fn one(n: int) int {
+    with arena(4KB) {
+        let a = $"  Ab{n}  "
+        let u = a.trim().to_upper()
+        let l = a.to_lower()
+        let r = u.replace("AB", "x")
+        let s = a.trim_start()
+        let e = a.trim_end()
+        println(u, l, r, s, e)
+        return u.len() + l.len() + r.len() + s.len() + e.len()
+    }
+}
+
+// The receiver belongs to the OUTER arena; the code runs in the inner one. The result is tagged with the outer
+// arena, so it has to be allocated there: a second inner arena then reuses the memory the first one released,
+// and a result that had been put in the first inner arena would read as garbage afterwards.
+@tier(mid)
+fn nested(n: int) int {
+    with arena(1KB) {
+        let a = $"  Outer{n}  "
+        let mut keep = a.trim()
+        with arena(1KB) {
+            let b = $"  inner{n}  "
+            keep = a.trim().to_upper()
+            println(b.trim().to_upper(), keep)
+        }
+        with arena(1KB) {
+            let c = $"  XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX{n}  "
+            println(c.trim().to_lower())
+        }
+        println(keep, keep.len())
+        return keep.len()
+    }
+}
+
+@tier(mid)
+fn many() int {
+    with arena(64KB) {
+        let mut total = 0
+        let mut i = 0
+        while i < 20000 {
+            let s = $"  Item-{i} ".trim().to_upper()
+            let t = s.replace("ITEM", "x")
+            total += s.len() + t.len()
+            i += 1
+        }
+        return total
+    }
+}
+
+fn main() void {
+    println(one(1), one(23))
+    println(nested(5), nested(40))
+    println(many())
+}

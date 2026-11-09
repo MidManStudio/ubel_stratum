@@ -37,8 +37,8 @@ A6. Everything here describes `crates/llvm_poc/runtime/ubel_rt.c`, tested by
 
 ## Tests
 
-`rt_gc_test` has 16 tests (one of them, `str_helpers`, checks the string-method helpers and has nothing to do
-with the collector), each in its own process: every class boundary and its neighbours,
+`rt_gc_test` has 17 tests (two of them, `str_helpers` and `str_build_arena`, check the string-method helpers and
+have nothing to do with the collector), each in its own process: every class boundary and its neighbours,
 large objects (sizes, accounting, drop), interior and one-past-the-end pointers, reuse and zeroing
 of a freed run, arrays of pointers (large array, array of large children, 64-word elements, a
 size-class array of more than 64 words, a small array whose slot has slack), pointer-free objects
