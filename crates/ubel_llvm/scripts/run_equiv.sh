@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# crates/llvm_poc/scripts/run_equiv.sh
+# crates/ubel_llvm/scripts/run_equiv.sh
 #
 # Stage 1B check: compile every program in examples/ to LLVM IR and make sure the native
 # build behaves like the interpreter.
 #
-#   bash crates/llvm_poc/scripts/run_equiv.sh
+#   bash crates/ubel_llvm/scripts/run_equiv.sh
 #
 # Per example, by file name:
 #   NN_name.ubl   interpreter output and native output must be identical, with the native

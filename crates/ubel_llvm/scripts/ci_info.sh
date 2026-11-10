@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crates/llvm_poc/scripts/ci_info.sh [key=value ...]
+# crates/ubel_llvm/scripts/ci_info.sh [key=value ...]
 #
 # Prints a markdown "Run info" table: which commit, which run, which machine, which tools.
 # Used by the job summaries of both workflows; works on a laptop too (fields that only exist

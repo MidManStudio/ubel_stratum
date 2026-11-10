@@ -1,4 +1,4 @@
-; crates/llvm_poc/bench/tiers.ll
+; crates/ubel_llvm/bench/tiers.ll
 ;
 ; Hand-written LLVM IR (opaque pointers, LLVM 15+), written in the shape a
 ; tier-aware Ubel backend would emit. No compiler produced this file.

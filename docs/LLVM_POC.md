@@ -9,7 +9,7 @@ Status: **Stage 0 and Stage 1A measured on CI (five runs). Stage 1B (emit IR fro
 > and cross-tier questions like these need proper research and benchmarking before
 > any of them becomes a language or compiler contract. See "Validation still to do".
 
-Everything lives in `crates/llvm_poc/`. The C runtime and IR benchmarks depend on
+Everything lives in `crates/ubel_llvm/`. The C runtime and IR benchmarks depend on
 nothing else. The emitter crate (`ubel_llvm`) is its own workspace root and depends on
 the core and parser crates by path, read-only, so it cannot interfere with work in
 `core`, `sema` or `rd_parser`.
@@ -44,29 +44,29 @@ while a 6.4 MB list stays live, which makes GC marking cost visible), `tree`
 (AST-style build, walk, drop), `arith` (no allocation, a sanity baseline).
 
 ```
-crates/llvm_poc/runtime/ubel_rt.h        API of the three allocation strategies and the print helpers
-crates/llvm_poc/runtime/ubel_rt.c        GC (size-class spans, tri-colour mark-sweep) and arenas
-crates/llvm_poc/runtime/ubel_main.c      main() for programs emitted by Stage 1B
-crates/llvm_poc/bench/tiers.ll           Stage 0 workloads, hand-written LLVM IR
-crates/llvm_poc/bench/boundaries.ll      Stage 1A: tier-to-tier calls and data, hand-written LLVM IR
-crates/llvm_poc/harness/bench_main.c     timing, checksum checks, markdown report, --require-gc
-crates/llvm_poc/scripts/run_bench.sh     build and run the benchmarks (also --selftest)
-crates/llvm_poc/Cargo.toml, src/         Stage 1B: the emitter crate (ubel_llvm)
-crates/llvm_poc/examples/*.ubl           Stage 1B test programs
-crates/llvm_poc/scripts/run_equiv.sh     Stage 1B: native build against the interpreter
-crates/llvm_poc/scripts/run_wasm_demo.sh Feasibility demo: emitted IR compiled to wasm32 and run in Node
-crates/llvm_poc/wasm/wasm_rt.c, run.js   freestanding wasm runtime and the Node host for that demo
+crates/ubel_llvm/runtime/ubel_rt.h        API of the three allocation strategies and the print helpers
+crates/ubel_llvm/runtime/ubel_rt.c        GC (size-class spans, tri-colour mark-sweep) and arenas
+crates/ubel_llvm/runtime/ubel_main.c      main() for programs emitted by Stage 1B
+crates/ubel_llvm/bench/tiers.ll           Stage 0 workloads, hand-written LLVM IR
+crates/ubel_llvm/bench/boundaries.ll      Stage 1A: tier-to-tier calls and data, hand-written LLVM IR
+crates/ubel_llvm/harness/bench_main.c     timing, checksum checks, markdown report, --require-gc
+crates/ubel_llvm/scripts/run_bench.sh     build and run the benchmarks (also --selftest)
+crates/ubel_llvm/Cargo.toml, src/         Stage 1B: the emitter crate (ubel_llvm)
+crates/ubel_llvm/examples/*.ubl           Stage 1B test programs
+crates/ubel_llvm/scripts/run_equiv.sh     Stage 1B: native build against the interpreter
+crates/ubel_llvm/scripts/run_wasm_demo.sh Feasibility demo: emitted IR compiled to wasm32 and run in Node
+crates/ubel_llvm/wasm/wasm_rt.c, run.js   freestanding wasm runtime and the Node host for that demo
 ```
 
 ## Running it
 
 ```
-bash crates/llvm_poc/scripts/run_bench.sh --selftest   # correctness first
-bash crates/llvm_poc/scripts/run_bench.sh              # Stage 0 and 1A benchmarks
-bash crates/llvm_poc/scripts/run_bench.sh --iters 9 --only tree
-bash crates/llvm_poc/scripts/run_bench.sh --only xing  # Stage 1A only (xing-lifecycle, xing-callback, xing-iter, xing-low)
-bash crates/llvm_poc/scripts/run_equiv.sh              # Stage 1B: emitter against the interpreter
-bash crates/llvm_poc/scripts/run_wasm_demo.sh          # emitted IR as WebAssembly, run in Node (needs wasm32 clang, wasm-ld, node)
+bash crates/ubel_llvm/scripts/run_bench.sh --selftest   # correctness first
+bash crates/ubel_llvm/scripts/run_bench.sh              # Stage 0 and 1A benchmarks
+bash crates/ubel_llvm/scripts/run_bench.sh --iters 9 --only tree
+bash crates/ubel_llvm/scripts/run_bench.sh --only xing  # Stage 1A only (xing-lifecycle, xing-callback, xing-iter, xing-low)
+bash crates/ubel_llvm/scripts/run_equiv.sh              # Stage 1B: emitter against the interpreter
+bash crates/ubel_llvm/scripts/run_wasm_demo.sh          # emitted IR as WebAssembly, run in Node (needs wasm32 clang, wasm-ld, node)
 ```
 
 The benchmarks need clang 15 or newer (opaque pointers). `EXTRA_FLAGS=-m32` and
@@ -77,7 +77,7 @@ emitter is a Rust crate. On Termux: `pkg install clang`.
 one; `ubel_gc_set_stress(N)` does the same from C). It is implemented by holding the trigger at zero, so a
 normal run pays nothing for it. Anything that only a register or a half-built object holds, a missing
 pointer-mask bit or a mis-sized object is then damaged at the very next allocation instead of whenever the
-heap fills. `GC_STRESS=1 bash crates/llvm_poc/scripts/run_equiv.sh` runs every compiled example that way
+heap fills. `GC_STRESS=1 bash crates/ubel_llvm/scripts/run_equiv.sh` runs every compiled example that way
 (the per-run timeout becomes `STRESS_TIMEOUT`, default 300 s; the runtime tests do not get it, they
 count collections themselves). Slow: the allocation-heavy examples take 10 to 80 times longer.
 
@@ -374,13 +374,13 @@ says nothing yet about larger functions, indirect calls or cross-module optimiza
 
 ## Stage 1B: emitting IR from Ubel source
 
-`crates/llvm_poc` is also a Rust crate, `ubel_llvm`. It runs the real front end (lexer,
+`crates/ubel_llvm` is also a Rust crate, `ubel_llvm`. It runs the real front end (lexer,
 recursive-descent parser, semantic analysis), so a program sema rejects never reaches the
 emitter, then lowers a deliberately small subset to textual LLVM IR. Textual IR keeps
 libLLVM out of the Cargo build; clang assembles it.
 
 ```
-cargo build --release --manifest-path crates/llvm_poc/Cargo.toml
+cargo build --release --manifest-path crates/ubel_llvm/Cargo.toml
 ubel-llvm emit   prog.ubl -o prog.ll   # IR
 ubel-llvm interp prog.ubl              # the interpreter, for comparison
 ubel-llvm check  prog.ubl              # front end only
@@ -858,7 +858,7 @@ Found while building the struct slice, same status (found, not fixed):
 The root `Cargo.lock` is format v4, which needs cargo 1.78 or newer, and `miette`'s
 `fancy` feature pulls in a `backtrace` release that needs Rust 1.81. To build the core
 crate on Rust 1.75 the lockfile had to be marked v3 and `backtrace`, `addr2line`, `gimli`
-and `object` pinned to older releases. The lockfile shipped with `crates/llvm_poc` is
+and `object` pinned to older releases. The lockfile shipped with `crates/ubel_llvm` is
 already pinned that way and builds on both old and new cargo; the root lockfile is
 untouched.
 
@@ -974,7 +974,7 @@ None of this has been started, and the plan is open to change.
 - A delivery bug: a nested `README.md` in a replacements archive was captured by the
   standing manifest's filename-based override for `README.md` and overwrote the repo's
   root README. The same hazard applies to any nested `Cargo.toml`; the manifest needs an
-  explicit entry for `crates/llvm_poc/Cargo.toml`.
+  explicit entry for `crates/ubel_llvm/Cargo.toml`.
 
 ## Next stages
 
@@ -1025,7 +1025,7 @@ cross-tier communication matrix and the proof), is in `docs/LLVM_ROADMAP.md`.**
 
 ### CI job summaries
 
-Both workflows build their job summary with scripts in `crates/llvm_poc/scripts/`, so the report
+Both workflows build their job summary with scripts in `crates/ubel_llvm/scripts/`, so the report
 can grow without editing a workflow file (the workflow yml cannot be delivered through the
 replacements flow and is committed by hand, once). `ci_info.sh` prints a run-info table: commit,
 workflow run, who started it, machine, CPU, OS and runner image, compiler, Rust, and the
@@ -1042,6 +1042,12 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-10: The folder `crates/llvm_poc` is renamed `crates/ubel_llvm` (the owner's choice; section 7 of
+  `LLVM_BACKEND_STATUS.md`). One delivery: the directory rename and the path rewritten in 24 files; the two workflows
+  were changed separately, by hand. Nothing else changed. Checked on a fresh clone of master 9a46e6c (it already has the
+  owner's pipe and array-hint work in core): the emitter builds, `run_equiv.sh` gives 72 passed and 0 failed at 64-bit
+  and at `-m32`, the GC test runs 17 tests in each mode, 176 `ok_` fixtures pass sema and 181 `err_` fixtures fail it,
+  and the regenerated Unicode files are byte-identical to the committed ones.
 - 2026-11-08: A9c follow-up: the string-building methods allocate in the receiver's arena (owner's decision).
   The helpers take an arena parameter; the emitter maps the sema `ArenaId` in a receiver's `&arena` type to the
   open arena pointer. `examples/32_string_arena` (a receiver from an outer arena used in an inner block, 20,000

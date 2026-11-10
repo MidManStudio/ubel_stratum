@@ -13,7 +13,7 @@ Tags, in the same spirit as `GC_RESEARCH.md`:
 - **wrong** / **imprecise**: contradicted by, or looser than, what the sources support.
 - **not re-checked**: plausible, not verified here. A lead, not a fact.
 - **reasoned**: follows from what was read, but was not tested. Nothing here was executed; every
-  code reading (the papers' listings and `crates/llvm_poc/runtime/ubel_rt.c` at master a4ee32e) is
+  code reading (the papers' listings and `crates/ubel_llvm/runtime/ubel_rt.c` at master a4ee32e) is
   static.
 - **lead**: something Ubel could adopt. Not a decision.
 

@@ -32,8 +32,7 @@ table in `LLVM_ROADMAP.md` stops at slice 4 and should be replaced by a pointer 
   two deliveries); the self-hosted tokenizer is a medium road (collections, floats, `Str`, `assert`); programs like the
   ones in `tests/fixtures` need generics, traits and the rest of the type system, which is a long road and partly
   waits on the traits work.
-- **The name is out of date.** "Proof of concept" stopped describing this in about slice 6. See section 7 for a
-  rename plan (the folder `crates/llvm_poc` is referenced from 25 files).
+- **The name was out of date, and is fixed.** The folder is now `crates/ubel_llvm` (section 7).
 
 ## 1. What exists
 
@@ -41,13 +40,13 @@ Measured with `wc -l` and the equivalence suite on master plus the arena deliver
 
 | Part | Size | Notes |
 |---|---|---|
-| Emitter, `crates/llvm_poc/src/emit.rs` | 3,077 lines | Ubel AST to textual LLVM IR. No libLLVM dependency; clang assembles the IR. |
+| Emitter, `crates/ubel_llvm/src/emit.rs` | 3,077 lines | Ubel AST to textual LLVM IR. No libLLVM dependency; clang assembles the IR. |
 | C runtime, `runtime/ubel_rt.c`, `ubel_rt.h`, `ubel_main.c` | 1,374 lines | Conservative mark-sweep GC with large objects, arenas (also scannable ones), strings, Unicode string methods, global roots, a stress mode. |
 | Generated Unicode tables, `runtime/ubel_unicode.h` | 546 lines | From Rust's standard library, per toolchain (`scripts/gen_unicode.rs`). |
 | Equivalence suite, `scripts/run_equiv.sh` | 72 entries | Every program equals the interpreter at -O0, -O2, ASan+UBSan, 64-bit and `-m32`; refusal tests; the harness. |
 | Collector and runtime tests, `harness/rt_gc_test.c` | 17 tests | Run in four build modes. Mutation-tested by hand throughout. |
 
-Supported today, with the example that shows it (all in `crates/llvm_poc/examples/`):
+Supported today, with the example that shows it (all in `crates/ubel_llvm/examples/`):
 
 | Area | Works | Examples |
 |---|---|---|
@@ -178,39 +177,28 @@ runtime tables for new Unicode versions come from in a release.
 
 ## 7. The name, and the folder
 
-`crates/llvm_poc` and the documents `LLVM_POC.md` and `LLVM_ROADMAP.md` say "proof of concept". The concept has been
-proven (the equivalence suite, the measured tier costs, the target program); what remains is building the backend. A
-name that says "proof of concept" invites the reading that nothing here is meant to be kept.
+`crates/llvm_poc` said "proof of concept" long after the concept was proven (the equivalence suite, the measured tier
+costs, the target program). Done on 2026-11-10, as its own delivery: the folder is **`crates/ubel_llvm`**, the owner's
+choice. The Cargo package (`ubel_llvm`) and the binary (`ubel-llvm`) already had that name, so the build did not change.
+`docs/LLVM_POC.md` and `docs/LLVM_ROADMAP.md` keep their names for now as the history; renaming documents is cheap and can
+follow.
 
-*Recommendation (a decision for the owner):* rename the folder to **`crates/llvm`**, matching the short role names of its
-neighbours (`core`, `cli`, `lsp`, `parser`, `rd_parser`). The Cargo package (`ubel_llvm`) and binary (`ubel-llvm`) already
-have the right names and need no change. Keep `docs/LLVM_POC.md` as the history under its name for now; renaming
-documents is cheap and can follow.
+How it was done: one scaffold template, with `rename_files::` for the directory and `patch_files::` for every
+`crates/llvm_poc` path in 24 files (comments, usage lines, documents, the replacements manifest). Left alone on purpose:
+the scratch directory name `ubel_llvm_poc` under `TMPDIR` (a throwaway path in `run_bench.sh` and `llvm-proc.yml`) and the
+workflow file names `llvm-poc-emit.yml` and `llvm-proc.yml`.
 
-What a rename touches (measured with `grep -rIl llvm_poc`, excluding `.git` and `target`): **25 files, 68 lines**:
-16 inside the folder itself (mostly doc comments and script comments), 2 workflows
-(`.github/workflows/llvm-poc-emit.yml`, `llvm-proc.yml`), `examples/arena_demo`, and five documents
-(`LLVM_POC.md`, `GC_LARGE_OBJECTS.md`, `DIAGNOSTICS_RULES.md`, `ARENA_BORROW_RULES.md`, `MEMORY_REFERENCES.md`), plus the
-`.mdix/replacements` manifest. The scaffold tool supports directory renames (`rename_files::` uses `os.rename`; `move_files::`
-uses `shutil.move`), so the folder move itself can go through a project-structure template. Two cautions:
+Two cautions that stay true after the rename:
 
-- *Reasoned, not tried:* a workflow that pushes with the default token cannot change files under `.github/workflows`,
-  so the two workflow files probably have to be edited by hand in the GitHub editor, or by a local `git mv`.
-- Every delivery tarball made before the rename carries the old paths, and the replacements applier matches members by path. The
-  rename should be its own delivery, applied before anything else, and the first thing the next chat does.
-
-The simplest safe sequence: (1) decide the name; (2) one commit by the owner, locally: `git mv crates/llvm_poc crates/llvm`
-and a `sed` over the 25 files (the command is one line; a script can print the list first); (3) update the two workflows
-in the same commit; (4) the next chat starts from the new path. If the commit is made through the scaffold instead,
-step 2 becomes a `rename_files::` entry plus anchored patches for the 68 lines, which is possible and about as much
-work to verify as it is to do locally.
+- The two workflows were changed in a separate step, by hand (reasoned, not tried: a run that pushes with the default
+  token cannot change files under `.github/workflows`).
+- Any tarball made before the rename carries the old paths, and the replacements applier matches members by path, so one
+  applied after the rename would recreate `crates/llvm_poc` next to the new folder.
 
 ## 8. Next five actions
 
-1. Decide the name and do the rename (section 7), as its own commit.
-2. Replace the stale "Where things stand" table in `LLVM_ROADMAP.md` with a pointer to this document; update the
-   Phase 4 row of `web/site/src/project-status.md` (it still says "a small emitter turns a subset of Ubel (int and bool
-   functions, control flow, ar..."; strings, closures, enums, `match` and Unicode exist now).
+1. Done on 2026-11-10: the folder is `crates/ubel_llvm` (section 7).
+2. Done: the pointer in `LLVM_ROADMAP.md` and the Phase 4 row of `web/site/src/project-status.md`.
 3. M1: `ubel build`, with the workspace layout decided first (section 3, point 5).
 4. The `assert` slice and the numeric tower (M2): the cheapest large unlock.
 5. Make the generics decision (section 4) before starting collections, with the self-hosted tokenizer as the test.

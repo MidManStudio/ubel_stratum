@@ -1,4 +1,4 @@
-/* crates/llvm_poc/harness/bench_main.c
+/* crates/ubel_llvm/harness/bench_main.c
  *
  * Drives the hand-written IR workloads in bench/tiers.ll, once per tier,
  * checks that every tier computes the same checksum, and prints markdown.

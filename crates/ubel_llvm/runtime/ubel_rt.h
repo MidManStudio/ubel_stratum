@@ -1,4 +1,4 @@
-/* crates/llvm_poc/runtime/ubel_rt.h
+/* crates/ubel_llvm/runtime/ubel_rt.h
  *
  * Stage 0 runtime for the Ubel LLVM proof of concept.
  *

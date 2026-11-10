@@ -83,7 +83,7 @@ error variant and is left out of this change.
 | what | result |
 |---|---|
 | 5 `ok_arena_borrow_*` and 10 `err_arena_borrow_*` fixtures (this delivery) | all behave as stated in their headers (checked) |
-| `crates/llvm_poc/examples/18_arena_borrow.ubl` | identical to the interpreter at -O0, -O2 and under ASan+UBSan, no arena left alive (checked) |
+| `crates/ubel_llvm/examples/18_arena_borrow.ubl` | identical to the interpreter at -O0, -O2 and under ASan+UBSan, no arena left alive (checked) |
 | every existing fixture and PoC example (312 files) through `check`, before and after | no difference (checked) |
 | `run_equiv.sh` over all PoC examples | 37 passed, 0 failed (checked) |
 | mutation: drop R3 | `err_arena_borrow_closure_capture` and `_elided_result_ref` go red |

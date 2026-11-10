@@ -1,4 +1,4 @@
-/* crates/llvm_poc/runtime/ubel_rt.c
+/* crates/ubel_llvm/runtime/ubel_rt.c
  *
  * Stage 0 runtime: see ubel_rt.h and README.md.
  *

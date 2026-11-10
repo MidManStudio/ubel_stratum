@@ -1,4 +1,4 @@
-/* crates/llvm_poc/runtime/ubel_main.c
+/* crates/ubel_llvm/runtime/ubel_main.c
  *
  * `main` for programs emitted by ubel-llvm (Stage 1B). The emitter produces a function
  * `ubel_main` from the program's `fn main()`. This file starts the runtime, runs it, and

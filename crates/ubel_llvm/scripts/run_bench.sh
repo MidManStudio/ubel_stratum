@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# crates/llvm_poc/scripts/run_bench.sh
+# crates/ubel_llvm/scripts/run_bench.sh
 #
 # Builds the Stage 0 proof of concept with clang and runs it.
 #
-#   bash crates/llvm_poc/scripts/run_bench.sh [--iters N] [--scale X] [--only SUBSTR]
-#   bash crates/llvm_poc/scripts/run_bench.sh --selftest
+#   bash crates/ubel_llvm/scripts/run_bench.sh [--iters N] [--scale X] [--only SUBSTR]
+#   bash crates/ubel_llvm/scripts/run_bench.sh --selftest
 #
 # The report covers Stage 0 (the three tiers in isolation) and Stage 1A (how the tiers talk
 # to each other: see docs/LLVM_POC.md).

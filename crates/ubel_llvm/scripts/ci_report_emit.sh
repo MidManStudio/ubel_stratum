@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crates/llvm_poc/scripts/ci_report_emit.sh OUT_DIR LOG [ARCH]
+# crates/ubel_llvm/scripts/ci_report_emit.sh OUT_DIR LOG [ARCH]
 #
 # Builds the job summary of the Stage 1B workflow (markdown on stdout) from what
 # run_equiv.sh left in OUT_DIR: results.tsv, metrics.tsv, and the raw LOG. It is a script, not

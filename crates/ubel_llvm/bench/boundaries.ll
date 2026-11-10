@@ -1,4 +1,4 @@
-; crates/llvm_poc/bench/boundaries.ll
+; crates/ubel_llvm/bench/boundaries.ll
 ;
 ; Stage 1A: how the tiers talk to each other, in hand-written LLVM IR.
 ; Modelled on examples/arena_demo/ast_builder.ubl: a MID function builds an

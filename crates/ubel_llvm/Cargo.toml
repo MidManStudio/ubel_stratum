@@ -1,4 +1,4 @@
-# crates/llvm_poc/Cargo.toml
+# crates/ubel_llvm/Cargo.toml
 #
 # Stage 1B of the LLVM proof of concept: emit textual LLVM IR from Ubel source.
 #
@@ -8,8 +8,8 @@
 # core and parser crates by path, read-only.
 #
 # Build and run it explicitly:
-#   cargo build --release --manifest-path crates/llvm_poc/Cargo.toml
-#   bash crates/llvm_poc/scripts/run_equiv.sh
+#   cargo build --release --manifest-path crates/ubel_llvm/Cargo.toml
+#   bash crates/ubel_llvm/scripts/run_equiv.sh
 #
 # There is no libLLVM dependency: the emitter writes textual IR and clang assembles it.
 [package]

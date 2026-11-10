@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# crates/llvm_poc/scripts/run_wasm_demo.sh
+# crates/ubel_llvm/scripts/run_wasm_demo.sh
 #
 # Feasibility demo for a browser playground: take the LLVM IR the emitter produces, compile it
 # to WebAssembly, run it in a JavaScript engine (Node) and compare with the interpreter.
 #
-#   bash crates/llvm_poc/scripts/run_wasm_demo.sh
+#   bash crates/ubel_llvm/scripts/run_wasm_demo.sh
 #
 # This proves the RUN side only. It uses clang on the host to turn IR into wasm; a browser
 # would need an in-browser LLVM for that step, which exists but is large (see docs/LLVM_POC.md).

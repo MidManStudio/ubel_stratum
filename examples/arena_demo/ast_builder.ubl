@@ -4,7 +4,7 @@
 // file was a design sketch and had never been through the front end (it did not parse). This
 // one parses, passes sema and runs in the interpreter:
 //
-//     cargo run --manifest-path crates/llvm_poc/Cargo.toml --release -- interp examples/arena_demo/ast_builder.ubl
+//     cargo run --manifest-path crates/ubel_llvm/Cargo.toml --release -- interp examples/arena_demo/ast_builder.ubl
 //
 // It is also the north-star program of the LLVM proof of concept (docs/LLVM_POC.md): the
 // native emitter grows toward compiling it, and the interpreter's output is the reference.
@@ -12,8 +12,8 @@
 // will most likely get there:
 //
 //   part 2  edge struct, `&L` fields, borrows, field chains, `with arena`: DONE, see
-//           crates/llvm_poc/examples/13_edge_arena.ubl (same node shapes and functions)
-//   part 1  enums with payloads and `match`: DONE, see crates/llvm_poc/examples/15_enum_basic.ubl;
+//           crates/ubel_llvm/examples/13_edge_arena.ubl (same node shapes and functions)
+//   part 1  enums with payloads and `match`: DONE, see crates/ubel_llvm/examples/15_enum_basic.ubl;
 //           still needed: strings as values, interpolation that builds one, `==` on strings
 //   part 3  a non-capturing closure passed to a MID function, returning a string
 //

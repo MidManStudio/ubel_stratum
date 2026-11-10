@@ -2,8 +2,8 @@
 
 Status: **provisional**. Written 2026-10-30 (LLVM PoC, chat 3). The runtime side of A5 is done;
 the emitter does not use it yet, because Ubel source has no strings or growable collections until
-A6. Everything here describes `crates/llvm_poc/runtime/ubel_rt.c`, tested by
-`crates/llvm_poc/harness/rt_gc_test.c`.
+A6. Everything here describes `crates/ubel_llvm/runtime/ubel_rt.c`, tested by
+`crates/ubel_llvm/harness/rt_gc_test.c`.
 
 ## What changed
 

@@ -1,4 +1,4 @@
-/* crates/llvm_poc/harness/rt_gc_test.c
+/* crates/ubel_llvm/harness/rt_gc_test.c
  *
  * Tests for the collector's large objects, the extended size classes and the array
  * allocator (roadmap A5), and for the string helpers (str_helpers). Run one test per process so a failure or an abort in one cannot
