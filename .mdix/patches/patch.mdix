@@ -1,16 +1,13 @@
 // Brought to u by MidManStudio
 //
-// Docs only, 7 anchored edits in docs/LLVM_ROADMAP.md and docs/GC_RESEARCH.md, which the combined sema
-// patch left stale (it has landed: peel_arena_str, TIER-017 and check_closure_call are all on master).
+// Docs only, 3 anchored edits. (1) and (2) docs/LLVM_ROADMAP.md: the "Where things stand" table stops at slice 4;
+// it now points to docs/LLVM_BACKEND_STATUS.md and keeps the old table as history. (3) web/site/src/project-status.md:
+// the Phase 4 row still describes the first slice ("int and bool functions, control flow, arena blocks"); this is
+// a public page, so op 3 is yours to keep, reword or delete. Delete it (the last line of the DATA block) and the
+// "patched : N" line must say 2 instead of 3.
 //
-// docs/LLVM_ROADMAP.md: the D2, D3 and D5 rows now say what was decided and what is implemented; the
-// "Limits" sentence no longer says objects are at most 64 words and globals are not roots (large objects
-// and ubel_gc_add_root exist); hardening item 1 (global roots, collect-on-every-allocation mode) is marked
-// done. docs/GC_RESEARCH.md: the open question about globals and the "make the collector trustworthy"
-// step are updated the same way.
-//
-// Checked against master f852177: every anchor matches exactly once. Run it with dry_run on first; the
-// "patched : N" line must say 7.
+// Needs docs/LLVM_BACKEND_STATUS.md on master (the ubel-llvm-arena-4 tarball). Checked against master 044017b:
+// every anchor matches exactly once. Run it with dry_run on first.
 
 @CONFIG(
   version    -> "1.0.0",
@@ -23,18 +20,11 @@
   ~patch_replace_text<object>(_path, _anchor, _content) {
     return { path = _path, op = "replace_text", anchor = _anchor, content = _content }
   }
-  ~patch_replace_regex<object>(_path, _pattern, _content) {
-    return { path = _path, op = "replace_regex", pattern = _pattern, content = _content }
-  }
 )
 
 @DATA(
   patch_files::
-    patch_replace_text("docs/LLVM_ROADMAP.md", "1. Global roots and a collect-on-every-allocation debug mode run over the whole example suite", "1. DONE (2026-11-04, provisional): global roots (`ubel_gc_add_root`) and a collect-on-every-allocation mode (`UBEL_GC_STRESS=N`, `GC_STRESS=N` for `run_equiv.sh`), run over the whole example suite at 64-bit and 32-bit; a 32-bit false-retention bug was also fixed (docs/LLVM_POC.md, Bugs found)")
-    patch_replace_regex("docs/LLVM_ROADMAP.md", "Limits: objects of at most 64 words, globals are not\\s+roots, one thread\\.", "Limits: a global is a root only if its memory is registered (`ubel_gc_add_root`), one thread.")
-    patch_replace_text("docs/LLVM_ROADMAP.md", "| Yes, to close the hole above. |", "| DECIDED by the owner (2026-10-31): a closure's tier is the tier of the function it is created in. A function type carries no tier, so only LOW can be checked: a LOW function may call only a closure it created itself (TIER-017); MID and HIGH may call any. In sema and in the emitter, provisional. |")
-    patch_replace_text("docs/LLVM_ROADMAP.md", "| Sema half delivered; emitter half is A6. |", "| Both halves are in: the emitter half (A6, A6b) and the sema half (docs/ARENA_STRINGS.md). |")
-    patch_replace_text("docs/LLVM_ROADMAP.md", "| By site, like every other literal. |", "| DECIDED by the owner (2026-10-31): a capturing closure's object lives in the arena of its block and dies with it. My reading, not confirmed: in a HIGH function outside any arena the object is a GC object (by site, like a struct literal); MID outside an arena and LOW refuse it. Implemented (A7b), provisional. |")
-    patch_replace_regex("docs/GC_RESEARCH.md", "\\(Globals are not roots in the\\s+PoC today\\.\\)", "(Globals are roots only if registered with `ubel_gc_add_root`.)")
-    patch_replace_regex("docs/GC_RESEARCH.md", "(2\\. Make the current collector trustworthy: global roots, large objects, stress tests that\\s+collect at awkward points, and a debug mode that collects on every allocation\\.)", "\\g<1> Done 2026-11-04 (provisional): see docs/LLVM_POC.md, Log.")
+    patch_replace_text("docs/LLVM_ROADMAP.md", "## Where things stand\n\n| Slice | What it adds | Evidence |", "## Where things stand\n\n**See `docs/LLVM_BACKEND_STATUS.md`, which is kept current**: what exists, what the backend does not compile yet\n(measured), how far it is from a real executable, and the milestones. In short, as of 2026-11-09: slices 1 to 4\nand A5 to A9 are done (strings, closures, enums and `match`, Unicode string methods, the target program\n`ast_builder.ubl`); the next blockers are collections, the numeric tower, generics and a `ubel build` command.\n\nSlices 1 to 4, as first written (kept as history):\n\n| Slice | What it adds | Evidence |")
+    patch_replace_text("docs/LLVM_ROADMAP.md", "The target program's first refusal is now its `string` payload (`Var(string)`), so the next\nblocker is strings, and behind strings closures.", "(The sentence that followed this table when it was written, \"the next blocker is strings, and behind strings\nclosures\", is out of date: both landed and the target program compiles.)")
+    patch_replace_text("web/site/src/project-status.md", "| 4 | Started | LLVM backend, native binaries. So far a proof of concept: hand-written IR measures the three tiers, and a small emitter turns a subset of Ubel (int and bool functions, control flow, arena blocks) into LLVM IR that matches the interpreter (`docs/LLVM_POC.md`) |", "| 4 | Started | LLVM backend, native binaries. Hand-written IR measured the three tiers, and an emitter turns a growing subset of Ubel into LLVM IR that is checked against the interpreter at every step: int, bool and string values, structs, enums and `match`, closures, arenas and the garbage-collected heap, Unicode string methods. The target program `examples/arena_demo/ast_builder.ubl` compiles. Collections, floats and sized integers, generics, traits and a `ubel build` command are not there yet (`docs/LLVM_BACKEND_STATUS.md`) |")
 )
