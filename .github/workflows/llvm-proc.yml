@@ -46,11 +46,11 @@ jobs:
 
       - name: Self-test (GC stress, every tier must agree)
         shell: bash
-        run: bash crates/llvm_poc/scripts/run_bench.sh --selftest 2>&1 | tee selftest.log
+        run: bash crates/ubel_llvm/scripts/run_bench.sh --selftest 2>&1 | tee selftest.log
 
       - name: Benchmark
         shell: bash
-        run: bash crates/llvm_poc/scripts/run_bench.sh --iters "$ITERS" | tee bench-report.md
+        run: bash crates/ubel_llvm/scripts/run_bench.sh --iters "$ITERS" | tee bench-report.md
 
       - name: Job summary
         if: always()
@@ -59,7 +59,7 @@ jobs:
           {
             echo "## Ubel LLVM PoC, tier benchmarks, Stages 0 and 1A (${{ matrix.arch }})"
             echo
-            bash crates/llvm_poc/scripts/ci_info.sh clang="$CLANG" iters="$ITERS"
+            bash crates/ubel_llvm/scripts/ci_info.sh clang="$CLANG" iters="$ITERS"
             echo
             cat bench-report.md 2>/dev/null || echo "No report was produced."
             echo

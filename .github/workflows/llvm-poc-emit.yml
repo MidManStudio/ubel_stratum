@@ -1,7 +1,7 @@
 name: Ubel LLVM PoC (Stage 1B emitter against the interpreter)
 
 # Manual only. Builds the ubel_llvm emitter, compiles every program in
-# crates/llvm_poc/examples to LLVM IR, and checks the native build against the
+# crates/ubel_llvm/examples to LLVM IR, and checks the native build against the
 # interpreter at -O0 and -O2 (and under ASan + UBSan where the runner has them).
 on:
   workflow_dispatch:
@@ -43,7 +43,7 @@ jobs:
 
       - name: Emitter against the interpreter
         shell: bash
-        run: bash crates/llvm_poc/scripts/run_equiv.sh 2>&1 | tee equiv.log
+        run: bash crates/ubel_llvm/scripts/run_equiv.sh 2>&1 | tee equiv.log
 
       # The report is built by a script in the repo, so it can grow without touching this file.
       - name: Job summary
@@ -52,7 +52,7 @@ jobs:
         env:
           CI_INPUTS: clang=${{ inputs.clang }}
         run: |
-          bash crates/llvm_poc/scripts/ci_report_emit.sh "$OUT_DIR" equiv.log "${{ matrix.arch }}" \
+          bash crates/ubel_llvm/scripts/ci_report_emit.sh "$OUT_DIR" equiv.log "${{ matrix.arch }}" \
             | tee equiv-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload emitted IR and expected outputs
