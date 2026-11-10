@@ -1009,6 +1009,15 @@ fn write_lvalue<'ast>(
                         )))
                     }
                 }
+                (Value::InlineList(rc), Value::Int(i)) => {
+                    let mut data = rc.borrow_mut();
+                    match slot_of(i, data.items.len()) {
+                        Some(at) => { data.items[at] = value; Ok(Value::Void) }
+                        None     => Err(Signal::Panic(format!(
+                            "index {} out of bounds (len {})", i, data.items.len()
+                        ))),
+                    }
+                }
                 (Value::Dict(rc), key) if interp.may_have_user_ops(&key) => {
                     match interp.dict_position(&rc, &key)? {
                         Some(i) => rc.borrow_mut()[i].1 = value,
@@ -1086,6 +1095,15 @@ fn eval_index(coll: Value, idx: Value) -> EvalResult {
             list.get(i)
                 .cloned()
                 .ok_or_else(|| Signal::Panic(format!("list index {} out of bounds", i)))
+        }
+        (Value::InlineList(rc), Value::Int(i)) => {
+            let data = rc.borrow();
+            match slot_of(i, data.items.len()) {
+                Some(at) => Ok(data.items[at].clone()),
+                None     => Err(Signal::Panic(format!(
+                    "inline list index {} out of bounds (len {})", i, data.items.len()
+                ))),
+            }
         }
         (Value::Tuple(elems), Value::Int(i)) => {
             let i = i as usize;
@@ -1270,6 +1288,15 @@ fn native_index_set(coll: Value, idx: Value, value: Value) -> EvalResult {
                 Err(Signal::Panic(format!("index {} out of bounds (len {})", i, len)))
             }
         }
+        (Value::InlineList(rc), Value::Int(i)) => {
+            let mut data = rc.borrow_mut();
+            match slot_of(i, data.items.len()) {
+                Some(at) => { data.items[at] = value; Ok(Value::Void) }
+                None     => Err(Signal::Panic(format!(
+                    "index {} out of bounds (len {})", i, data.items.len()
+                ))),
+            }
+        }
         (Value::Dict(rc), key) => {
             let mut dict = rc.borrow_mut();
             if let Some(entry) = dict.iter_mut().find(|(k, _)| k.equals(&key)) {
@@ -1281,6 +1308,13 @@ fn native_index_set(coll: Value, idx: Value, value: Value) -> EvalResult {
         }
         _ => Err(Signal::Panic("invalid index assignment target".into())),
     }
+}
+
+/// The slot a possibly negative index names in a collection of `len` items
+/// (`-1` is the last one), or `None` when it is out of range.
+fn slot_of(i: i64, len: usize) -> Option<usize> {
+    let at = if i < 0 { len as i64 + i } else { i };
+    if at >= 0 && (at as usize) < len { Some(at as usize) } else { None }
 }
 
 /// `v.neg()` and `v.bit_not()` on a number.

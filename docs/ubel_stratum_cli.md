@@ -28,7 +28,11 @@ needs them yet.
 ### `main.rs`
 
 The `Cli` struct (global flags) and the `Commands` enum. Adding a command
-means one variant here, one file under `commands/`, and one match arm.
+means one variant here, one file under `commands/`, and one match arm. The
+whole command runs inside `ubel_stratum::stack::with_big_stack`, a thread with
+a 256 MB stack: every pass walks the tree recursively, and the default stack of
+a main thread is 8 MB, which a chain of about 500 operators exhausted in a
+debug build (see `PARSER_RULES.md`, section 5.14).
 
 ### `commands/mod.rs`
 

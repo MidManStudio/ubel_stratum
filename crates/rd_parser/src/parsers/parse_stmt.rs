@@ -26,6 +26,13 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 }
 
 pub(crate) fn parse_block_inner<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Block<'ast>> {
+    let ok = p.enter_nesting();
+    let result = if ok { parse_block_body(p) } else { None };
+    p.leave_nesting();
+    result
+}
+
+fn parse_block_body<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Block<'ast>> {
     let prev = p.enter(ParseContext::Block);
     let lo   = p.span();
 

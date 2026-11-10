@@ -37,6 +37,14 @@ pub enum ParseError {
         suggestion: Option<String>,
     },
 
+    /// Expressions or blocks nested deeper than the parser accepts. Every
+    /// later pass walks the tree recursively, so the depth is bounded up front
+    /// rather than left to overflow the stack.
+    NestingTooDeep {
+        limit: usize,
+        span:  Span,
+    },
+
     /// Catch-all for anything not yet mapped to a structured variant.
     Raw {
         message: String,
@@ -125,6 +133,7 @@ impl ParseError {
             ParseError::UnexpectedEof     { span, .. } => *span,
             ParseError::UnclosedDelimiter { span, .. } => *span,
             ParseError::IllegalInContext  { span, .. } => *span,
+            ParseError::NestingTooDeep    { span, .. } => *span,
             ParseError::Raw               { span, .. } => *span,
         }
     }
@@ -160,6 +169,9 @@ impl ParseError {
             ParseError::IllegalInContext { what, reason, .. } => {
                 format!("`{}` is not allowed here: {}", what, reason)
             }
+            ParseError::NestingTooDeep { limit, .. } => {
+                format!("expression or block nested more than {} levels deep", limit)
+            }
             ParseError::Raw { message, .. } => message.clone(),
         }
     }
@@ -180,6 +192,9 @@ impl ParseError {
                 Some(format!("add a closing `{}`", closing))
             }
             ParseError::IllegalInContext { suggestion, .. } => suggestion.clone(),
+            ParseError::NestingTooDeep { .. } => Some(
+                "split it into several statements, or join pieces with a collection method".to_string()
+            ),
             _ => None,
         }
     }
@@ -202,6 +217,7 @@ impl crate::error_management::render::Diagnosable for ParseError {
             ParseError::UnclosedDelimiter { .. } => "PARSE-003",
             ParseError::IllegalInContext { .. }  => "PARSE-004",
             ParseError::Raw { .. }               => "PARSE-005",
+            ParseError::NestingTooDeep { .. }    => "PARSE-006",
         }
     }
     fn span(&self) -> Span { self.span() }

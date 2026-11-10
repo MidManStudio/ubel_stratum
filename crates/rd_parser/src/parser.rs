@@ -41,6 +41,14 @@ fn memo_key(pos: usize, rule: MemoRule) -> u64 {
 
 // ── Parser struct ─────────────────────────────────────────────────────────────
 
+/// The deepest nesting of expressions and blocks the parser accepts. Each
+/// level costs stack in every later pass (type inference alone needs several
+/// KB per level), so the depth is bounded here and reported as `PARSE-006`
+/// instead of overflowing the stack later. A left-leaning chain such as
+/// `a + b + c + ...` counts one level per operator. See docs/PARSER_RULES.md
+/// section 5.14.
+pub const MAX_NESTING: usize = 1000;
+
 pub struct Parser<'ast, 'tok> {
     pub(crate) cursor:     Cursor<'tok>,
     pub(crate) arena:      &'ast AstArena,
@@ -52,6 +60,13 @@ pub struct Parser<'ast, 'tok> {
     /// this exists and where it's set.
     pub(crate) no_struct_lit: bool,
     pub(crate) memo:       FxHashMap<u64, MemoEntry>,
+    /// Levels of expression and block nesting currently open.
+    pub(crate) nest:       usize,
+    /// `PARSE-006` is reported once per parse, at the first level past the limit.
+    pub(crate) nest_reported: bool,
+    /// Set while the stage after a `|>` is about to be parsed; the first
+    /// primary expression takes it (see `parse_ident_expr`).
+    pub(crate) pipe_stage: bool,
     /// Dynamic estimates derived from total token count.
     /// Use these instead of the static `cap::*` constants wherever possible.
     pub(crate) estimates:  ParseEstimates,
@@ -68,6 +83,9 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             tier:      TierAnnotation::High,
             no_struct_lit: false,
             memo:      FxHashMap::default(),
+            nest:      0,
+            nest_reported: false,
+            pipe_stage: false,
             estimates,
         }
     }
@@ -86,8 +104,35 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
 impl<'ast, 'tok> Parser<'ast, 'tok> {
 
+    /// Opens one more level of nesting. Returns `false` once the limit is
+    /// passed (after reporting it); the caller then returns `None`. Every call
+    /// is paired with `leave_nesting`, whatever it returned.
+    #[inline(always)]
+    pub(crate) fn enter_nesting(&mut self) -> bool {
+        self.nest += 1;
+        if self.nest > MAX_NESTING { self.report_too_deep(); false } else { true }
+    }
+
+    #[inline(always)]
+    pub(crate) fn leave_nesting(&mut self) {
+        self.nest -= 1;
+    }
+
+    /// Reports `PARSE-006`. Like rustc's recursion limit this is fatal: the
+    /// unclosed delimiters of the over-deep construct make every later token
+    /// unreliable, so `emit` drops every parse error after this one (a stray
+    /// `}` from the unbalanced remainder would only be noise).
+    #[cold]
+    pub(crate) fn report_too_deep(&mut self) {
+        if self.nest_reported { return; }
+        self.nest_reported = true;
+        let span = self.cursor.current_span();
+        self.errors.add_parse_error(crate::error::nesting_too_deep(MAX_NESTING, span));
+    }
+
     #[inline(always)]
     pub(crate) fn emit(&mut self, err: ParseError) {
+        if self.nest_reported { return; }
         self.errors.add_parse_error(err);
     }
 
@@ -327,9 +372,20 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     }
 
     /// Returns true if the current token can start an expression.
+    ///
+    /// Must list every token `parse_expr::parse_prefix` has an arm for: a token
+    /// missing here makes `return`, `break` and `or return` read as a bare
+    /// form with no value, and the expression after it becomes a dead
+    /// statement (`return 3.0 * r` returned void). The table test in
+    /// `tests/call_and_return_parsing.rs` pins the full set.
     pub(crate) fn can_start_expr(&self) -> bool {
         matches!(self.cursor.peek(),
             TokenType::Ident(_)  | TokenType::IntLit(_)   | TokenType::FloatLit(_) |
+            TokenType::DoubleLit(_) | TokenType::TypedIntLit(_, _) |
+            // Built-in collection names double as ordinary names in
+            // expression position (`List.new()`), see `parse_prefix`.
+            TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet |
+            TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList |
             TokenType::StringLit(_) | TokenType::True     | TokenType::False        |
             TokenType::Null      | TokenType::SelfKw      | TokenType::Minus        |
             TokenType::Bang      | TokenType::Not         | TokenType::Tilde        |

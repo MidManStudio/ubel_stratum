@@ -1795,3 +1795,43 @@ diagnostics, exit code and output as a binary built from live before the change;
 The docs `TRAITS_DESIGN.md` ("What S6 settled"), `TRAITS_TIERS_SPEC.md`, `DIAGNOSTICS_RULES.md`
 (`TYPE-138` and the codes `dyn` reaches), `PARSER_RULES.md` (section 5.12), `PARKED_IDEAS.md` and
 `ubel_stratum_rd.md` were updated with it. The added lines were checked for em dashes and first or second person.
+
+A thirtieth delivery is a round of fixes found while testing, not a traits slice. Parser: `parse_call`
+no longer consumes a `(` of its own (both callers consume it), so `f((a + b))`, `f((1, 2))` and
+`list.push((x))` parse; `Parser::can_start_expr` lists every token `parse_prefix` accepts, so
+`return 3.0 * r`, `return 5u32` and `return List.new()` read their value instead of returning
+`void`; `|>` is lowered by `lower_pipe` to the call it stands for (`x |> f` is `f(x)`, `x |> f(a)`
+is `f(x, a)`, `x |> f?` is `(f(x))?`), the head of a stage is read as a callee so `x |> a.plus` is
+exactly `a.plus(x)` (the tier rule, trait dispatch and `TYPE-104` apply; a `LOW` caller of a `HIGH`
+method through a pipe was accepted before), and `ExprKind::Pipe` is no longer produced. Stack: a
+chain of about 68 operators on a 1 MB stack and about 526 on 8 MB overflowed the stack (type
+inference needs about 15 KB per level in a debug build, about 1 KB in a release build), so
+`MAX_NESTING` (1000) bounds the nesting in the parser and reports `PARSE-006` once, the new
+`ubel_stratum::stack::with_big_stack` runs the CLI and `check_source` on a 256 MB stack, and
+`crates/wasm_playground/build.rs` sets a 16 MiB stack at link time (a wasm build could not be run
+here, so that last part is untested). Sema: an array literal of different `dyn` shapes is coerced as
+an argument of a plain function, a `return`, a struct field, a field of an enum struct variant and an
+element of an outer literal (`hint_array_for` in `sema/type_infer/dyn_trait.rs`). Interpreter:
+`InlineList` read, assign and compound assign by index, with a negative index from the end
+(`eval_index`, the assignment arm and `native_index_set` in `interpreter/eval/expr.rs`, sharing
+`slot_of`). Five test files were added (`call_and_return_parsing`, `pipe`, `array_literal_hints`,
+`inline_list_index`, `nesting_limit`, 91 tests) and `stack.rs` has 4 unit tests; 13 fixtures were
+added (`ok_pipe_isolated`, `ok_pipe_combined`, `err_pipe_arity_isolated`, `err_pipe_type_isolated`,
+`err_pipe_value_type_isolated`, `ok_call_parens_isolated`, `ok_return_literals_isolated`,
+`ok_array_hint_isolated`, `ok_array_hint_combined`, `err_array_hint_not_implemented_isolated`,
+`ok_inline_list_index_isolated`, `ok_nesting_long_chain_isolated`, `err_nesting_too_deep_isolated`).
+Verification: the workspace has 1354 tests in 40 suites and none fails; all 414 `.ubl` files that
+existed give the same stage, diagnostics, exit code and output as a binary built from live before the
+change, and the 13 new ones behave as their headers say (before, the two nesting fixtures abort with a
+stack overflow, `err_pipe_arity_isolated` passes sema and panics at run time, and
+`ok_inline_list_index_isolated` panics at run time). The final tree has 246 files that are clean and
+run, 170 that stop at sema, 9 at parse and 2 at lexing. A mutation pass over the changed rules (42
+mutants) is described under the five test files in `docs/ubel_stratum_rd.md`: 37 are caught and 5
+survive, all with a stated reason (two span choices and two parser shapes that no program that
+exists today can tell apart, and a placeholder guard that only changes which error an already
+unsupported call reports). The docs `PARSER_RULES.md` (sections 5.13 to 5.15), `DIAGNOSTICS_RULES.md`
+(`PARSE-006`), `TRAITS_DESIGN.md`, `PARKED_IDEAS.md`, `ubel_stratum_cli.md`, `ubel_stratum_rd.md`,
+`web/site/src/language-tour.md` and `web/site/src/project-status.md` were updated with it. Open: an
+array literal as a method argument, a tail expression, a tuple variant payload and a generic callee;
+a pipe stage that returns a function to apply. The added lines were checked for em dashes and first
+or second person.

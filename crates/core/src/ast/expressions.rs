@@ -46,6 +46,9 @@ pub enum ExprKind<'ast> {
     },
 
     // ── Pipe: `left |> right` ────────────────────────────────────
+    // Not produced by `rd_parser`, which lowers `|>` to a `Call` while parsing
+    // (docs/PARSER_RULES.md section 5.13). Kept for the reference LALRPOP
+    // parser and the visitors.
     Pipe {
         left: &'ast Expr<'ast>,
         right: &'ast Expr<'ast>,

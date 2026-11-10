@@ -1,0 +1,40 @@
+// tests/fixtures/ok_array_hint_combined.ubl
+// The array hint beside the cases it must leave alone: a literal of plain
+// elements, a generic callee, a value that is not a literal, a named argument,
+// and the `let` site that S6 already covered.
+// Expected: sema OK, interpret OK.
+
+trait Shape { fn area(self) int }
+struct Sq { s: int }
+struct Ci { r: int }
+impl Shape for Sq { fn area(self) int { return self.s * self.s } }
+impl Shape for Ci { fn area(self) int { return 3 * self.r * self.r } }
+
+fn total(xs: List<&dyn Shape>) int {
+    let mut t = 0
+    for x in xs { t += x.area() }
+    return t
+}
+
+fn sum(xs: List<int>) int {
+    let mut t = 0
+    for x in xs { t += x }
+    return t
+}
+
+fn first<T>(xs: List<T>) T { return xs[0] }
+
+fn count(n: int, xs: List<&dyn Shape>) int { return n + xs.len() }
+
+fn main() void {
+    let a = Sq { s = 2 }
+    let b = Ci { r = 1 }
+    let held: List<&dyn Shape> = [&a, &b]
+
+    assert(sum([1, 2, 3]) == 6, "a literal of plain elements")
+    assert(first([4, 5]) == 4, "a generic callee")
+    assert(total(held) == 7, "a value that is not a literal")
+    assert(total(xs = [&a, &b]) == 7, "a named argument")
+    assert(count(10, [&a, &b]) == 12, "a second argument")
+    println("array hint combined ok")
+}

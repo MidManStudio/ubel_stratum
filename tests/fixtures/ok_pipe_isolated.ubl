@@ -1,0 +1,23 @@
+// tests/fixtures/ok_pipe_isolated.ubl
+// The pipe operator on its own. `x |> f` calls `f(x)`. `x |> f(a)` calls
+// `f(x, a)`: the piped value is the first argument. Stages chain left to right,
+// a lambda is a stage, the result has the return type of the last stage, and
+// arithmetic binds tighter than `|>` while a comparison binds looser.
+// Expected: sema OK, interpret OK.
+
+fn double(x: int) int { return x * 2 }
+fn add(x: int, y: int) int { return x + y }
+fn sub(x: int, y: int) int { return x - y }
+
+fn main() void {
+    assert(5 |> double == 10, "a bare function is called with the piped value")
+    assert((5 |> double()) == 10, "an empty call gets the piped value")
+    assert((10 |> sub(3)) == 7, "the piped value is the first argument, not the last")
+    assert((5 |> double |> double) == 20, "a chain runs left to right")
+    assert((5 |> add(1) |> double |> sub(2)) == 10, "stages with and without arguments")
+    assert((5 |> fn(x: int) x + 1) == 6, "a lambda is a stage")
+    assert((1 + 2 |> double) == 6, "arithmetic binds tighter than the pipe")
+    let doubled: int = 4 |> double
+    assert(doubled == 8, "the result has the stage's return type")
+    println("pipe ok")
+}

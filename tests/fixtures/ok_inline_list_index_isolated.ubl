@@ -1,0 +1,29 @@
+// tests/fixtures/ok_inline_list_index_isolated.ubl
+// `InlineList` indexing: read, assign, compound assign, a negative index from
+// the end. The index is checked against the items present, not the capacity.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let l: InlineList<int> = InlineList.new(4)
+    l.push(10)
+    l.push(20)
+
+    assert(l[0] == 10, "read")
+    assert(l[1] == 20, "read")
+    assert(l[-1] == 20, "a negative index counts from the end")
+    l[0] = 11
+    assert(l[0] == 11, "assign")
+    l[-1] = 99
+    assert(l[1] == 99, "assign by a negative index")
+    l[1] += 1
+    assert(l[1] == 100, "compound assign")
+
+    let mut t = 0
+    let mut i = 0
+    while i < l.len() {
+        t += l[i]
+        i += 1
+    }
+    assert(t == 111, "a loop over the items")
+    println("inline list index ok")
+}

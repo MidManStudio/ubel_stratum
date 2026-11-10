@@ -11,7 +11,7 @@ pub(crate) mod parser;
 pub(crate) mod parsers;
 
 pub use check::{check_source, CheckReport, Stage};
-pub use parser::Parser;
+pub use parser::{Parser, MAX_NESTING};
 
 use ubel_stratum::{
     ast::{arena::AstArena, expressions::Expr, root::Program},

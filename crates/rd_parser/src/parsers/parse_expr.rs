@@ -55,10 +55,26 @@ fn parse_bp<'ast, 'tok>(
     p: &mut Parser<'ast, 'tok>,
     min_bp: u8,
 ) -> Option<&'ast Expr<'ast>> {
+    let ok = p.enter_nesting();
+    let result = if ok { parse_bp_inner(p, min_bp) } else { None };
+    p.leave_nesting();
+    result
+}
+
+fn parse_bp_inner<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+    min_bp: u8,
+) -> Option<&'ast Expr<'ast>> {
     let lo = p.span();
     let mut lhs = parse_prefix(p)?;
+    // Every turn of the loop below wraps `lhs` in one more node, so a long
+    // chain is a deep tree even though it parses without recursion. It is
+    // counted with the open nesting against `MAX_NESTING`.
+    let mut wraps = 0usize;
 
     loop {
+        wraps += 1;
+        if p.nest + wraps > crate::parser::MAX_NESTING { p.report_too_deep(); return None; }
         let op = p.cursor.peek().clone();
 
         // ── Special: `or return/break/continue` → OrElse ─────────────────────
@@ -121,9 +137,11 @@ fn parse_bp<'ast, 'tok>(
 
         // ── Pipe |> ───────────────────────────────────────────────────────────
         if matches!(op, TokenType::PipeArrow) {
-            let right = parse_bp(p, r_bp)?;
-            let span  = lo.merge(&right.span);
-            lhs = p.alloc(Expr { kind: ExprKind::Pipe { left: lhs, right }, span });
+            // The stage's head is read as a callee: see `parse_ident_expr`.
+            p.pipe_stage = true;
+            let stage = parse_bp(p, r_bp);
+            p.pipe_stage = false;
+            lhs = lower_pipe(p, lo, lhs, stage?);
             continue;
         }
 
@@ -140,10 +158,55 @@ fn parse_bp<'ast, 'tok>(
     Some(lhs)
 }
 
+// ── Pipe lowering ─────────────────────────────────────────────────────────────
+
+/// `left |> stage` is lowered to the call it stands for, so every later pass
+/// sees an ordinary call and checks it, moves `left` into it and borrows it
+/// like one (docs/PARSER_RULES.md section 5.13):
+///
+/// ```text
+/// x |> f         =>  f(x)
+/// x |> f(a, b)   =>  f(x, a, b)      (the piped value is the first argument)
+/// x |> f?        =>  (f(x))?
+/// x |> f(a)?     =>  (f(x, a))?
+/// ```
+///
+/// `lo` is the start of the whole pipe expression. The call gets the span from
+/// `lo` to the end of the stage, never the span of the stage's own node, and
+/// a `?` wraps a call whose span ends before the `?`, so no two nodes share a
+/// span (sema keys the type of an expression by span).
+fn lower_pipe<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+    lo: LSpan,
+    left: &'ast Expr<'ast>,
+    stage: &'ast Expr<'ast>,
+) -> &'ast Expr<'ast> {
+    let piped = Arg { kind: ArgKind::Positional(left), span: left.span };
+    match &stage.kind {
+        ExprKind::Try(inner) => {
+            let call = lower_pipe(p, lo, left, inner);
+            p.alloc(Expr { kind: ExprKind::Try(call), span: lo.merge(&stage.span) })
+        }
+        ExprKind::Call { callee, args } => {
+            let mut all: Vec<Arg<'ast>> = Vec::with_capacity(args.len() + 1);
+            all.push(piped);
+            all.extend_from_slice(args);
+            let args = p.arena.alloc_slice_copy(all.as_slice());
+            p.alloc(Expr { kind: ExprKind::Call { callee, args }, span: lo.merge(&stage.span) })
+        }
+        _ => {
+            let args = p.arena.alloc_slice_copy(&[piped]);
+            p.alloc(Expr { kind: ExprKind::Call { callee: stage, args }, span: lo.merge(&stage.span) })
+        }
+    }
+}
+
 // ── Prefix ────────────────────────────────────────────────────────────────────
 
 fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'ast>> {
     let lo = p.span();
+    // Only the very first primary expression of a pipe stage is its head.
+    let stage_head = std::mem::take(&mut p.pipe_stage);
     match p.cursor.peek().clone() {
         TokenType::IntLit(n)    => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::Int(n)),    span: lo })) }
         TokenType::TypedIntLit(raw, suffix) => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::TypedInt { raw, suffix }), span: lo })) }
@@ -157,7 +220,7 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         TokenType::Null         => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::Lit(Literal::Null),        span: lo })) }
         TokenType::InterpolatedString(parts) => parse_interp(p, parts, lo),
         TokenType::SelfKw       => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::SelfExpr, span: lo })) }
-        TokenType::Ident(name)  => parse_ident_expr(p, name, lo),
+        TokenType::Ident(name)  => parse_ident_expr(p, name, lo, stage_head),
         // Built-in collection type names (List, Dictionary, Set, Queue,
         // Stack) are dedicated keyword tokens for parse_type.rs's benefit,
         // but they're also ordinary names in expression position —
@@ -166,7 +229,7 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
         | TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList => {
             let name = p.cursor.peek().to_string();
-            parse_ident_expr(p, name, lo)
+            parse_ident_expr(p, name, lo, stage_head)
         }
         TokenType::Minus => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::Neg,    operand: o }, span })) }
         TokenType::Bang  => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::Not,    operand: o }, span })) }
@@ -224,8 +287,14 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
 
 // ── Ident / path / short-decl ─────────────────────────────────────────────────
 
+/// `stage_head` is true for the head of a pipe stage (`x |> a.plus`). A dotted
+/// name is a path, except when it is called: `a.plus(5)` reads `plus` as a field
+/// access on `a` (a method, an enum variant, a static function) so that sema
+/// resolves it as a call target. The stage `a.plus` is that callee without its
+/// parentheses, so its last segment is read the same way, and `x |> a.plus`
+/// lowers to exactly the call `a.plus(x)` (tier rule, trait dispatch and all).
 fn parse_ident_expr<'ast, 'tok>(
-    p: &mut Parser<'ast, 'tok>, name: String, lo: LSpan,
+    p: &mut Parser<'ast, 'tok>, name: String, lo: LSpan, stage_head: bool,
 ) -> Option<&'ast Expr<'ast>> {
     let name = p.intern(&name);
     p.cursor.advance();
@@ -261,10 +330,15 @@ fn parse_ident_expr<'ast, 'tok>(
         };
         if let Some(seg) = seg_name {
             let seg = p.intern(&seg);
-            if matches!(p.cursor.peek_nth(1), TokenType::LeftParen) {
+            let called = matches!(p.cursor.peek_nth(1), TokenType::LeftParen);
+            let last_of_stage = stage_head && !matches!(p.cursor.peek_nth(1), TokenType::Dot);
+            if called || last_of_stage {
                 // Field access result; postfix loop will handle `(`
+                let seg_span = p.span();
                 p.cursor.advance();
-                hi = p.span();
+                // A called name reaches to its `(`; a stage head ends with its own segment,
+                // since the next token belongs to whatever encloses the stage.
+                hi = if called { p.span() } else { seg_span };
                 let base = build_path(p, &segs, lo);
                 let span = lo.merge(&hi);
                 return Some(p.alloc(Expr { kind: ExprKind::Field { target: base, field: seg }, span }));
@@ -907,7 +981,8 @@ fn parse_dot<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, target: &'ast Expr<'ast>, _
     let (field, fspan) = parse_field_name(p)?;
     if p.cursor.is_at(&TokenType::LeftParen) {
         let callee = p.alloc(Expr { kind: ExprKind::Field { target, field }, span: lo.merge(&fspan) });
-        parse_call(p, callee, p.span(), lo)
+        let open   = p.cursor.advance().span; // `(`
+        parse_call(p, callee, open, lo)
     } else {
         Some(p.alloc(Expr { kind: ExprKind::Field { target, field }, span: lo.merge(&fspan) }))
     }
@@ -936,8 +1011,11 @@ fn parse_field_name<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<(&'ast str
 }
 
 fn parse_call<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, callee: &'ast Expr<'ast>, open_sp: LSpan, lo: LSpan) -> Option<&'ast Expr<'ast>> {
-    // `(` already consumed by caller OR we need to consume it here
-    let open = if p.cursor.is_at(&TokenType::LeftParen) { p.cursor.advance().span } else { open_sp };
+    // Contract: the caller has already consumed the `(` and passes its span.
+    // This function must never consume a `(` itself: when the first argument
+    // starts with one (`f((a + b))`, `f((1, 2))`) that `(` belongs to the
+    // argument, and eating it here left the call's own `)` dangling.
+    let open = open_sp;
     let prev_nsl = p.clear_no_struct_lit();
     let mut args: Vec<Arg<'ast>> = Vec::with_capacity(p.estimates.call_args);
     let mut ok = true;

@@ -1,0 +1,9 @@
+// tests/fixtures/err_pipe_value_type_isolated.ubl
+// The piped value is checked against the first parameter of the stage.
+// Expected: sema FAIL (TYPE-101).
+
+fn double(x: int) int { return x * 2 }
+
+fn main() void {
+    println("a" |> double)
+}

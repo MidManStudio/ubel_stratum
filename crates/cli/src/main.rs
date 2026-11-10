@@ -64,11 +64,13 @@ fn main() {
 
     let global = GlobalOpts { verbose: cli.verbose, quiet: cli.quiet, json: cli.json };
 
-    let code = match cli.command {
+    // The whole pipeline runs on a thread with a large stack: every pass walks
+    // the tree recursively (see `ubel_stratum::stack`).
+    let code = ubel_stratum::stack::with_big_stack(move || match cli.command {
         Commands::Check(args)       => commands::check::run(args, &global),
         Commands::Run(args)         => commands::run::run(args, &global),
         Commands::DebugTokens(args) => commands::debug_tokens::run(args, &global),
-    };
+    });
 
     std::process::exit(code);
 }

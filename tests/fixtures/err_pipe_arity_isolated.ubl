@@ -1,0 +1,12 @@
+// tests/fixtures/err_pipe_arity_isolated.ubl
+// The piped value counts as an argument. `add` wants two, `5 |> add` gives it
+// one. (Before `|>` was lowered to a call the stage `add(1)` was checked as a
+// call of its own, so the working `5 |> add(1)` was the one reported.)
+// Expected: sema FAIL (TYPE-102).
+
+fn add(x: int, y: int) int { return x + y }
+
+fn main() void {
+    let a = 5 |> add
+    println(a)
+}

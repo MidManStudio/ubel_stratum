@@ -102,6 +102,29 @@ verified safe.
   (`if x == y { hit_count = hit_count + 1 }`) could misparse as a
   struct literal; `if`/`while`/`for`/`match` heads no longer read a
   struct literal unless it is parenthesized
+- A round of parser and run-time fixes found while testing:
+  - A call whose first argument starts with a parenthesis (`f((a + b))`,
+    `f((1, 2))`, `list.push((x))`) no longer fails to parse
+  - `return` after a double literal, a typed integer literal or a collection
+    name (`return 3.0 * r`, `return 5u32`, `return List.new()`) used to read
+    as a bare `return`, so the function returned nothing; the value is read
+    now
+  - The pipe operator `|>` calls the stage with the piped value as its first
+    argument: `x |> f` is `f(x)`, `x |> f(a)` is `f(x, a)`, `x |> f?` unwraps
+    a fallible result, and a method (`x |> obj.method`) or a lambda can be a
+    stage. The result has the stage's return type; before, it was typed as
+    the stage itself and a stage with arguments was rejected
+  - A very long expression, such as a string built from hundreds of pieces
+    in one statement, overflowed the stack and aborted the compiler (in the
+    browser playground it showed as "index out of bounds"). Nesting deeper
+    than 1000 levels is now one clear error (`PARSE-006`), and everything
+    below that runs on a large stack
+  - `InlineList` indexing (`l[i]`, `l[i] = v`, a negative index counting
+    from the end) type-checked but stopped at run time; it works
+  - An array literal of different `dyn` shapes works as an argument of a
+    function, a returned value, a struct field, an enum variant field and
+    inside another literal, not only on the right of a `let` with a written
+    type
 
 ## Active work
 
@@ -170,6 +193,9 @@ verified safe.
 - Format specs for sign, zero padding and numeric base (`{x:+}`,
   `{x:05}`, `{x:x}`) work on plain `int` only, not on the fixed-width
   integers
+- An array literal of different `dyn` shapes is still typed by its first
+  element as the argument of a method call, the tail expression of a
+  function, a tuple variant payload and an argument of a generic function
 - Constructing through an alias to a type that is not a struct or enum
   (`type Score = int`, then `Score { x = 1 }`) is not rejected at compile
   time

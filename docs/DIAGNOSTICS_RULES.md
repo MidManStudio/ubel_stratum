@@ -178,6 +178,7 @@ family in `TierError`.
 | PARSE-003 | UnclosedDelimiter |
 | PARSE-004 | IllegalInContext |
 | PARSE-005 | Raw |
+| PARSE-006 | NestingTooDeep |
 
 ### NAME-0xx — `errors/naming/mod.rs`
 
@@ -375,6 +376,7 @@ larger effort, not started.
 - `PARSE-003` `UnclosedDelimiter` — *Error*. "unclosed `delim` — found `x` instead" or "...reached end of file" if nothing closed it. Suggestion: add the matching closing delimiter.
 - `PARSE-004` `IllegalInContext` — *Error*. "`what` is not allowed here: reason". Suggestion passed through verbatim when the caller supplies one. Also raised for a return type annotation on a lambda, for a `@tier(...)` written on a `const` (a const is readable from every tier, so the annotation would have no effect), and for `@tier(mid)` or `@tier(low)` written on a `static` (`@tier(high)` is accepted as a redundant spelling). A tier BLOCK around a const or static is not an own annotation and is not reported.
 - `PARSE-005` `Raw` — *Error*. Message passed through verbatim, no suggestion. Escape hatch for parser errors that don't fit the other four shapes.
+- `PARSE-006` `NestingTooDeep` — *Error*. "expression or block nested more than 1000 levels deep", at the token where the limit is passed. Suggestion: "split it into several statements, or join pieces with a collection method". A chain such as `a + b + c + ...` counts one level per operator, and parentheses, calls and blocks one level each. Fatal in the sense that no parse error after it is reported (errors before it are kept), because the unclosed delimiters of the over-deep construct make the rest of the file unreliable. The limit is `MAX_NESTING` in `rd_parser/src/parser.rs`; see `PARSER_RULES.md` section 5.14 for why it exists and how the stack is sized for it.
 
 **NAME-0xx**
 - `NAME-001` `UndefinedName` — *Error*. "undefined name `x`". Suggestion: "did you mean `y`?" when a close match was found, otherwise none.

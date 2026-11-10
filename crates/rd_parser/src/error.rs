@@ -79,6 +79,11 @@ pub fn illegal_here(what: &str, reason: &str, span: Span, hint: Option<&str>) ->
     }
 }
 
+/// Expressions or blocks nested past `limit` levels.
+pub fn nesting_too_deep(limit: usize, span: Span) -> ParseError {
+    ParseError::NestingTooDeep { limit, span }
+}
+
 /// A catch-all for situations where none of the structured variants fit.
 pub fn raw(message: impl Into<String>, span: Span) -> ParseError {
     ParseError::Raw { message: message.into(), span }

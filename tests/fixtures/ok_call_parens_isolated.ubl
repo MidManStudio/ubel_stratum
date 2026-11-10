@@ -1,0 +1,25 @@
+// tests/fixtures/ok_call_parens_isolated.ubl
+// A call whose first argument starts with `(`: a grouped expression, a grouped
+// name, a tuple, parentheses several deep, a method call, and a chain of calls.
+// The `(` after the callee belongs to the call and the next `(` to the argument.
+// Expected: sema OK, interpret OK.
+
+fn take(x: int) int { return x }
+fn add(x: int, y: int) int { return x + y }
+fn first(t: (int, int)) int { return t[0] }
+
+fn main() void {
+    let a = 2
+    let b = 3
+    assert(take((a + b)) == 5, "a grouped expression as the only argument")
+    assert(take((a)) == 2, "a grouped name")
+    assert(first((7, 8)) == 7, "a tuple")
+    assert(take(((1 + 2))) == 3, "several parentheses deep")
+    assert(add((1 + 2), (3)) == 6, "grouped first and second arguments")
+
+    let l: List<int> = List.new()
+    l.push((a + b))
+    l.push((1))
+    assert(l.len() == 2, "a method call with a grouped first argument")
+    println("call parens ok")
+}

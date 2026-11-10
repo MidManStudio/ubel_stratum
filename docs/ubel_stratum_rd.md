@@ -527,6 +527,100 @@ run-time values.
 
 **Mutation pass:** three passes over `sema/type_infer/dyn_trait.rs`, `sema/type_infer.rs`, `sema/type_infer/impl_patterns.rs`, `sema/type_table.rs`, `rd_parser/parsers/parse_type.rs` and `errors/types/mod.rs`. The last pass ran 64 mutants and 63 were caught. The first pass left 19 survivors, each classified: seven were missing tests (a function result type reported once, an optional of a type for an optional `dyn`, a `&Circle` and a `Unique<Circle>` that must not lose their wrapper, `List.set`, `InlineList.push` and the method-argument site) and the tests were added; ten were redundant, equivalent or dead and were deleted (the equal-types early exit, the hint reset, the special cases for an unknown type and a literal variable, and four wrapper lock-step arms that no program reaches); one, the array hint, was simplified so that every part of it is exercised. Later passes found the `deep_apply` arm dead, a literal-variable guard equivalent, and two of the three impl-target arms repeating each other, and those were deleted. The one survivor of the last pass is the `dyn` arm of `count_ref_lifetime`: the match is exhaustive so the arm has to exist, and it only changes the result for a lifetime named inside the arguments of the borrowed parameter itself, which no test pins. The first run of the new tests found one mistake in the tests themselves (a square's area is `side * side`).
 
+### `tests/call_and_return_parsing.rs`
+
+**What it does:** Two parser fixes (13 tests): a call whose first argument starts with `(`, and the
+tokens after which `return` reads a value. Programs go through `check_source` and the interpreter.
+
+**Decisions:**
+- Parenthesis: a grouped expression, a grouped name, a tuple, parentheses several deep, a grouped
+  first and second argument, and a method call, each printed by the interpreter, plus an unclosed
+  call that is still a parse error.
+- `ROWS` has one row per kind of expression start that `parse_prefix` accepts (an integer, a typed
+  integer, a double, a string, a char, both booleans, `-`, `!`, `not`, `~`, a group, an array, an
+  `if`, and the six collection names), each written after `return` and printed. A literal followed
+  by an operator (`return 3.0 * 2.0 * 2.0`) is the original bug. A bare `return` still returns
+  nothing.
+
+**Mutation:** restoring the double consume in `parse_call` and dropping the advance in `parse_dot`
+fail 4 or more tests each; removing `DoubleLit`, `TypedIntLit` or any one of the collection tokens
+from `can_start_expr` each fails the table.
+
+### `tests/pipe.rs`
+
+**What it does:** The pipe operator, lowered to a call by the parser (30 tests, `PARSER_RULES.md`
+section 5.13).
+
+**Decisions:**
+- Run time: a bare function, an empty call, the piped value as the first argument (`10 |> sub(3)`
+  is 7), chains, a lambda stage, any expression as the piped value, a pipe inside an argument, a
+  method, a trait method, a static function and an enum variant as a stage, and precedence
+  against `+` and `==`.
+- Types: the result has the return type of the stage, the piped value is checked against the first
+  parameter, a stage short of arguments is `TYPE-102`, and `?` on a stage unwraps once (also in a
+  chain, and after a call stage with arguments).
+- A method stage is the same call as `a.m(x)`: it obeys the tier rule (`TIER-005` from a `LOW`
+  function to a `HIGH` method, which a bare path stage let through), an unknown method is
+  `TYPE-104` with the span of the stage head alone, and a dotted name inside an argument stays a
+  path.
+
+**Mutation:** inserting the piped value last, dropping the `Try` wrapper, dropping the piped
+argument of a bare stage, reading a method stage as a path and letting the stage head span run on
+to the next token are each caught. Merging the span of the lowered call with its stage, and the
+span of the `Try` with its call, survive: no program that exists today can observe it.
+
+### `tests/array_literal_hints.rs`
+
+**What it does:** An array literal handed to a written `dyn` element type at a site other than a
+`let` (16 tests, `TRAITS_DESIGN.md`, "What S6 settled").
+
+**Decisions:**
+- Sites covered: a plain function argument (first, second and named), a `return`, a struct field, a
+  field of an enum struct variant and an element of an outer literal.
+- What it must not change: a literal of plain elements, mixed plain elements (still `TYPE-101`), a
+  generic callee, a non-literal argument, an empty literal, and a missing impl in the literal, now
+  one `TYPE-126` instead of `expected Sq, found Tri`.
+- A hint armed for a non-literal must not reach a later literal in the program.
+- Not covered and not tested: a method argument, a tail expression, a tuple variant payload, a
+  generic callee whose parameter holds a placeholder.
+
+**Mutation:** each site turned off is caught by its own test, and so is arming the hint for a
+value that is not a literal. Skipping the placeholder guard on a generic callee survives: it only
+changes which error an already unsupported call reports.
+
+### `tests/inline_list_index.rs`
+
+**What it does:** `InlineList` indexing at run time (13 tests). Sema accepted it since S5d and the
+interpreter panicked.
+
+**Decisions:**
+- Read, assign, compound assign, a negative index from the end, a string element and a loop.
+- Out of range is checked against the items present, not the capacity (`len 2` in the message for
+  a capacity of 4).
+- `index` and `index_set` through an `Index` or `IndexSet` bound reach the other two run-time arms
+  (`eval_index` through the operator path and `native_index_set`); explicit `.index(i)` on the
+  collection itself is not accepted by sema, for a `List` as well.
+
+**Mutation:** each of the three arms disabled, the negative-index rule and the bound check are
+caught.
+
+### `tests/nesting_limit.rs`
+
+**What it does:** The nesting limit and the large stack (19 tests, `PARSER_RULES.md` section 5.14).
+
+**Decisions:**
+- Within the limit and run on the large stack: a string chain of 900 operands (the shape of the
+  original report), integer and `*` chains, 900 nested parentheses, calls and blocks, and a chain
+  of 998 operands, the longest that fits.
+- Past it, one `PARSE-006` and nothing else: 999 operands, 1100, 20 000, parentheses, calls,
+  blocks and a pipe chain. An earlier parse error is kept; a later one is not reported.
+- The programs run through `ubel_stratum::stack::with_big_stack`, as the CLI does; a test thread
+  has 2 MB.
+
+**Mutation:** not counting the chain, not entering a level in `parse_bp` or in a block, a limit of
+1100 or 2000, reporting twice, and not suppressing later errors are each caught. Four mutants
+survive, all behaviour-equivalent (see `tests/pipe.rs` and `PARSER_RULES.md` 5.13).
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in

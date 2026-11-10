@@ -541,9 +541,15 @@ it actually turned up:
   assignment (`m = t`, `m += t` on a number), all verified on a baseline built before S5c. A
   field read of it, an operator on it and a `for` over it are guarded (S5b, S5c). Each site
   reads the type table with the error sentinel and needs the same early return.
-- A parenthesized expression as the first argument of a call, `println((a + b))`
-  or `f((a), b)`, is `PARSE-001`; as a later argument (`f(b, (a))`) and in a
-  `let` (`let c = (a + b) * 2`) it parses. Found while testing S5c; it predates it.
+- Array literals of different `dyn` shapes are still typed by their own first element as an
+  argument of a method call, as the tail expression of a function body, as a tuple variant payload
+  and as an argument of a generic callee (the hint covers a `let`, a plain function argument, a
+  `return`, a struct field, an enum struct field and a nested literal). The method and the generic
+  callee need the parameter types before the arguments are inferred, which the call arm does not
+  have at that point; the tail expression needs the function's return type threaded into the body.
+- A pipe stage that returns a function to be applied to the piped value (`x |> make_adder(3)`
+  meaning `make_adder(3)(x)`) is not expressible: a call stage always takes the piped value as its
+  first argument, and parentheses leave no node. Bind the function to a name first.
 - A `for` loop over a `null` optional collection (a `List<int>?` that holds
   `null`) panics at run time, as a method call on `null` does; sema looks
   through `T?` and `T!` and cannot know the value.

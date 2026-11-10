@@ -1,0 +1,18 @@
+// tests/fixtures/err_array_hint_not_implemented_isolated.ubl
+// An element of the literal whose type does not implement the trait. The
+// element is coerced to `&dyn Shape`, so the missing impl is what is reported
+// (it used to be `expected Sq, found Tri`).
+// Expected: sema FAIL (TYPE-126).
+
+trait Shape { fn area(self) int }
+struct Sq { s: int }
+struct Tri { h: int }
+impl Shape for Sq { fn area(self) int { return self.s * self.s } }
+
+fn total(xs: List<&dyn Shape>) int { return xs.len() }
+
+fn main() void {
+    let a = Sq { s = 2 }
+    let t = Tri { h = 1 }
+    println(total([&a, &t]))
+}

@@ -1,0 +1,12 @@
+// tests/fixtures/err_pipe_type_isolated.ubl
+// The result of `x |> f` is what `f(x)` returns: `double` returns an `int`, so
+// it cannot be bound to a `string`. (It used to be typed as the function
+// itself, `fn(int) int`.)
+// Expected: sema FAIL (TYPE-101).
+
+fn double(x: int) int { return x * 2 }
+
+fn main() void {
+    let a: string = 5 |> double
+    println(a)
+}

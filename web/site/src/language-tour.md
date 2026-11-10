@@ -121,6 +121,14 @@ let result = data
     |> save
 ```
 
+`x |> f` calls `f(x)`. A stage with arguments gets the piped value as its
+first argument, so `x |> f(a, b)` calls `f(x, a, b)`, and a `?` after a stage
+unwraps the result of the call (`x |> parse?` is `parse(x)?`). Stages chain
+left to right, a lambda can be a stage, and the result has the return type of
+the last stage. Arithmetic binds tighter than `|>`, so `1 + 2 |> double` is
+`double(3)`; a comparison binds looser, so `5 |> double == 10` compares the
+result.
+
 ## Extension functions
 
 ```ubel

@@ -1,0 +1,50 @@
+// tests/fixtures/ok_pipe_combined.ubl
+// `|>` beside the features around it. A stage may end in `?`, which unwraps the
+// fallible result of the call (`x |> half?` is `half(x)?`, an `int`, not an
+// `int!`), a stage may be a generic function, the piped value may be a method
+// call or an element read, and a pipe may sit inside an argument list, an
+// index and a struct literal.
+// Expected: sema OK, interpret OK.
+
+struct Box { n: int }
+
+fn double(x: int) int { return x * 2 }
+fn add(x: int, y: int) int { return x + y }
+fn first<T>(xs: List<T>) T { return xs[0] }
+
+fn half(x: int) int! {
+    if x % 2 != 0 { fail "odd" }
+    return x / 2
+}
+
+fn quarter(x: int) int! {
+    let h = x |> half?
+    let q = h |> half?
+    return q
+}
+
+fn run() int! {
+    let a = 8 |> half? |> add(1) |> double
+    let b = 20 |> half? |> half?
+    return a + b
+}
+
+fn main() void {
+    let l: List<int> = List.new()
+    l.push(4)
+    l.push(5)
+
+    assert((l |> first |> double) == 8, "a generic function as a stage")
+    assert((l.len() |> double) == 4, "a method call as the piped value")
+    assert((l[1] |> add(1)) == 6, "an element read as the piped value")
+    assert(add(1 |> double, 2 |> double) == 6, "pipes inside an argument list")
+
+    let b = Box { n = 3 |> double }
+    assert(b.n == 6, "a pipe in a struct field")
+
+    let xs = [10, 20, 30]
+    assert(xs[1 |> add(0)] == 20, "a pipe in an index")
+
+    let q = quarter(8)
+    println("pipe combined ok")
+}

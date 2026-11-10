@@ -1,0 +1,43 @@
+// tests/fixtures/ok_array_hint_isolated.ubl
+// An array literal of different shapes where a `dyn` element type is written:
+// an argument of a function, a `return`, a struct field, an enum struct
+// variant, and an outer literal. Each element is coerced to the written
+// element type, so `[&a, &b]` is a `List<&dyn Shape>`, not a list of its first
+// element's type.
+// Expected: sema OK, interpret OK.
+
+trait Shape { fn area(self) int }
+struct Sq { s: int }
+struct Ci { r: int }
+impl Shape for Sq { fn area(self) int { return self.s * self.s } }
+impl Shape for Ci { fn area(self) int { return 3 * self.r * self.r } }
+
+struct Holder { items: List<&dyn Shape> }
+enum Bag { Full { items: List<&dyn Shape> }, Empty }
+
+fn total(xs: List<&dyn Shape>) int {
+    let mut t = 0
+    for x in xs { t += x.area() }
+    return t
+}
+
+fn pair(a: &Sq, b: &Ci) List<&dyn Shape> { return [a, b] }
+
+fn main() void {
+    let a = Sq { s = 2 }
+    let b = Ci { r = 1 }
+
+    assert(total([&a, &b]) == 7, "an argument")
+    assert(total(pair(&a, &b)) == 7, "a return")
+
+    let h = Holder { items = [&a, &b] }
+    assert(total(h.items) == 7, "a struct field")
+
+    let g = Bag.Full { items = [&b, &a] }
+    let rows: List<List<&dyn Shape>> = [[&a, &b], [&b]]
+    let mut t = 0
+    for row in rows { t += total(row) }
+    assert(t == 10, "a nested literal")
+    assert(total([]) == 0, "an empty literal takes the written type")
+    println("array hint ok")
+}

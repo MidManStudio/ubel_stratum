@@ -9,5 +9,6 @@ pub mod ast;
 pub mod builtins;
 pub mod sema;
 pub mod interpreter;
+pub mod stack;
 
 pub use lexer::{Token, TokenType, tokenize};

@@ -212,6 +212,36 @@ impl<'a> InferCtx<'a> {
         self.try_dyn_coercion(elem, arg_ty, arg_span);
     }
 
+    /// Arms the element hint for `value` when it is an array literal that is
+    /// about to be inferred against the written type `expected`. The literal
+    /// takes the hint at once, so a value that is not a literal leaves it
+    /// untouched. Every typed site that hands a value to a written type
+    /// calls this before inferring the value: a `let`, an argument, a
+    /// `return`, a struct field, an element of an outer literal.
+    pub(super) fn hint_array_for<'ast>(&mut self, expected: TypeId, value: &Expr<'ast>) {
+        if !matches!(value.kind, ExprKind::Array(_)) { return; }
+        self.array_elem_hint = self.array_hint_elem(expected);
+    }
+
+    /// The written parameter types of a callee that has a function type, in
+    /// order; empty for anything else (a method is resolved only after its
+    /// arguments are inferred, so it has none here).
+    pub(super) fn callee_param_types(&mut self, callee_ty: TypeId) -> Vec<TypeId> {
+        let resolved = self.apply(callee_ty);
+        let shape = self.peel_closure_tag(resolved);
+        match self.ctx.types.get(shape).clone() {
+            SemaType::Function { params, .. } => params,
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether a generic parameter placeholder appears anywhere in `ty`.
+    pub(super) fn mentions_any_param(&mut self, ty: TypeId) -> bool {
+        let t = self.apply(ty);
+        matches!(self.ctx.types.get(t), SemaType::Param(_))
+            || self.type_children(t).into_iter().any(|c| self.mentions_any_param(c))
+    }
+
     /// Whether `ty` is a `dyn` type or has one anywhere inside it.
     fn mentions_dyn(&self, ty: TypeId) -> bool {
         matches!(self.ctx.types.get(ty), SemaType::Dyn { .. })

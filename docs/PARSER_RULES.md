@@ -516,7 +516,8 @@ No memoisation needed; `(expr,)` vs `(expr)` is resolved when we see the `,`.
 - In **pattern position** (match arm left side): `|` is an alternative separator
 - In **expression position**: `|` is bitwise OR (BP 15)
 - `|>` is the pipe operator (BP 13) — the lexer already produces a distinct
-  `PipeArrow` token, so no disambiguation needed
+  `PipeArrow` token, so no disambiguation needed. The parser then lowers it to
+  a call (section 5.13).
 
 The parser knows which position it is in from context. Pattern parsing is
 only called from `parse_match_arm` and `parse_let_pattern`, never from the
@@ -859,6 +860,107 @@ the item it wraps); a written tier that differs from the trait's is `TIER-016`.
   interpreter's cast function already passes a value through for an unknown target, so
   `x as dyn Trait` needs nothing there.
 
+### 5.13 `|>`, lowered to a call while parsing
+
+`lower_pipe` in `parse_expr.rs` rewrites `left |> stage` into the call it stands for, so no later
+pass has a pipe case to get wrong:
+
+```
+x |> f         =>  f(x)
+x |> f(a, b)   =>  f(x, a, b)      the piped value is the first argument
+x |> f?        =>  (f(x))?
+x |> f(a)?     =>  (f(x, a))?
+```
+
+- The stage is what `parse_bp` returns at the right binding power (14). A `Call` stage gets the
+  piped value inserted as its first argument, ahead of any named argument. A `Try` stage is
+  lowered underneath and wrapped again, so `?` applies to the result of the call. Anything else (a
+  name, a path, a field, a lambda) becomes the callee of a one-argument call.
+- The head of the stage is read as a callee. A dotted name is a `Path` unless it is called:
+  `a.plus(5)` reads `plus` as a field access on `a` (a method, an enum variant, a static function),
+  which is the shape sema resolves as a call target, and only that shape reaches the method-call
+  dispatch with its tier rule, trait dispatch and `TYPE-104`. The stage `a.plus` is that callee
+  without its parentheses, so `parse_ident_expr` reads its last segment the same way when
+  `Parser::pipe_stage` is set, and `x |> a.plus` lowers to exactly `a.plus(x)`. Without that the stage
+  stayed a `Path`, and `5 |> a.plus` passed from a `LOW` function to a `HIGH` method that
+  `a.plus(5)` rejects with `TIER-005`. `pipe_stage` is set around the stage and taken by the first
+  primary expression of it (`parse_prefix`), so a dotted name inside an argument (`x |> f(a.n)`) stays
+  a `Path`. The span of such a head ends with its own segment, not at the next token.
+- Parentheses leave no node, so `x |> (f(a))` lowers exactly like `x |> f(a)`. A stage that
+  evaluates to a function to be applied to the piped value is bound to a name first.
+- Chains are left-associative: `a |> f |> g` is `g(f(a))`, built one call per turn of the Pratt loop.
+  Arithmetic binds tighter than `|>` (`1 + 2 |> double` is `double(1 + 2)`) and comparison looser
+  (`5 |> double == 10` is `(5 |> double) == 10`).
+- Spans: the call spans from the start of the whole pipe expression to the end of the stage, and a
+  `Try` wrapper spans to the `?`. Sema keys the type of an expression by its span, so two nodes
+  must never share one. The call ends before the `?`, and it starts at the piped value, where the
+  stage's own node starts later.
+- Before the lowering sema typed the right side as an expression of its own. The result of
+  `5 |> double` was the function type `fn(int) int` and a stage `add(1)` was checked as a call with
+  one argument too few (`TYPE-102`). The interpreter evaluated the stage as an expression of its own
+  and called the resulting function with the piped value.
+- The rewrite is syntactic, so it does not break the rule that the parser holds no semantics.
+- `ExprKind::Pipe` is no longer produced by `rd_parser`. The variant stays for the reference
+  LALRPOP parser (`crates/parser`) and the visitors, and the sema and interpreter arms for it are
+  not reached from this parser.
+- Tests: `tests/pipe.rs`. Fixtures: `ok_pipe_isolated`, `ok_pipe_combined`, `err_pipe_arity_isolated`,
+  `err_pipe_type_isolated`, `err_pipe_value_type_isolated`.
+- Two spans are kept apart on purpose and no test can tell: the lowered call does not take the span of
+  the stage's own node, and the `Try` wrapper does not take the span of the call under it. Several
+  sema tables are keyed by span (`expr_types`, `int_literal_types`, `trait_call_sites`), so the
+  separation avoids a latent collision, but a mutation that merges them is not observable through
+  any program that exists today.
+
+### 5.14 Nesting limit: `PARSE-006`
+
+Every pass after the parser walks the tree recursively. Type inference needs about 15 KB of stack
+per level in a debug build (about 1 KB in a release build), name resolution about a tenth of that,
+and the interpreter more than type inference. A left-leaning chain such as `a + a + a + ...` is a
+tree as deep as it is long, although the Pratt loop builds it without recursion, so a long chain
+overflowed the stack and aborted the process: at about 68 operators on a 1 MB stack and about 526
+on 8 MB. In a browser the overflow runs off the start of linear memory and shows as
+"index out of bounds".
+
+- `MAX_NESTING` (`parser.rs`, 1000) bounds the depth. `Parser::nest` counts the open levels:
+  `parse_bp` and `parse_block_inner` each enter one, and the Pratt loop adds one per node it wraps
+  around the left operand (`wraps`), checked against the limit on every turn. So a chain of N
+  operators, N nested parentheses, N nested calls and N nested blocks all count N.
+- Every `enter_nesting` is paired with a `leave_nesting`, whatever it returned. Past the limit
+  `report_too_deep` emits `PARSE-006` once and returns `None`.
+- The error is fatal, as rustc's recursion limit is. The unclosed delimiters of the over-deep
+  construct make every later token unreliable, so once it is reported `emit` drops every later parse
+  error. Without that a nested block produced a stray `PARSE-001` for each `}` the failed construct
+  never opened. Errors found before the limit are kept. The parser keeps reading the rest of the
+  file (it returns `None` up the stack and recovers as usual) and reports nothing more.
+- The limit alone is not enough, since the passes need stack for 1000 levels. The entry points run
+  on a thread with a 256 MB stack (`ubel_stratum::stack::with_big_stack`: the CLI `main`, and
+  `check_source`, which the language server and the tests use). The stack is reserved, not used.
+  A browser build has no threads, so `crates/wasm_playground/build.rs` sets a 16 MiB stack at link
+  time; measured in a release build the cost is about 1.1 KB per level for an operator chain and
+  about 1.6 KB for nested calls, which is about 2 MB at the limit.
+- A new recursive parse function that can nest without bound enters `enter_nesting`. A function
+  that loops without recursing and wraps a node each turn counts its turns the way the Pratt loop
+  does.
+- Tests: `tests/nesting_limit.rs` and the unit tests in `core/src/stack.rs`. Fixtures:
+  `ok_nesting_long_chain_isolated`, `err_nesting_too_deep_isolated`.
+
+### 5.15 Two contracts that went wrong
+
+- **`parse_call` never consumes `(`.** Both callers consume it first and pass its span: the Pratt loop
+  (`f(...)`) and `parse_dot` (`a.f(...)`). `parse_call` used to consume a `(` itself when it saw one.
+  `parse_dot` leaves its `(` unconsumed, so that suited it, but the Pratt loop had already consumed
+  its own: a first argument that starts with `(` (`f((a + b))`, `f((1, 2))`, `v.push((x))`) lost its
+  own parenthesis to the call and left the call's closing `)` dangling (`PARSE-001`). Tests:
+  `tests/call_and_return_parsing.rs`.
+- **`can_start_expr` mirrors `parse_prefix`.** `return`, `break` and `or return` read a value only when
+  the next token can start an expression. The list left out `DoubleLit`, `TypedIntLit` and the
+  built-in collection names (`List`, `Dictionary`, `Set`, `Queue`, `Stack`, `InlineList`), so
+  `return 3.0 * r`, `return 5u32` and `return List.new()` parsed as a bare `return` followed by a
+  dead statement, and the function returned `void` (`TYPE-101`, expected `double`, found `void`). The
+  table in `tests/call_and_return_parsing.rs` has one row per kind of expression start, so a prefix
+  arm added without a row shows up in review. Fixtures: `ok_call_parens_isolated`,
+  `ok_return_literals_isolated`.
+
 ## 6. LINQ Query Parsing — Removed
 
 There used to be a dedicated LINQ sub-parser here (`from x in expr where
@@ -1078,4 +1180,4 @@ Before merging any change to `crates/rd_parser`:
 - [ ] Memoisation only for the three approved rules (GenericArgs, TypeExpr, ClosureParams)
 - [ ] No sema logic in any parse function
 - [ ] New token types: update `infix_binding_power` / `prefix` match in `parse_expr.rs`
-- [ ] New prefix-position token: also update `Parser::can_start_expr` (`parser.rs`) — it's a separate lookahead list from `parse_prefix`'s, and `return`/`fail`'s fallback both depend on it (see §5.6's gotcha)
+- [ ] New prefix-position token: also update `Parser::can_start_expr` (`parser.rs`) — it's a separate lookahead list from `parse_prefix`'s, and `return`/`fail`'s fallback both depend on it (see §5.6's gotcha); the table in `tests/call_and_return_parsing.rs` has one row per start token, and a token missing from the list makes `return <expr>` a bare `return`

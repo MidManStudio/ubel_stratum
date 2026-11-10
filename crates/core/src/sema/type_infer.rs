@@ -590,8 +590,10 @@ struct InferCtx<'a> {
     /// `dyn Trait` types waiting for their trait's methods to be collected,
     /// to be checked for object safety (`TYPE-138`).
     dyn_uses:         Vec<(DefId, Span)>,
-    /// The element type an array literal is coerced to: set by a `let` whose
-    /// written type is a list of `dyn`, taken by the literal.
+    /// The element type an array literal is coerced to: set by a typed site
+    /// whose written type is a list of `dyn` (a `let`, an argument of a plain
+    /// function, a `return`, a struct field, an element of an outer literal),
+    /// taken by the literal. See `hint_array_for`.
     array_elem_hint:  Option<TypeId>,
     /// Dictionary key mistakes already reported, by line and key type.
     reported_dict_keys: HashSet<(usize, TypeId)>,
@@ -4591,6 +4593,13 @@ impl<'a> InferCtx<'a> {
             }
             StmtKind::Expr(e) => self.infer_expr(e),
             StmtKind::Return(maybe_e) => {
+                if let (Some(e), Some(expected)) = (*maybe_e, self.current_return) {
+                    let expected_inner = match self.ctx.types.get(expected) {
+                        SemaType::Fallible(inner) => *inner,
+                        _ => expected,
+                    };
+                    self.hint_array_for(expected_inner, e);
+                }
                 let ret = maybe_e.map(|e| self.infer_expr(e))
                     .unwrap_or_else(|| self.void_ty());
                 if let Some(expected) = self.current_return {
@@ -5130,11 +5139,21 @@ impl<'a> InferCtx<'a> {
                 self.callee_field_pending = matches!(callee.kind, ExprKind::Field { .. });
                 let callee_ty = self.infer_expr(callee);
                 self.callee_field_pending = false;
-                for arg in args.iter() {
-                    match &arg.kind {
-                        ArgKind::Positional(e)       => { self.infer_expr(e); }
-                        ArgKind::Named { value, .. } => { self.infer_expr(value); }
+                // The parameter types of a plain function callee are known
+                // before its arguments are inferred, so an array literal
+                // argument can be coerced to a `dyn` element written there.
+                // A generic parameter list is skipped: its placeholders are
+                // only replaced once the call is instantiated below.
+                let hint_params = self.callee_param_types(callee_ty);
+                for (i, arg) in args.iter().enumerate() {
+                    let value = match &arg.kind {
+                        ArgKind::Positional(e)       => *e,
+                        ArgKind::Named { value, .. } => *value,
+                    };
+                    if let Some(&pt) = hint_params.get(i) {
+                        if !self.mentions_any_param(pt) { self.hint_array_for(pt, value); }
                     }
+                    self.infer_expr(value);
                 }
 
                 // GAP 1 FIX — `<Collection>.new()` (e.g. `List.new()`) is
@@ -5897,6 +5916,9 @@ impl<'a> InferCtx<'a> {
                 } else if let Some(h) = hint {
                     // Written as a list of `dyn`: each element is coerced.
                     for e in elems.iter() {
+                        // An element that is itself an array literal is
+                        // coerced the same way (`List<List<&dyn Shape>>`).
+                        self.hint_array_for(h, e);
                         let ty = self.infer_expr(e);
                         self.unify_coerce(h, ty, e.span);
                     }
@@ -5972,6 +5994,7 @@ impl<'a> InferCtx<'a> {
                                     for f in fields.iter() {
                                         match field_tys.iter().find(|(n, _)| n == f.name) {
                                             Some((_, t)) => {
+                                                self.hint_array_for(*t, f.value);
                                                 let val_ty = self.infer_expr(f.value);
                                                 self.unify_coerce(*t, val_ty, f.span);
                                             }
@@ -6026,10 +6049,14 @@ impl<'a> InferCtx<'a> {
                             _ => Vec::new(),
                         };
                         for f in fields.iter() {
+                            // The field's type is looked up first so an array
+                            // literal value can be coerced to a written `dyn`.
+                            let declared = decl_fields.iter().find(|(n, _)| n == f.name)
+                                .map(|(_, raw_ty)| self.substitute(*raw_ty, &inst_args));
+                            if let Some(field_ty) = declared { self.hint_array_for(field_ty, f.value); }
                             let val_ty = self.infer_expr(f.value);
-                            match decl_fields.iter().find(|(n, _)| n == f.name) {
-                                Some((_, raw_ty)) => {
-                                    let field_ty = self.substitute(*raw_ty, &inst_args);
+                            match declared {
+                                Some(field_ty) => {
                                     self.unify_struct_field(def_id, field_ty, val_ty, f.span);
                                 }
                                 None => {

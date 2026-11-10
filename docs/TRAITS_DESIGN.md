@@ -888,15 +888,22 @@ Decided 2026-11-06, as three questions with a recommendation each.
   passes it through.
 - **`impl` and `extend` for a `dyn` type** are `TYPE-129`.
 - **Not built.** Conversion from `dyn Sub` to `dyn Super`, `dyn A + B` and a downcast to the
-  concrete type. An array literal is coerced only on the right of a `let`; as a call argument, a
-  `return` value or a struct field it is typed by its own elements first, so
-  `[Circle { .. }, Square { .. }]` there is `TYPE-101` (a binding with a written type first
-  works). A `dyn` in an arena stays the borrow form described above. The representation a
+  concrete type. An array literal is coerced to a written `dyn` element type on the right of a
+  `let` with a written type, and, since the thirtieth delivery, as an argument of a plain
+  function, as a `return` value, as a struct field, as a field of an enum struct variant and as an
+  element of an outer literal (`List<List<&dyn Shape>>`). As an argument of a method call, as the
+  tail expression of a function body, as a tuple variant payload and as an argument of a generic
+  callee it is still typed by its own elements first, so `[Circle { .. }, Square { .. }]` there is
+  `TYPE-101` (a binding with a written type first works). A method is resolved only after its
+  arguments are inferred, and the parameter types of a generic callee still hold placeholders at
+  that point, which is why those sites are open. A `dyn` in an arena stays the borrow form
+  described above. The representation a
   compiled backend needs, a pointer paired with a table of the methods of the trait, is not built
   and the interpreter does not need it.
-- **Found on the way, not part of S6.** Indexing an `InlineList` passes sema and panics at run
-  time ("cannot index InlineList with int"), on the baseline too and for an `int` element. It is
-  parked with the other sema-accepts, run-time-panics cases.
+- **Found on the way, not part of S6.** Indexing an `InlineList` passed sema and panicked at run
+  time ("cannot index InlineList with int"), on the baseline too and for an `int` element. Fixed
+  in the thirtieth delivery: `l[i]`, `l[i] = v` and `l[i] += v` work, a negative index counts from
+  the end, and the index is checked against the items present, not the capacity.
 
 ### D7: what has to be specified before S4
 

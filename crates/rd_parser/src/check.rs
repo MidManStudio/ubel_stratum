@@ -56,6 +56,10 @@ impl CheckReport {
 /// stage that reports errors, since later stages have nothing sound to work
 /// on once an earlier one failed.
 pub fn check_source(source: &str) -> CheckReport {
+    ubel_stratum::stack::with_big_stack(|| check_source_here(source))
+}
+
+fn check_source_here(source: &str) -> CheckReport {
     let tokens = match ubel_stratum::lexer::tokenize(source) {
         Ok(t)        => t,
         Err(mut errs) => return failed(Stage::Lex, &mut errs),
