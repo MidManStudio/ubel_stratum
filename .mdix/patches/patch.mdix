@@ -1,13 +1,18 @@
 // Brought to u by MidManStudio
 //
-// Docs only, 3 anchored edits. (1) and (2) docs/LLVM_ROADMAP.md: the "Where things stand" table stops at slice 4;
-// it now points to docs/LLVM_BACKEND_STATUS.md and keeps the old table as history. (3) web/site/src/project-status.md:
-// the Phase 4 row still describes the first slice ("int and bool functions, control flow, arena blocks"); this is
-// a public page, so op 3 is yours to keep, reword or delete. Delete it (the last line of the DATA block) and the
-// "patched : N" line must say 2 instead of 3.
+// Rename: crates/llvm_poc -> crates/ubel_llvm (owner's choice, 2026-11-10). One template: rename_files:: moves the
+// directory (it runs before patch_files::), then every patch targets the NEW path. It rewrites the old path in 24 files
+// (comments, usage lines, documents, the replacements manifest) and updates docs/LLVM_BACKEND_STATUS.md (section 7) and
+// the docs/LLVM_POC.md Log. replace_text changes the first literal hit, so a file with k old paths has k identical ops.
 //
-// Needs docs/LLVM_BACKEND_STATUS.md on master (the ubel-llvm-arena-4 tarball). Checked against master 044017b:
-// every anchor matches exactly once. Run it with dry_run on first.
+// NOT in this patch, on purpose: .github/workflows/llvm-poc-emit.yml and llvm-proc.yml (the default token probably
+// cannot push workflow files, and one refused push would lose the whole commit). They are delivered separately.
+// Left alone: the scratch dir name ubel_llvm_poc (run_bench.sh, llvm-proc.yml).
+//
+// Checked on a fresh clone of master 9a46e6c with the real applier: renamed : 1, patched : 67, no patch_err.
+// A DRY RUN cannot do the rename, so it reports 'file not found' for the ops under crates/ubel_llvm: expected
+// there are patched : 41 and patch_err : 26. Only the real run counts. Do not apply any older tarball afterwards:
+// they carry crates/llvm_poc paths.
 
 @CONFIG(
   version    -> "1.0.0",
@@ -17,14 +22,90 @@
 )
 
 @QUICKFUNCS(
+  ~rename<object>(_src, _dst) {
+    return { from_path = _src, to_path = _dst }
+  }
   ~patch_replace_text<object>(_path, _anchor, _content) {
     return { path = _path, op = "replace_text", anchor = _anchor, content = _content }
+  }
+  ~patch_insert_before<object>(_path, _anchor, _content) {
+    return { path = _path, op = "insert_before", anchor = _anchor, content = _content }
+  }
+  ~patch_replace_block_keep<object>(_path, _start, _end, _content) {
+    return { path = _path, op = "replace_block", start_anchor = _start, end_anchor = _end, content = _content, keep_anchors = "true" }
   }
 )
 
 @DATA(
+  rename_files::
+    rename("crates/llvm_poc", "crates/ubel_llvm")
+
   patch_files::
-    patch_replace_text("docs/LLVM_ROADMAP.md", "## Where things stand\n\n| Slice | What it adds | Evidence |", "## Where things stand\n\n**See `docs/LLVM_BACKEND_STATUS.md`, which is kept current**: what exists, what the backend does not compile yet\n(measured), how far it is from a real executable, and the milestones. In short, as of 2026-11-09: slices 1 to 4\nand A5 to A9 are done (strings, closures, enums and `match`, Unicode string methods, the target program\n`ast_builder.ubl`); the next blockers are collections, the numeric tower, generics and a `ubel build` command.\n\nSlices 1 to 4, as first written (kept as history):\n\n| Slice | What it adds | Evidence |")
-    patch_replace_text("docs/LLVM_ROADMAP.md", "The target program's first refusal is now its `string` payload (`Var(string)`), so the next\nblocker is strings, and behind strings closures.", "(The sentence that followed this table when it was written, \"the next blocker is strings, and behind strings\nclosures\", is out of date: both landed and the target program compiles.)")
-    patch_replace_text("web/site/src/project-status.md", "| 4 | Started | LLVM backend, native binaries. So far a proof of concept: hand-written IR measures the three tiers, and a small emitter turns a subset of Ubel (int and bool functions, control flow, arena blocks) into LLVM IR that matches the interpreter (`docs/LLVM_POC.md`) |", "| 4 | Started | LLVM backend, native binaries. Hand-written IR measured the three tiers, and an emitter turns a growing subset of Ubel into LLVM IR that is checked against the interpreter at every step: int, bool and string values, structs, enums and `match`, closures, arenas and the garbage-collected heap, Unicode string methods. The target program `examples/arena_demo/ast_builder.ubl` compiles. Collections, floats and sized integers, generics, traits and a `ubel build` command are not there yet (`docs/LLVM_BACKEND_STATUS.md`) |")
+    patch_replace_text("docs/LLVM_BACKEND_STATUS.md", "**The name is out of date.** \"Proof of concept\" stopped describing this in about slice 6. See section 7 for a\n  rename plan (the folder `crates/llvm_poc` is referenced from 25 files).", "**The name was out of date, and is fixed.** The folder is now `crates/ubel_llvm` (section 7).")
+    patch_replace_block_keep("docs/LLVM_BACKEND_STATUS.md", "## 7. The name, and the folder", "## 8. Next five actions", "\n`crates/llvm_poc` said \"proof of concept\" long after the concept was proven (the equivalence suite, the measured tier\ncosts, the target program). Done on 2026-11-10, as its own delivery: the folder is **`crates/ubel_llvm`**, the owner's\nchoice. The Cargo package (`ubel_llvm`) and the binary (`ubel-llvm`) already had that name, so the build did not change.\n`docs/LLVM_POC.md` and `docs/LLVM_ROADMAP.md` keep their names for now as the history; renaming documents is cheap and can\nfollow.\n\nHow it was done: one scaffold template, with `rename_files::` for the directory and `patch_files::` for every\n`crates/llvm_poc` path in 24 files (comments, usage lines, documents, the replacements manifest). Left alone on purpose:\nthe scratch directory name `ubel_llvm_poc` under `TMPDIR` (a throwaway path in `run_bench.sh` and `llvm-proc.yml`) and the\nworkflow file names `llvm-poc-emit.yml` and `llvm-proc.yml`.\n\nTwo cautions that stay true after the rename:\n\n- The two workflows were changed in a separate step, by hand (reasoned, not tried: a run that pushes with the default\n  token cannot change files under `.github/workflows`).\n- Any tarball made before the rename carries the old paths, and the replacements applier matches members by path, so one\n  applied after the rename would recreate `crates/llvm_poc` next to the new folder.\n\n")
+    patch_replace_block_keep("docs/LLVM_BACKEND_STATUS.md", "## 8. Next five actions", "3. M1: `ubel build`", "\n1. Done on 2026-11-10: the folder is `crates/ubel_llvm` (section 7).\n2. Done: the pointer in `LLVM_ROADMAP.md` and the Phase 4 row of `web/site/src/project-status.md`.\n")
+    patch_replace_text("docs/LLVM_BACKEND_STATUS.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_BACKEND_STATUS.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text(".mdix/replacements/replacements.mdix", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text(".mdix/replacements/replacements.mdix", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/Cargo.toml", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/Cargo.toml", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/Cargo.toml", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/bench/boundaries.ll", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/bench/tiers.ll", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/examples/29_string_unicode.ubl", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/harness/bench_main.c", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/harness/rt_gc_test.c", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/runtime/ubel_main.c", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/runtime/ubel_rt.c", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/runtime/ubel_rt.h", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/runtime/ubel_unicode.h", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/ci_info.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/ci_report_emit.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/gen_unicode.rs", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/gen_unicode.rs", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/gen_unicode.rs", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/gen_unicode.rs", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/gen_unicode.rs", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/run_bench.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/run_bench.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/run_bench.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/run_equiv.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/run_equiv.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/run_wasm_demo.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("crates/ubel_llvm/scripts/run_wasm_demo.sh", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/ARENA_BORROW_RULES.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/DIAGNOSTICS_RULES.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/GC_LARGE_OBJECTS.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/GC_LARGE_OBJECTS.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/LLVM_POC.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("docs/MEMORY_REFERENCES.md", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("examples/arena_demo/ast_builder.ubl", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("examples/arena_demo/ast_builder.ubl", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_replace_text("examples/arena_demo/ast_builder.ubl", "crates/llvm_poc", "crates/ubel_llvm")
+    patch_insert_before("docs/LLVM_POC.md", "- 2026-11-08: A9c follow-up: the string-building methods allocate in the receiver's arena", "- 2026-11-10: The folder `crates/llvm_poc` is renamed `crates/ubel_llvm` (the owner's choice; section 7 of\n  `LLVM_BACKEND_STATUS.md`). One delivery: the directory rename and the path rewritten in 24 files; the two workflows\n  were changed separately, by hand. Nothing else changed. Checked on a fresh clone of master 9a46e6c (it already has the\n  owner's pipe and array-hint work in core): the emitter builds, `run_equiv.sh` gives 72 passed and 0 failed at 64-bit\n  and at `-m32`, the GC test runs 17 tests in each mode, 176 `ok_` fixtures pass sema and 181 `err_` fixtures fail it,\n  and the regenerated Unicode files are byte-identical to the committed ones.\n")
 )
