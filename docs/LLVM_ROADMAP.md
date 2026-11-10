@@ -14,6 +14,13 @@ kinds of object and every one of them leans on the answers.
 
 ## Where things stand
 
+**See `docs/LLVM_BACKEND_STATUS.md`, which is kept current**: what exists, what the backend does not compile yet
+(measured), how far it is from a real executable, and the milestones. In short, as of 2026-11-09: slices 1 to 4
+and A5 to A9 are done (strings, closures, enums and `match`, Unicode string methods, the target program
+`ast_builder.ubl`); the next blockers are collections, the numeric tower, generics and a `ubel build` command.
+
+Slices 1 to 4, as first written (kept as history):
+
 | Slice | What it adds | Evidence |
 |---|---|---|
 | 1 | scalars, control flow, tier calls, `with arena` with cleanup on every exit | CI, both architectures |
@@ -21,8 +28,8 @@ kinds of object and every one of them leans on the answers.
 | 3 | edge structs, `&x`, `&L T` fields, lifetime parameters | applied to master, CI run not reported yet |
 | 4 | enums with tuple payloads, `match` (statement and expression) | local only: 36 of 36 at 64-bit and 32-bit |
 
-The target program's first refusal is now its `string` payload (`Var(string)`), so the next
-blocker is strings, and behind strings closures.
+(The sentence that followed this table when it was written, "the next blocker is strings, and behind strings
+closures", is out of date: both landed and the target program compiles.)
 
 ---
 

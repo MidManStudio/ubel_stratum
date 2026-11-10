@@ -11,7 +11,7 @@ tracks the fixture suite and benchmark history behind these claims.
 | 1 | Done | Core design, memory model, lexer, arena AST, the recursive-descent/Pratt parser |
 | 2 | Done | Semantic analysis: name resolution, type inference, tier enforcement, generics, the three-tier escape-boundary checker |
 | 3 | Done | Tree-walking interpreter, the current execution model |
-| 4 | Started | LLVM backend, native binaries. So far a proof of concept: hand-written IR measures the three tiers, and a small emitter turns a subset of Ubel (int and bool functions, control flow, arena blocks) into LLVM IR that matches the interpreter (`docs/LLVM_POC.md`) |
+| 4 | Started | LLVM backend, native binaries. Hand-written IR measured the three tiers, and an emitter turns a growing subset of Ubel into LLVM IR that is checked against the interpreter at every step: int, bool and string values, structs, enums and `match`, closures, arenas and the garbage-collected heap, Unicode string methods. The target program `examples/arena_demo/ast_builder.ubl` compiles. Collections, floats and sized integers, generics, traits and a `ubel build` command are not there yet (`docs/LLVM_BACKEND_STATUS.md`) |
 | 5 | Not started | Standard library, tooling, package manager |
 
 Phase 2 being marked done covers full generics for structs and enums,
