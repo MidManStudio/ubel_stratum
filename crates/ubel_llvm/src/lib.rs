@@ -4,8 +4,10 @@
 //! so a program that sema rejects never reaches the emitter. The emitter then handles a
 //! deliberately small subset and refuses everything else with a located error rather than
 //! guessing. See `docs/LLVM_POC.md` for the subset, the tier lowering rules, and how it
-//! is checked against the interpreter.
+//! is checked against the interpreter. The `driver` module goes the rest of the way to a
+//! native executable (IR, the embedded C runtime, one `clang` invocation).
 
+pub mod driver;
 mod emit;
 
 pub use emit::CompileError;

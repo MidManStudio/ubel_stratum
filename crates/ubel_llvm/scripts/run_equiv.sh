@@ -289,6 +289,32 @@ if [ -f "$target" ] && [ -f "$golden" ]; then
   fi
 fi
 
+# ---- the build command -----------------------------------------------------------------------
+# `ubel-llvm build` is the one-command route from source to an executable (src/driver.rs). The loop
+# above links by hand; here two programs go through the command itself, with the compiler and the
+# extra flags of this run (so -m32 reaches clang through `--`), and must print what the interpreter
+# prints. The Rust tests of the driver (tests/build.rs) are not run by this script.
+build_check() { # source-file
+  local src="$1" name exe
+  name="$(basename "$src" .ubl)"
+  exe="$out/build_$name"
+  "$bin" interp "$src" >"$exe.expected" 2>/dev/null
+  if ! "$bin" build "$src" -o "$exe" -O2 --cc "$CLANG" -- "${extra[@]}" >"$exe.out" 2>"$exe.err"; then
+    bad "build $name" "ubel-llvm build failed: $(head -n 3 "$exe.err" | tr '\n' ' ')"
+    return
+  fi
+  UBEL_CHECK_LEAKS=1 run_timeout "$exe" >"$exe.actual" 2>"$exe.run.err"
+  if diff -q "$exe.expected" "$exe.actual" >/dev/null; then
+    ok "build $name" "built by ubel-llvm build, identical to the interpreter"
+  else
+    bad "build $name" "output differs from the interpreter: $(diff "$exe.expected" "$exe.actual" | head -n 4 | tr '\n' ' ')"
+  fi
+}
+echo
+echo "ubel-llvm build:"
+build_check "$here/examples/31_enum_unit.ubl"
+if [ -f "$target" ]; then build_check "$target"; fi
+
 # ---- collector runtime tests (C) -------------------------------------------------------------
 # harness/rt_gc_test.c covers large objects, the size classes above 512 bytes and the array
 # allocator. Each of its tests runs in its own process. It is built at -O0 and -O2 and, when the

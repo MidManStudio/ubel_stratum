@@ -384,7 +384,47 @@ cargo build --release --manifest-path crates/ubel_llvm/Cargo.toml
 ubel-llvm emit   prog.ubl -o prog.ll   # IR
 ubel-llvm interp prog.ubl              # the interpreter, for comparison
 ubel-llvm check  prog.ubl              # front end only
+ubel-llvm build  prog.ubl -o prog      # a native executable (needs clang 15 or newer)
 ```
+
+### Building an executable
+
+`ubel-llvm build prog.ubl -o prog` is the whole route from Ubel source to a native executable (M1a of
+`LLVM_BACKEND_STATUS.md`; provisional). It is `ubel_llvm::driver::build` underneath, so the `ubel` command line can
+call the same code later (M1b).
+
+1. `compile` runs the front end and the emitter. A program that is wrong, or that uses something the emitter does not
+   support yet, stops here with the located messages, before any compiler is looked for.
+2. The IR and the C runtime (`runtime/*.c` and `runtime/*.h`, embedded in the crate with `include_str!`) are written to
+   a private temporary directory (mode 0700, `ubel-build-<pid>-...` under `$TMPDIR` or `/tmp`).
+3. One clang invocation assembles the IR, compiles the runtime and links: `clang -O2 [flags] -Wno-override-module
+   -I DIR DIR/program.ll DIR/ubel_rt.c DIR/ubel_main.c -o prog`, the line `run_equiv.sh` uses. The runtime is compiled
+   again on every build; there is no cache. One measurement, example 19 on the sandbox machine: about 0.5 s at `-O2`
+   and 0.2 s at `-O0`.
+4. The temporary directory is removed again, also when the build fails.
+
+Options: `-o PATH` (default: the file name without its extension, in the current directory; refused when that is the
+source file itself), `--cc PATH`, `-O0 -O1 -O2 -O3 -Os` (default `-O2`), `--keep-temps` (keep the directory and print
+where it is), `-v` (print the compiler and the full command), and `-- FLAGS` (everything after goes to clang, for
+example `-m32` or a sanitizer flag). Exit status 0, 1 on any error, 2 on a usage error. On success it prints one line,
+`built <path>`, to stderr.
+
+The compiler is found like this: `--cc`, else `$UBEL_CC`, else the first of `clang-18`, `clang-17`, `clang-16`,
+`clang-15` and `clang` on the PATH that runs and says `clang version N` with N at least 15. Apple's clang numbers its
+versions differently and is not held to the minimum. A compiler that was named is never replaced by another one;
+during the automatic search an unusable candidate is skipped, and the first problem is reported if nothing works.
+
+The Unicode tables the runtime carries are the committed `runtime/ubel_unicode.h` (Unicode 15.0.0 today). The driver
+embeds that file as it is and does not regenerate it; `run_equiv.sh` still does when its toolchain differs.
+
+Tested (`crates/ubel_llvm/tests/build.rs`, and the unit tests in `src/driver.rs`): eight programs, among them the
+target program, built through the driver and equal to the interpreter; a program that fails at run time (a build that
+works, a native exit status 1); the front end and emitter errors arriving before the compiler is looked for; a missing
+compiler, a missing output directory, a clang failure with its message and command; flags reaching clang; the
+temporary directory removed, kept on request and private; the whole command line including the refusal to overwrite
+the source; and the compiler search order, checked with fake compilers. **Not tested:** Windows (the `.exe` suffix
+and the `.exe` search are written and never run), macOS, Termux, any clang other than 18.1.3, `-m32` through the
+driver (the suite does `-m32` through its own command line), and any CI run.
 
 ### What the subset covers
 
@@ -1042,6 +1082,12 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-10: M1a: `ubel-llvm build prog.ubl -o prog` (new module `driver`; "Building an executable" above). One
+  command from source to a native executable: the IR, the embedded C runtime and one clang invocation. Tests: 5 unit
+  tests (the compiler search, with fake compilers) and 12 integration tests (examples against the interpreter, the
+  failure paths, temporary directory hygiene, the command line). 17 of 17 hand-made mutants of the driver and the
+  command line were caught (one of them, the dropped `-Wno-override-module`, only by the assertion on the command string, because that flag changes no output). Not done: `ubel build` in the `ubel` CLI and the workspace join (M1b), a runtime cache,
+  Windows and macOS.
 - 2026-11-10: The folder `crates/llvm_poc` is renamed `crates/ubel_llvm` (the owner's choice; section 7 of
   `LLVM_BACKEND_STATUS.md`). One delivery: the directory rename and the path rewritten in 24 files; the two workflows
   were changed separately, by hand. Nothing else changed. Checked on a fresh clone of master 9a46e6c (it already has the

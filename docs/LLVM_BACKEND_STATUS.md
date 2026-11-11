@@ -93,20 +93,23 @@ at its `Str` and `double` types and would next need `List<int>`, `List<Token>`, 
 
 ## 3. From source to an executable, today and as it should be
 
-Today: `ubel-llvm emit` (a separate binary, its own cargo workspace) writes `.ll`; the user runs clang with the runtime
-C files. The scripts do this for every example.
+Today: `ubel-llvm build prog.ubl -o prog` (M1a, 2026-11-10; a separate binary, its own cargo workspace) does the whole
+route in one command: IR, the embedded C runtime, one clang invocation. The `ubel` command line does not call it yet
+(M1b). `ubel-llvm emit` still writes just the `.ll`, and the scripts still run clang themselves.
 
 What a user would expect: `ubel build prog.ubl -o prog`. What that needs, beyond the language coverage:
 
-1. **A driver.** Emit to a temporary file, find a C compiler, link, report errors. The emitter has no libLLVM
+1. **A driver.** *Done in M1a* (`crates/ubel_llvm/src/driver.rs`; `LLVM_POC.md`, "Building an executable"). Emit to a temporary file, find a C compiler, link, report errors. The emitter has no libLLVM
    dependency, which makes this small. Whether to keep "clang assembles the IR" or link LLVM directly (for example
    through `inkwell`) to drop the clang dependency is a decision (*decision*): linking LLVM is a large dependency
    and a build-time cost, and nothing yet argues for it.
-2. **The runtime shipped with the compiler.** The C runtime and the generated Unicode header would be embedded in
+2. **The runtime shipped with the compiler.** *Done in M1a for the C runtime and the committed Unicode header, which are
+   embedded in the crate and compiled on every build; there is no cache and no regeneration of the header.* The C runtime and the generated Unicode header would be embedded in
    the `ubel` binary (or installed next to it) and compiled by the driver. The Unicode header is tied to the Rust
    toolchain that builds the interpreter (see `LLVM_POC.md`, "String methods that build a string"); a release build
    would regenerate it once, as `run_equiv.sh` already does when the versions differ.
-3. **A toolchain contract.** Which clang versions, which flags. Everything has been tested with clang 18 on Linux
+3. **A toolchain contract.** *Partly done in M1a: clang 15 or newer is checked with `--version` (Apple's clang is not held
+   to the number), the flags are the ones `run_equiv.sh` uses.* Which clang versions, which flags. Everything has been tested with clang 18 on Linux
    x86-64 and i386 only. Windows, macOS, ARM64, Termux and the CI runners are **not tested** for anything since
    slice 3.
 4. **Runtime failure behaviour.** The interpreter and the native code agree on the programs in the suite, which
@@ -128,7 +131,7 @@ than that or dependent on language work that is not done. These are estimates fr
 | # | Milestone | Why | Depends on | Size | Exit |
 |---|---|---|---|---|---|
 | M0 | Subset and target program | done | | done | `ast_builder` equals the interpreter in the suite |
-| M1 | `ubel build` and packaging | the thing a user can try | nothing in the language | S to M | `ubel build examples/x.ubl -o x && ./x` on Linux, and CI does it through the real CLI |
+| M1 | `ubel build` and packaging (M1a done: `ubel-llvm build`; M1b open: the CLI and the workspace) | the thing a user can try | nothing in the language | S to M | `ubel build examples/x.ubl -o x && ./x` on Linux, and CI does it through the real CLI |
 | M2 | Numeric tower and `assert` | floats and sized integers are in the tokenizer and everywhere else | a decision on overflow behaviour (interpreter: real wrapping) | M | the fixtures that first fail on `u8`, `u64`, `double`, `assert` compile and match the interpreter |
 | M3 | Collections v1: `List<T>`, indexing, `push`, `len`, `for` over a list, bounds checks | most of the 42 | the generics decision (below) for `List<T>` | L | the self-hosted tokenizer compiles and equals the interpreter on its inputs |
 | M4 | Generics (monomorphization) and traits (static dispatch), `@derive` | 24 + 25 + 21 first refusals | the traits chat; decision on monomorphization versus uniform representation | XL | the generic and trait fixtures compile; `Dictionary`, `Unique`, `Shared` follow |
@@ -199,7 +202,8 @@ Two cautions that stay true after the rename:
 
 1. Done on 2026-11-10: the folder is `crates/ubel_llvm` (section 7).
 2. Done: the pointer in `LLVM_ROADMAP.md` and the Phase 4 row of `web/site/src/project-status.md`.
-3. M1: `ubel build`, with the workspace layout decided first (section 3, point 5).
+3. M1b: `ubel build` in the CLI and the workspace join (M1a, `ubel-llvm build`, is done), with the layout decided first
+   (section 3, point 5).
 4. The `assert` slice and the numeric tower (M2): the cheapest large unlock.
 5. Make the generics decision (section 4) before starting collections, with the self-hosted tokenizer as the test.
 
