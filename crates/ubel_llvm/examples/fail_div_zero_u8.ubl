@@ -1,0 +1,12 @@
+// Division by zero at a narrow unsigned width: the check is made at the operand's own width, so a u8 zero is caught.
+fn div(a: u8, b: u8) u8 {
+    return a / b
+}
+
+fn main() void {
+    println(div(200, 7))
+    let z: u8 = 0
+    println("before")
+    println(div(1, z))
+    println("not reached")
+}

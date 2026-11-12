@@ -1,0 +1,136 @@
+// Sized integers inside everything that holds a value: struct fields (GC heap, then an arena), enum
+// payloads, closure parameters and captures, returns, and loops. A `u8` counter must wrap, a `u64` must
+// print unsigned, and the collector must still find the pointers that sit next to the integers.
+struct Pixel {
+    r:     u8
+    g:     u8
+    b:     u8
+    alpha: u16
+}
+
+struct Stats {
+    count: u32
+    total: u64
+    delta: i32
+    tag:   i8
+    next:  string
+}
+
+enum Reading {
+    Small(u8),
+    Wide(u64),
+    Signed(i16),
+    Pair(u8, i32),
+    Idle,
+}
+
+fn brightness(p: Pixel) u32 {
+    return (p.r as u32) * 299 + (p.g as u32) * 587 + (p.b as u32) * 114
+}
+
+fn value_of(r: Reading) u64 {
+    let v = match r {
+        Reading.Small(x) => x as u64,
+        Reading.Wide(x) => x,
+        Reading.Signed(x) => (x as i32) as u64,
+        Reading.Pair(a, b) => (a as u64) + (b as u64),
+        Reading.Idle => 0,
+    }
+    return v
+}
+
+fn wrap_counter(start: u8, steps: int) u8 {
+    let mut c = start
+    for i in 0 .. steps {
+        c += 7
+    }
+    return c
+}
+
+// The other spellings of the same widths: `byte` is i8, `ubyte` u8, `uint` u32, `ulong` and `usize` u64, `long` and
+// `isize` the default 64-bit int.
+fn alias_names(a: byte, b: ubyte, c: uint, d: ulong, e: usize, f: isize, g: long) void {
+    println(a, b, c, d, e, f, g)
+    println(a - 100, b + 100, c + 1, d + 1, e - 1, f + 1, g * 2)
+}
+
+fn make_scaler(k: u16) fn(u8) u32 {
+    return fn(x: u8) (x as u32) * (k as u32)
+}
+
+// Closures whose result is one of the alias types: sema types the result, and the emitter has to agree with it.
+fn make_widener(k: usize) fn(u8) usize {
+    return fn(x: u8) (x as usize) * k
+}
+
+fn alias_closures() void {
+    let f1 = fn(x: u8) (x as usize) * 3
+    let f2 = fn(x: i8) (x as long) - 1
+    let f3 = fn(x: u16) (x as uint) * 70000
+    let f4 = fn(x: i16) (x as byte)
+    let f5 = fn(x: u32) (x as ulong) << 8
+    println(f1(200), f2(-5), f3(65535), f4(300), f5(4000000000))
+}
+
+@tier(mid)
+fn arena_sum(n: int) u32 {
+    with arena(512) {
+        let mut total: u32 = 0
+        for i in 0 .. n {
+            let q = Pixel { r = 10, g = 20, b = 30, alpha = 40 }
+            total += (q.r as u32) + (q.g as u32) + (q.b as u32) + (q.alpha as u32)
+        }
+        return total
+    }
+}
+
+fn main() void {
+    let p = Pixel { r = 255, g = 128, b = 0, alpha = 65535 }
+    println(p.r, p.g, p.b, p.alpha, brightness(p))
+
+    let mut s = Stats { count = 4000000000, total = 18446744073709551615, delta = -5, tag = -128, next = "n" }
+    s.count += 400000000
+    s.total += 2
+    s.delta -= 2147483647
+    s.tag -= 1
+    println(s.count, s.total, s.delta, s.tag, s.next)
+
+    println(value_of(Reading.Small(200)), value_of(Reading.Wide(18446744073709551615)))
+    println(value_of(Reading.Signed(-2)), value_of(Reading.Pair(3, -1)), value_of(Reading.Idle))
+
+    println(wrap_counter(250, 3), wrap_counter(0, 40))
+    let scale = make_scaler(1000)
+    println(scale(255), scale(0))
+
+    let big: u64 = 9223372036854775808
+    println(big, big >> 62, big * 2, big - 1)
+    println(250u8 + 10u8, 200u8 as i8, 70000u32 * 70000u32, 5i8 - 10i8)
+    println(255u8 / 3u8, 200u8 > 100u8, 40000u16 / 3u16, 3000000000u32 / 7u32, 18446744073709551615u64 / 5u64)
+    println(-100i8 - 100i8, 127i8 + 1i8, -5i16 * 7000i16)
+
+    let a: i8 = -7
+    let b: i16 = -300
+    let c: u16 = 65535
+    let d: u32 = 4294967295
+    println($"{a} {b} {c} {d} {big}")
+
+    alias_names(-100, 200, 4294967295, 5, 0, 9, 21)
+
+    let wide = make_widener(1000000000000)
+    println(wide(255))
+    alias_closures()
+
+    // A string that is built as a value (not printed in place) uses the length and write helpers, u64 included.
+    let top: u64 = 18446744073709551615
+    let label = $"top={top} big={big} a={a} b={b} c={c} d={d}"
+    println(label, label.len())
+
+    println(arena_sum(100))
+
+    let mut acc: u64 = 0
+    for i in 0 .. 2000 {
+        let q = Stats { count = 7, total = 1, delta = 2, tag = 3, next = $"n{i}" }
+        acc += q.total + (q.count as u64) + (q.next.len() as u64)
+    }
+    println(acc)
+}

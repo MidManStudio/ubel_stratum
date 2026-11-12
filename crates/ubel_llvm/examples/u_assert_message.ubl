@@ -1,0 +1,7 @@
+// Not supported yet: an assert message that is not a string. The interpreter prints any value; the emitter only takes one string.
+// expect-refusal: a message that is not a single string
+fn main() void {
+    let n = 3
+    assert(n > 5, n)
+    println("not reached")
+}

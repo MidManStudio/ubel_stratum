@@ -1,0 +1,13 @@
+// `panic` in a function that returns a value: the call never comes back, and the code after it is dead.
+fn pick(n: int) int {
+    if n > 1 {
+        panic("too many")
+    }
+    return n * 10
+}
+
+fn main() void {
+    println(pick(0), pick(1))
+    println(pick(2))
+    println("not reached")
+}

@@ -1,6 +1,8 @@
-// Not supported yet: sized integers. Must be refused rather than treated as int.
-// expect-refusal: i32
+// Not supported yet: a cast to `short` or `ushort`. Sema and the interpreter both widen those two (`short` is `int`,
+// `ushort` is `u32`: `70000 as short` is `70000`), which looks like a placeholder, so the emitter refuses rather than
+// copy it. Write `i16` or `u16` instead.
+// expect-refusal: `short` and `ushort`
 fn main() void {
     let x: i32 = 5
-    println(x)
+    println(x as short)
 }

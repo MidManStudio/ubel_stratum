@@ -1,0 +1,80 @@
+// `assert` and `panic` (M2). An assert that holds does nothing. Every argument is evaluated before the check, in
+// order, as the interpreter does, so a message that is built (here an interpolated string) costs its allocation
+// on every call, even when the assert holds. The failing side is in fail_assert.ubl, fail_assert_nomsg.ubl and
+// fail_panic.ubl.
+struct Account {
+    id:      u32
+    balance: int
+}
+
+fn noisy(tag: string) string {
+    println("evaluating", tag)
+    return tag
+}
+
+fn checked_div(a: int, b: int) int {
+    assert(b != 0, "divisor must not be zero")
+    return a / b
+}
+
+fn fact(n: int) int {
+    assert(n >= 0)
+    if n < 2 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+
+fn withdraw(acc: Account, amount: int) int {
+    assert(acc.balance >= amount, $"account {acc.id} cannot cover {amount}")
+    return acc.balance - amount
+}
+
+fn classify(n: int) string {
+    if n < 0 {
+        return "negative"
+    }
+    if n == 0 {
+        return "zero"
+    }
+    if n < 10 {
+        return "small"
+    }
+    panic("classify: only small numbers are expected")
+    return "unreachable"
+}
+
+@tier(mid)
+fn in_arena(n: int) int {
+    with arena(256) {
+        let a = Account { id = 7, balance = n }
+        assert(a.balance == n, "the arena struct holds what was stored")
+        return a.balance + 1
+    }
+}
+
+fn main() void {
+    assert(true)
+    assert(1 + 1 == 2, "arithmetic works")
+    println(checked_div(84, 2), fact(10))
+    let acc = Account { id = 3, balance = 500 }
+    println(withdraw(acc, 120))
+
+    let mut total: u8 = 0
+    for i in 0 .. 10 {
+        total += 25
+        assert(total > 0, $"total after step {i}")
+    }
+    println(total)
+
+    println(classify(-4), classify(0), classify(7))
+    println(in_arena(41))
+
+    let flag = 5 > 3 && 2 < 1 || true
+    assert(flag, "short-circuit operators give a bool")
+    assert(!(3 == 4))
+
+    assert(true, noisy("the message is built even though the assert holds"))
+    println("after")
+    println("done")
+}

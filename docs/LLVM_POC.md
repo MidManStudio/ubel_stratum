@@ -422,9 +422,10 @@ target program, built through the driver and equal to the interpreter; a program
 works, a native exit status 1); the front end and emitter errors arriving before the compiler is looked for; a missing
 compiler, a missing output directory, a clang failure with its message and command; flags reaching clang; the
 temporary directory removed, kept on request and private; the whole command line including the refusal to overwrite
-the source; and the compiler search order, checked with fake compilers. **Not tested:** Windows (the `.exe` suffix
-and the `.exe` search are written and never run), macOS, Termux, any clang other than 18.1.3, `-m32` through the
-driver (the suite does `-m32` through its own command line), and any CI run.
+the source; and the compiler search order, checked with fake compilers. Since M2a the examples were also built and compared with clang 15.0.7, 19.1.1 and 20.1.2 (all
+passed, as with 18.1.3), and on emulated 32-bit ARM and aarch64 Linux (see `ANDROID_TERMUX.md`). **Not tested:**
+Windows (the `.exe` suffix and the `.exe` search are written and never run), macOS, Termux itself and Android's libc,
+a clang newer than 20, and any CI run. Android: `ANDROID_TERMUX.md`.
 
 ### What the subset covers
 
@@ -435,6 +436,36 @@ logical operators; `if` / `elif` / `else` as statements and as expressions; `whi
 `loop`, `for i in a .. b` and `a ..= b`, `break`, `continue`, `return`, implicit return;
 calls between functions; `println` and `print` of ints, bools, string literals and
 interpolated strings; and `with arena(size) { ... }`.
+
+**Integers and `assert` (M2a, provisional).** Besides `int` (64-bit and signed; `long`, `i64` and `isize` are the same
+type for the emitter), the fixed-width integers `i8 i16 i32` and `u8 u16 u32 u64` work wherever `int` does: locals,
+parameters, results, struct fields, enum payloads, closure parameters, captures and results. The other spellings map as
+sema maps them: `byte` is `i8`, `ubyte` is `u8`, `uint` is `u32`, `ulong` and `usize` are `u64`. Sema gives each
+literal its width (`int_literal_types`, or a suffix such as `250u8`). Every one is a plain LLVM integer; the signedness
+is in the operation chosen (`sdiv` or `udiv`, `ashr` or `lshr`, `slt` or `ult`, `sext` or `zext`), and arithmetic wraps
+(no overflow flags). The rules follow the interpreter's sized path (`sized_int_binop`), checked by examples 33 to 35
+over every operator at every width:
+
+- a shift amount is masked to the width (`b & (bits - 1)`), so a shift by the width or by a negative amount is
+  defined (LLVM calls it poison, hence the explicit `and`; this also fixes `int`, which was emitted unmasked);
+- `MIN / -1` is `MIN` and `MIN % -1` is 0 (LLVM's `sdiv` and `srem` are undefined there and trap on x86, so a divisor
+  of -1 is replaced by 1 and the quotient corrected);
+- a division or remainder by zero stops the program at every width (exit status 1, message on stderr);
+- `-x` wraps for the signed widths; negating an unsigned integer is refused (the interpreter panics at run time);
+- `x as T` between integer types, and from `bool`, follows Rust's `as`: a narrower target truncates, a wider one extends
+  by the *source's* signedness, the same width reinterprets. `short` and `ushort` are refused: sema and the interpreter
+  both widen them (`short` is `int`, `ushort` is `u32`; `70000 as short` is `70000`), which looks like a placeholder, so
+  the emitter does not copy it. Write `i16` or `u16`.
+
+Printing and interpolation widen to 64 bits (sign- or zero-extended); `u64` has its own unsigned helpers
+(`ubel_print_u64`, `ubel_u64_len`, `ubel_u64_write`). Not yet: `float` and `double` (M2b), the sized integers as a `for`
+loop variable or in a `match`, and `as` to or from `char` or `string`.
+
+`assert(cond)`, `assert(cond, "message")`, `panic()` and `panic("message")` call `ubel_panic`: flush standard output,
+print the message to standard error, exit with status 1. Every argument is evaluated first and in order, as the
+interpreter does (checked with a message that prints), and a message must be a string; other values are refused, because
+the interpreter prints any value. The suite compares standard output and the exit status, not standard error, so the
+wording of a panic message is not checked.
 
 **Structs (slice 2).** Plain structs whose fields are `int`, `bool` or another struct:
 literals, field reads, field assignment (plain and compound, nested too), and passing and
@@ -807,10 +838,29 @@ program compiles now (A7, A8: see "The target program").
 
 ### Known differences from the interpreter
 
-`int` is 64-bit and arithmetic wraps natively on overflow; the interpreter's overflow
-behaviour is not matched and the test programs avoid overflow. Division by zero traps in
-both (exit status 1) but the messages differ. Shifts by 64 or more are undefined natively.
-`INT_MIN / -1` is not handled.
+**Plain `int` arithmetic in the interpreter (found in M2a; a core bug, not fixed here).** For two `int` values the
+interpreter converts both to `f64`, computes, and converts back (`promote_numeric` in `eval_binop`), although
+`Value::Int`'s own comment and `PRINT_FORMAT_RULES.md` describe 64-bit wrapping arithmetic. Past 2^53 it loses precision
+and on overflow it saturates instead of wrapping. Measured, each line interpreter against native:
+
+| Expression | Interpreter | Native (and the documents) |
+|---|---|---|
+| `9007199254740993 + 0` | `9007199254740992` | `9007199254740993` |
+| `9223372036854775807 + 1` | `9223372036854775807` | `-9223372036854775808` |
+| `9223372036854775807 * 2` | `9223372036854775807` | `-2` |
+| `9223372036854775806 % 10` | `8` | `6` |
+| `-9223372036854775808 / -1` | `9223372036854775807` | `-9223372036854775808` |
+| `9007199254740993 > 9007199254740992` | `false` | `true` |
+
+The last row is the worst: in the same program the interpreter says `a > b` is false and `a >= b` and `a != b` are true.
+Native is right in every row. The two agree for values below 2^53 that do not overflow, which is all the `int` examples
+use. The sized integers do not have the problem (their interpreter path, `sized_int_binop`, is exact and wrapping),
+which is why examples 33 to 35 use them for the edge cases. A fix would add an `(Int, Int)` arm with `wrapping_*`
+operations in front of `promote_numeric`; it is the owner's file, so this is a suggestion and not a patch.
+
+Division by zero stops both with exit status 1, but the messages differ, and so do the messages of `assert` and `panic`
+(the suite does not compare standard error). Shifts and `MIN / -1` are defined natively the way the interpreter defines
+them for the sized integers (see "Integers and `assert`").
 
 ### Findings about the front end
 
@@ -892,6 +942,17 @@ Found while building the struct slice, same status (found, not fixed):
   cause. Not investigated.
 - `Unique.new(P { ... })` passes sema but the interpreter panics on `u.x`
   (`cannot access field 'x' on Unique`), so LOW construction has no interpreter oracle yet.
+- Sema treats `int` and `i64`, and `ulong` and `u64`, as different types (`expected i64, found int`), although the
+  interpreter gives them one value type and the emitter one representation. An unsuffixed literal too large for `i64`
+  is a `u64` and does not go into a `ulong`.
+- `let x: T = e` takes its type from `e`; the emitter ignores the annotation (sema has checked it). That is harmless for
+  the integers, and it is why `let x: short = 5` needs no refusal.
+- Negating an unsigned integer passes sema and panics in the interpreter at run time (`cannot negate u8`).
+- `short` and `ushort` are widened by sema and by the interpreter (`70000 as short` is `70000`); `byte` is `i8`, which
+  is signed, and `ubyte` is `u8`.
+- `Str`, with a capital, is another spelling of `string` for sema and the interpreter; the self-hosted tokenizer writes
+  its string fields that way. The emitter accepts it since M2a (example 37).
+- Plain `int` arithmetic in the interpreter goes through `f64`: see "Known differences from the interpreter".
 
 ### Toolchain notes
 
@@ -1082,6 +1143,18 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-10: M2a: `assert` and `panic`, and the fixed-width integers `i8 i16 i32 u8 u16 u32 u64` ("Integers and `assert`"
+  above): literals, every operator, casts, printing, struct fields, enum payloads, closures. New: examples 33 to 36, five
+  `fail_` examples and two refusal examples, a regenerated `u_sized_int` (now a refusal for `short`), `ubel_print_u64`,
+  `ubel_u64_len`, `ubel_u64_write` and `ubel_panic` in the runtime. Also fixed: shifts are masked and `MIN / -1` is
+  defined (both were undefined for `int`). Of the `ok_` fixtures 28 of 176 now compile (they were 4 of 168), and `assert`
+  is no longer a first refusal for any of them. **Found:** plain `int` arithmetic in the interpreter goes through `f64`
+  (precision lost past 2^53, saturation instead of wrapping; "Known differences"), a core bug for you. Verified on a
+  fresh clone: the suite gives 86 passed and 0 failed at 64-bit and at `-m32`; 27 of 28 hand-made mutants were caught
+  (the other is an equivalent: LLVM reads `i8 200` and `i8 -56` alike; two real test gaps were found and closed along
+  the way); the examples also match the interpreter under clang 15, 18, 19 and 20 and on emulated 32-bit ARM and aarch64 Linux (43 programs each; see `ANDROID_TERMUX.md`). Also: `Str` is accepted as
+  another spelling of `string` (example 37), which moves the self-hosted tokenizer's first refusal to its `double`
+  field. Not done: floating point (M2b), collections.
 - 2026-11-10: M1a: `ubel-llvm build prog.ubl -o prog` (new module `driver`; "Building an executable" above). One
   command from source to a native executable: the IR, the embedded C runtime and one clang invocation. Tests: 5 unit
   tests (the compiler search, with fake compilers) and 12 integration tests (examples against the interpreter, the

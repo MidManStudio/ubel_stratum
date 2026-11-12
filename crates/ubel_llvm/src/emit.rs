@@ -52,6 +52,7 @@ use ubel_stratum::ast::{
 };
 use ubel_stratum::ast::expressions::{Lambda, LambdaBody, MatchArm, MatchArmBody};
 use ubel_stratum::ast::patterns::{EnumPatternPayload, PatternKind};
+use ubel_stratum::lexer::IntSuffix;
 use ubel_stratum::sema::{SemaContext, SemaType, TypeId};
 
 // ── errors ───────────────────────────────────────────────────────
@@ -99,7 +100,70 @@ fn unsupported<T>(span: Span, what: impl AsRef<str>) -> R<T> {
     Err(CompileError::at(span, format!("not supported yet: {}", what.as_ref())))
 }
 
+/// The type of an integer literal that carries a width (`250u8`, or a literal sema gave one).
+fn int_suffix_ty(suffix: IntSuffix) -> Ty {
+    match suffix {
+        IntSuffix::I8 => Ty::Int(IntTy::I8),
+        IntSuffix::I16 => Ty::Int(IntTy::I16),
+        IntSuffix::I32 => Ty::Int(IntTy::I32),
+        IntSuffix::I64 | IntSuffix::Isize => Ty::I64,
+        IntSuffix::U8 => Ty::Int(IntTy::U8),
+        IntSuffix::U16 => Ty::Int(IntTy::U16),
+        IntSuffix::U32 => Ty::Int(IntTy::U32),
+        IntSuffix::U64 | IntSuffix::Usize => Ty::Int(IntTy::U64),
+    }
+}
+
+/// An integer constant of type `ty`, written the way LLVM reads it: the low bits of `raw` as a signed
+/// number of that width, so `200u8` is written `-56` (it is the same bit pattern).
+fn int_const(ty: Ty, raw: u64) -> String {
+    let (bits, _) = ty.int_info().expect("an integer type");
+    if bits == 64 {
+        return (raw as i64).to_string();
+    }
+    let shift = 64 - bits;
+    (((raw << shift) as i64) >> shift).to_string()
+}
+
 // ── small types ──────────────────────────────────────────────────
+
+/// A fixed-width integer other than the default `int` (which is `Ty::I64`, signed 64-bit): `i8 i16 i32`,
+/// `u8 u16 u32 u64`. Every one is a plain LLVM integer; signedness lives in the operation chosen
+/// (`sdiv` or `udiv`, `ashr` or `lshr`, `slt` or `ult`, `sext` or `zext`), not in the type.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum IntTy {
+    I8,
+    I16,
+    I32,
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl IntTy {
+    fn bits(self) -> u32 {
+        match self {
+            IntTy::I8 | IntTy::U8 => 8,
+            IntTy::I16 | IntTy::U16 => 16,
+            IntTy::I32 | IntTy::U32 => 32,
+            IntTy::U64 => 64,
+        }
+    }
+
+    fn signed(self) -> bool {
+        matches!(self, IntTy::I8 | IntTy::I16 | IntTy::I32)
+    }
+
+    fn ir(self) -> &'static str {
+        match self {
+            IntTy::I8 | IntTy::U8 => "i8",
+            IntTy::I16 | IntTy::U16 => "i16",
+            IntTy::I32 | IntTy::U32 => "i32",
+            IntTy::U64 => "i64",
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Ty {
@@ -117,6 +181,8 @@ enum Ty {
     /// A closure value (A7): a pointer to a closure object whose first word is the code pointer, `usize`
     /// indexes `Emitter::fn_tys`. A closure that captures nothing is a static constant outside the heap.
     Fn(usize),
+    /// A fixed-width integer other than `int` (see `IntTy`).
+    Int(IntTy),
 }
 
 /// The shape of a function type: parameter types and result.
@@ -133,6 +199,16 @@ impl Ty {
             Ty::I1 => "i1",
             Ty::Void => "void",
             Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) => "ptr",
+            Ty::Int(k) => k.ir(),
+        }
+    }
+
+    /// Width in bits and signedness, for every integer type (`int` included); `None` for the rest.
+    fn int_info(self) -> Option<(u32, bool)> {
+        match self {
+            Ty::I64 => Some((64, true)),
+            Ty::Int(k) => Some((k.bits(), k.signed())),
+            _ => None,
         }
     }
 
@@ -452,6 +528,8 @@ impl<'a> Emitter<'a> {
         }
         out.push_str("declare void @ubel_arena_destroy(ptr)\n");
         out.push_str("declare void @ubel_print_i64(i64)\n");
+        out.push_str("declare void @ubel_print_u64(i64)\n");
+        out.push_str("declare void @ubel_panic(ptr, i64)\n");
         out.push_str("declare void @ubel_print_bool(i32)\n");
         out.push_str("declare void @ubel_print_str(ptr, i64)\n");
         out.push_str("declare void @ubel_print_nl()\n");
@@ -477,6 +555,8 @@ impl<'a> Emitter<'a> {
             out.push_str("declare ptr  @ubel_str_replace(ptr, ptr, ptr, ptr)\n");
             out.push_str("declare i64  @ubel_i64_len(i64)\n");
             out.push_str("declare void @ubel_i64_write(ptr, i64)\n");
+            out.push_str("declare i64  @ubel_u64_len(i64)\n");
+            out.push_str("declare void @ubel_u64_write(ptr, i64)\n");
             out.push_str("declare void @ubel_put(ptr, ptr, i64)\n");
         }
         if self.uses_gc || self.uses_bump || self.uses_str {
@@ -737,7 +817,17 @@ impl<'a> Emitter<'a> {
 
     fn ty_of_type(&self, t: &ubel_stratum::ast::Type) -> R<Ty> {
         match t.kind {
-            TypeKind::Int => Ok(Ty::I64),
+            TypeKind::Int | TypeKind::Long | TypeKind::I64 | TypeKind::Isize => Ok(Ty::I64),
+            TypeKind::I8 | TypeKind::Byte => Ok(Ty::Int(IntTy::I8)),
+            TypeKind::I16 => Ok(Ty::Int(IntTy::I16)),
+            TypeKind::I32 => Ok(Ty::Int(IntTy::I32)),
+            TypeKind::U8 | TypeKind::Ubyte => Ok(Ty::Int(IntTy::U8)),
+            TypeKind::U16 => Ok(Ty::Int(IntTy::U16)),
+            TypeKind::U32 | TypeKind::Uint => Ok(Ty::Int(IntTy::U32)),
+            TypeKind::U64 | TypeKind::Ulong | TypeKind::Usize => Ok(Ty::Int(IntTy::U64)),
+            TypeKind::Short | TypeKind::Ushort => {
+                unsupported(t.span, "`short` and `ushort` (sema widens them; write `i16` or `u16`)")
+            }
             TypeKind::Bool => Ok(Ty::I1),
             TypeKind::Void => Ok(Ty::Void),
             TypeKind::Str => Ok(Ty::Str),
@@ -776,12 +866,15 @@ impl<'a> Emitter<'a> {
                     [name] => match (self.struct_ids.get(*name), self.enum_ids.get(*name)) {
                         (Some(&sid), _) => Ok(Ty::Struct(sid)),
                         (None, Some(&eid)) => Ok(Ty::Enum(eid)),
-                        (None, None) => unsupported(t.span, format!("the type `{name}` (only int, bool, string, void, plain structs and enums so far)")),
+                        // `Str` is another spelling of `string` (sema and the interpreter accept it; the
+                        // self-hosted tokenizer writes its string fields that way).
+                        (None, None) if *name == "Str" => Ok(Ty::Str),
+                        (None, None) => unsupported(t.span, format!("the type `{name}` (only integers, bool, string, void, plain structs and enums so far)")),
                     },
                     _ => unsupported(t.span, "qualified type names"),
                 }
             }
-            _ => unsupported(t.span, "this type (only `int`, `bool`, `string`, `void`, plain structs and enums so far)"),
+            _ => unsupported(t.span, "this type (only integers, `bool`, `string`, `void`, plain structs and enums so far)"),
         }
     }
 
@@ -926,6 +1019,7 @@ impl<'a> Emitter<'a> {
                     | ExprKind::StructLit { .. }
                     | ExprKind::BinOp { .. }
                     | ExprKind::UnaryOp { .. }
+                    | ExprKind::As { .. }
                     | ExprKind::If(_)
                     | ExprKind::ShortDecl { .. }
                     | ExprKind::Borrow { .. }
@@ -935,7 +1029,24 @@ impl<'a> Emitter<'a> {
             let mut id = start;
             loop {
                 match self.ctx.types.get(id) {
-                    SemaType::Int | SemaType::Bool | SemaType::Void | SemaType::Str | SemaType::Var(_) => return Ok(()),
+                    SemaType::Int
+                    | SemaType::Long
+                    | SemaType::I8
+                    | SemaType::I16
+                    | SemaType::I32
+                    | SemaType::I64
+                    | SemaType::Isize
+                    | SemaType::Uint
+                    | SemaType::Ulong
+                    | SemaType::U8
+                    | SemaType::U16
+                    | SemaType::U32
+                    | SemaType::U64
+                    | SemaType::Usize
+                    | SemaType::Bool
+                    | SemaType::Void
+                    | SemaType::Str
+                    | SemaType::Var(_) => return Ok(()),
                     SemaType::Unknown if own_type_is_authoritative => return Ok(()),
                     SemaType::Function { is_fallible: false, .. } => return Ok(()),
                     SemaType::GcRef(inner) => id = *inner,
@@ -951,7 +1062,7 @@ impl<'a> Emitter<'a> {
                     }
                     _ => {
                         let shown = self.ctx.types.get(start).display(&self.ctx.types, &self.ctx.symbols);
-                        return unsupported(e.span, format!("values of type `{shown}` (only int, bool, string, void, plain structs and enums so far)"));
+                        return unsupported(e.span, format!("values of type `{shown}` (only integers, bool, string, void, plain structs and enums so far)"));
                     }
                 }
             }
@@ -1452,10 +1563,15 @@ impl<'a> Emitter<'a> {
             ExprKind::Lit(Literal::Int(n)) => {
                 // Sema records every integer literal whose context gave it a width other than
                 // the default 64-bit `int`. Such a literal must not be lowered as an i64.
-                if let Some(width) = self.ctx.int_literal_types.get(&e.span) {
-                    return unsupported(e.span, format!("sized integers (this literal is `{}`)", width.as_str()));
+                if let Some(&suffix) = self.ctx.int_literal_types.get(&e.span) {
+                    let ty = int_suffix_ty(suffix);
+                    return Ok(Val { v: int_const(ty, n as u64), ty });
                 }
                 Ok(Val { v: n.to_string(), ty: Ty::I64 })
+            }
+            ExprKind::Lit(Literal::TypedInt { raw, suffix }) => {
+                let ty = int_suffix_ty(suffix);
+                Ok(Val { v: int_const(ty, raw), ty })
             }
             ExprKind::Lit(Literal::Bool(b)) => Ok(Val { v: b.to_string(), ty: Ty::I1 }),
             ExprKind::Lit(Literal::Str(s)) | ExprKind::Lit(Literal::VerbatimStr(s)) => Ok(self.static_str(s)),
@@ -1474,19 +1590,36 @@ impl<'a> Emitter<'a> {
                 self.inst(&format!("{t} = load {}, ptr {}", local.ty.ir(), local.slot));
                 Ok(Val { v: t, ty: local.ty })
             }
+            ExprKind::As { expr: inner, ty } => {
+                let target = self.ty_of_type(ty)?;
+                let v = self.expr(inner)?;
+                self.cast(&v, target, e.span)
+            }
             ExprKind::UnaryOp { op, operand } => {
                 let v = self.expr(operand)?;
                 let t = self.fresh();
                 match op {
-                    UnaryOp::Neg => {
-                        self.need(Ty::I64, &v, operand.span)?;
-                        self.inst(&format!("{t} = sub i64 0, {}", v.v));
-                        Ok(Val { v: t, ty: Ty::I64 })
-                    }
+                    UnaryOp::Neg => match v.ty.int_info() {
+                        // Wrapping negation, like the interpreter (`-MIN` is `MIN`).
+                        Some((_, true)) => {
+                            self.inst(&format!("{t} = sub {} 0, {}", v.ty.ir(), v.v));
+                            Ok(Val { v: t, ty: v.ty })
+                        }
+                        Some((_, false)) => unsupported(e.span, "negating an unsigned integer"),
+                        None => Err(CompileError::at(
+                            operand.span,
+                            format!("emitter expected an integer here but the expression is {}", v.ty.ir()),
+                        )),
+                    },
                     UnaryOp::BitNot => {
-                        self.need(Ty::I64, &v, operand.span)?;
-                        self.inst(&format!("{t} = xor i64 {}, -1", v.v));
-                        Ok(Val { v: t, ty: Ty::I64 })
+                        if v.ty.int_info().is_none() {
+                            return Err(CompileError::at(
+                                operand.span,
+                                format!("emitter expected an integer here but the expression is {}", v.ty.ir()),
+                            ));
+                        }
+                        self.inst(&format!("{t} = xor {} {}, -1", v.ty.ir(), v.v));
+                        Ok(Val { v: t, ty: v.ty })
                     }
                     UnaryOp::Not => {
                         self.need(Ty::I1, &v, operand.span)?;
@@ -2137,6 +2270,52 @@ impl<'a> Emitter<'a> {
         Ok(Val { v: out, ty: Ty::I1 })
     }
 
+    /// `value as type` between integers, and from bool to an integer, with Rust's `as` rules: a narrower
+    /// target truncates, a wider one extends by the SOURCE's signedness, the same width reinterprets.
+    fn cast(&mut self, v: &Val, to: Ty, span: Span) -> R<Val> {
+        if v.ty == to {
+            return Ok(v.clone());
+        }
+        let Some((to_bits, _)) = to.int_info() else {
+            return unsupported(span, "this conversion (only to an integer type so far)");
+        };
+        if v.ty == Ty::I1 {
+            let t = self.fresh();
+            self.inst(&format!("{t} = zext i1 {} to {}", v.v, to.ir()));
+            return Ok(Val { v: t, ty: to });
+        }
+        let Some((from_bits, from_signed)) = v.ty.int_info() else {
+            return unsupported(span, "this conversion (only integers and bools can be converted so far)");
+        };
+        if from_bits == to_bits {
+            return Ok(Val { v: v.v.clone(), ty: to });
+        }
+        let op = if to_bits < from_bits {
+            "trunc"
+        } else if from_signed {
+            "sext"
+        } else {
+            "zext"
+        };
+        let t = self.fresh();
+        self.inst(&format!("{t} = {op} {} {} to {}", v.ty.ir(), v.v, to.ir()));
+        Ok(Val { v: t, ty: to })
+    }
+
+    /// An integer as an `i64` for the print and format helpers: sign-extended when it is signed,
+    /// zero-extended when it is not. A 64-bit value is returned as it is (`u64` has its own helpers).
+    fn widen_i64(&mut self, v: &Val) -> String {
+        match v.ty.int_info() {
+            Some((64, _)) | None => v.v.clone(),
+            Some((_, signed)) => {
+                let t = self.fresh();
+                let op = if signed { "sext" } else { "zext" };
+                self.inst(&format!("{t} = {op} {} {} to i64", v.ty.ir(), v.v));
+                t
+            }
+        }
+    }
+
     fn binop(&mut self, op: BinOp, l: &Val, r: &Val, span: Span) -> R<Val> {
         if l.ty != r.ty || l.ty == Ty::Void {
             return Err(CompileError::at(span, "the operands of this operator have different types"));
@@ -2180,20 +2359,36 @@ impl<'a> Emitter<'a> {
         let ty = l.ty;
         let t = self.fresh();
         let arith = |name: &str| format!("{t} = {name} {} {}, {}", ty.ir(), l.v, r.v);
+        // Width and signedness of an integer operand; `None` for bool.
+        let info = ty.int_info();
 
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl | BinOp::Shr => {
-                if ty != Ty::I64 {
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                if info.is_none() {
                     return unsupported(span, "this operator on bools");
                 }
                 let name = match op {
                     BinOp::Add => "add",
                     BinOp::Sub => "sub",
-                    BinOp::Mul => "mul",
-                    BinOp::Shl => "shl",
-                    _ => "ashr",
+                    _ => "mul",
                 };
                 self.inst(&arith(name));
+                Ok(Val { v: t, ty })
+            }
+            BinOp::Shl | BinOp::Shr => {
+                let Some((bits, signed)) = info else {
+                    return unsupported(span, "this operator on bools");
+                };
+                // The interpreter masks the shift amount to the width (`b & (bits - 1)`), so a shift by 64 or
+                // by a negative amount is defined. LLVM calls it poison, hence the explicit mask.
+                let masked = self.fresh();
+                self.inst(&format!("{masked} = and {} {}, {}", ty.ir(), r.v, bits - 1));
+                let name = match (op, signed) {
+                    (BinOp::Shl, _) => "shl",
+                    (_, true) => "ashr",
+                    (_, false) => "lshr",
+                };
+                self.inst(&format!("{t} = {name} {} {}, {masked}", ty.ir(), l.v));
                 Ok(Val { v: t, ty })
             }
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
@@ -2206,11 +2401,12 @@ impl<'a> Emitter<'a> {
                 Ok(Val { v: t, ty })
             }
             BinOp::Div | BinOp::Rem => {
-                if ty != Ty::I64 {
+                let Some((_, signed)) = info else {
                     return unsupported(span, "this operator on bools");
-                }
+                };
+                let ir = ty.ir();
                 let zero = self.fresh();
-                self.inst(&format!("{zero} = icmp eq i64 {}, 0", r.v));
+                self.inst(&format!("{zero} = icmp eq {ir} {}, 0", r.v));
                 let bad = self.label("divz");
                 let ok = self.label("divok");
                 self.term(&format!("br i1 {zero}, label %{bad}, label %{ok}"));
@@ -2218,8 +2414,27 @@ impl<'a> Emitter<'a> {
                 self.inst("call void @ubel_trap_div_zero()");
                 self.term("unreachable");
                 self.begin(&ok);
-                let name = if op == BinOp::Div { "sdiv" } else { "srem" };
-                self.inst(&format!("{t} = {name} i64 {}, {}", l.v, r.v));
+                if !signed {
+                    let name = if op == BinOp::Div { "udiv" } else { "urem" };
+                    self.inst(&format!("{t} = {name} {ir} {}, {}", l.v, r.v));
+                } else {
+                    // `MIN / -1` does not fit; Ubel's integers wrap, so it is `MIN` (and `MIN % -1` is 0).
+                    // LLVM's `sdiv` and `srem` are undefined there (a trap on x86), so a divisor of -1 is
+                    // swapped for 1 and the quotient is corrected: `x / -1` is `0 - x`, `x % -1` is 0 either way.
+                    let m1 = self.fresh();
+                    self.inst(&format!("{m1} = icmp eq {ir} {}, -1", r.v));
+                    let d = self.fresh();
+                    self.inst(&format!("{d} = select i1 {m1}, {ir} 1, {ir} {}", r.v));
+                    if op == BinOp::Div {
+                        let q = self.fresh();
+                        self.inst(&format!("{q} = sdiv {ir} {}, {d}", l.v));
+                        let neg = self.fresh();
+                        self.inst(&format!("{neg} = sub {ir} 0, {}", l.v));
+                        self.inst(&format!("{t} = select i1 {m1}, {ir} {neg}, {ir} {q}"));
+                    } else {
+                        self.inst(&format!("{t} = srem {ir} {}, {d}", l.v));
+                    }
+                }
                 Ok(Val { v: t, ty })
             }
             BinOp::Eq | BinOp::Ne => {
@@ -2228,16 +2443,20 @@ impl<'a> Emitter<'a> {
                 Ok(Val { v: t, ty: Ty::I1 })
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                if ty != Ty::I64 {
+                let Some((_, signed)) = info else {
                     return unsupported(span, "ordering comparisons on bools");
-                }
-                let name = match op {
-                    BinOp::Lt => "slt",
-                    BinOp::Le => "sle",
-                    BinOp::Gt => "sgt",
-                    _ => "sge",
                 };
-                self.inst(&format!("{t} = icmp {name} i64 {}, {}", l.v, r.v));
+                let name = match (op, signed) {
+                    (BinOp::Lt, true) => "slt",
+                    (BinOp::Le, true) => "sle",
+                    (BinOp::Gt, true) => "sgt",
+                    (BinOp::Ge, true) => "sge",
+                    (BinOp::Lt, false) => "ult",
+                    (BinOp::Le, false) => "ule",
+                    (BinOp::Gt, false) => "ugt",
+                    _ => "uge",
+                };
+                self.inst(&format!("{t} = icmp {name} {} {}, {}", ty.ir(), l.v, r.v));
                 Ok(Val { v: t, ty: Ty::I1 })
             }
             BinOp::And | BinOp::Or | BinOp::Range | BinOp::RangeIncl => {
@@ -2280,6 +2499,8 @@ impl<'a> Emitter<'a> {
         match name {
             "println" => return self.print_call(args, true),
             "print" => return self.print_call(args, false),
+            "assert" if !self.sigs.contains_key(name) => return self.assert_call(e, args),
+            "panic" if !self.sigs.contains_key(name) => return self.panic_call(e, args),
             _ => {}
         }
         let found = match self.lookup(name) {
@@ -2448,7 +2669,14 @@ impl<'a> Emitter<'a> {
         let mut id = start;
         loop {
             match self.ctx.types.get(id) {
-                SemaType::Int => return Some(Ty::I64),
+                SemaType::Int | SemaType::Long | SemaType::I64 | SemaType::Isize => return Some(Ty::I64),
+                SemaType::I8 => return Some(Ty::Int(IntTy::I8)),
+                SemaType::I16 => return Some(Ty::Int(IntTy::I16)),
+                SemaType::I32 => return Some(Ty::Int(IntTy::I32)),
+                SemaType::U8 => return Some(Ty::Int(IntTy::U8)),
+                SemaType::U16 => return Some(Ty::Int(IntTy::U16)),
+                SemaType::U32 | SemaType::Uint => return Some(Ty::Int(IntTy::U32)),
+                SemaType::U64 | SemaType::Ulong | SemaType::Usize => return Some(Ty::Int(IntTy::U64)),
                 SemaType::Bool => return Some(Ty::I1),
                 SemaType::Void => return Some(Ty::Void),
                 SemaType::Str => return Some(Ty::Str),
@@ -2891,6 +3119,11 @@ impl<'a> Emitter<'a> {
                     let l = self.fresh();
                     match v.ty {
                         Ty::I64 => self.inst(&format!("{l} = call i64 @ubel_i64_len(i64 {})", v.v)),
+                        Ty::Int(IntTy::U64) => self.inst(&format!("{l} = call i64 @ubel_u64_len(i64 {})", v.v)),
+                        Ty::Int(_) => {
+                            let w = self.widen_i64(v);
+                            self.inst(&format!("{l} = call i64 @ubel_i64_len(i64 {w})"));
+                        }
                         Ty::I1 => self.inst(&format!("{l} = select i1 {}, i64 4, i64 5", v.v)),
                         Ty::Str => self.inst(&format!("{l} = load i64, ptr {}", v.v)),
                         _ => unreachable!("void, struct and enum values are rejected by need_printable"),
@@ -2922,6 +3155,11 @@ impl<'a> Emitter<'a> {
                 }
                 Piece::Val(v) => match v.ty {
                     Ty::I64 => self.inst(&format!("call void @ubel_i64_write(ptr {dst}, i64 {})", v.v)),
+                    Ty::Int(IntTy::U64) => self.inst(&format!("call void @ubel_u64_write(ptr {dst}, i64 {})", v.v)),
+                    Ty::Int(_) => {
+                        let w = self.widen_i64(v);
+                        self.inst(&format!("call void @ubel_i64_write(ptr {dst}, i64 {w})"));
+                    }
                     Ty::I1 => {
                         let (tn, _) = self.string_const("true");
                         let (fnm, _) = self.string_const("false");
@@ -2969,6 +3207,67 @@ impl<'a> Emitter<'a> {
     /// `println(a, b, c)` evaluates every argument first (including everything inside an
     /// interpolated string) and only then prints, exactly like the interpreter, so side
     /// effects in the arguments happen before any of the output.
+    /// Evaluate every argument of `assert` or `panic`, in order and before anything fails, as the
+    /// interpreter does. Returns the values with their spans.
+    fn panic_args(&mut self, args: &[Arg]) -> R<Vec<(Val, Span)>> {
+        let mut vals = Vec::new();
+        for a in args {
+            let ae = match a.kind {
+                ArgKind::Positional(x) => x,
+                ArgKind::Named { .. } => return unsupported(a.span, "named arguments"),
+            };
+            let v = self.expr(ae)?;
+            self.need_value(&v, ae.span)?;
+            vals.push((v, ae.span));
+        }
+        Ok(vals)
+    }
+
+    /// The message of a failed `assert` or a `panic`: the default text, or one string.
+    fn panic_text(&mut self, msg: &[(Val, Span)], default: &str, span: Span) -> R<Val> {
+        match msg {
+            [] => Ok(self.static_str(default)),
+            [(v, _)] if v.ty == Ty::Str => Ok(v.clone()),
+            _ => unsupported(span, "a message that is not a single string (the interpreter prints any value)"),
+        }
+    }
+
+    /// Print the message to stderr and exit with status 1 (the block ends in `unreachable`).
+    fn call_panic(&mut self, msg: &Val) {
+        let len = self.fresh();
+        self.inst(&format!("{len} = load i64, ptr {}", msg.v));
+        let bytes = self.fresh();
+        self.inst(&format!("{bytes} = getelementptr inbounds i8, ptr {}, i64 8", msg.v));
+        self.inst(&format!("call void @ubel_panic(ptr {bytes}, i64 {len})"));
+        self.term("unreachable");
+    }
+
+    /// `assert(cond)` or `assert(cond, "message")`.
+    fn assert_call(&mut self, e: &Expr, args: &[Arg]) -> R<Val> {
+        let vals = self.panic_args(args)?;
+        let Some((cond, cond_span)) = vals.first() else {
+            return Err(CompileError::at(e.span, "`assert` needs a condition"));
+        };
+        self.need(Ty::I1, cond, *cond_span)?;
+        let cond = cond.v.clone();
+        let msg = self.panic_text(&vals[1..], "assertion failed", e.span)?;
+        let fail = self.label("assert.fail");
+        let ok = self.label("assert.ok");
+        self.term(&format!("br i1 {cond}, label %{ok}, label %{fail}"));
+        self.begin(&fail);
+        self.call_panic(&msg);
+        self.begin(&ok);
+        Ok(Val::void())
+    }
+
+    /// `panic()` or `panic("message")`: the program stops here.
+    fn panic_call(&mut self, e: &Expr, args: &[Arg]) -> R<Val> {
+        let vals = self.panic_args(args)?;
+        let msg = self.panic_text(&vals, "explicit panic", e.span)?;
+        self.call_panic(&msg);
+        Ok(Val::void())
+    }
+
     fn print_call(&mut self, args: &[Arg], newline: bool) -> R<Val> {
         let mut items: Vec<PItem> = Vec::new();
         for (i, a) in args.iter().enumerate() {
@@ -2989,6 +3288,11 @@ impl<'a> Emitter<'a> {
                 PItem::Text(t) => self.print_str(&t),
                 PItem::Val(v) => match v.ty {
                     Ty::I64 => self.inst(&format!("call void @ubel_print_i64(i64 {})", v.v)),
+                    Ty::Int(IntTy::U64) => self.inst(&format!("call void @ubel_print_u64(i64 {})", v.v)),
+                    Ty::Int(_) => {
+                        let w = self.widen_i64(&v);
+                        self.inst(&format!("call void @ubel_print_i64(i64 {w})"));
+                    }
                     Ty::I1 => {
                         let z = self.fresh();
                         self.inst(&format!("{z} = zext i1 {} to i32", v.v));

@@ -1,0 +1,92 @@
+// Casts between every pair of integer types, and from bool, with Rust's `as` rules: a narrower target truncates,
+// a wider one extends by the SOURCE's signedness, the same width reinterprets. The interpreter is the oracle.
+
+fn casts_i8(v: i8) void {
+    println("i8", v, v as i16, v as i32, v as int, v as u8, v as u16, v as u32, v as u64)
+}
+
+fn casts_u8(v: u8) void {
+    println("u8", v, v as i8, v as i16, v as i32, v as int, v as u16, v as u32, v as u64)
+}
+
+fn casts_i16(v: i16) void {
+    println("i16", v, v as i8, v as i32, v as int, v as u8, v as u16, v as u32, v as u64)
+}
+
+fn casts_u16(v: u16) void {
+    println("u16", v, v as i8, v as i16, v as i32, v as int, v as u8, v as u32, v as u64)
+}
+
+fn casts_i32(v: i32) void {
+    println("i32", v, v as i8, v as i16, v as int, v as u8, v as u16, v as u32, v as u64)
+}
+
+fn casts_u32(v: u32) void {
+    println("u32", v, v as i8, v as i16, v as i32, v as int, v as u8, v as u16, v as u64)
+}
+
+fn casts_u64(v: u64) void {
+    println("u64", v, v as i8, v as i16, v as i32, v as int, v as u8, v as u16, v as u32)
+}
+
+fn casts_int(v: int) void {
+    println("int", v, v as i8, v as i16, v as i32, v as u8, v as u16, v as u32, v as u64)
+}
+
+fn from_bool(b: bool) void {
+    println(b, b as i8, b as i16, b as i32, b as int, b as u8, b as u16, b as u32, b as u64)
+}
+
+fn main() void {
+    casts_i8(-128)
+    casts_i8(-1)
+    casts_i8(0)
+    casts_i8(1)
+    casts_i8(127)
+    casts_u8(0)
+    casts_u8(1)
+    casts_u8(127)
+    casts_u8(128)
+    casts_u8(255)
+    casts_i16(-32767 - 1)
+    casts_i16(-129)
+    casts_i16(-128)
+    casts_i16(-1)
+    casts_i16(127)
+    casts_i16(128)
+    casts_i16(255)
+    casts_i16(256)
+    casts_i16(32767)
+    casts_u16(0)
+    casts_u16(255)
+    casts_u16(256)
+    casts_u16(32768)
+    casts_u16(65535)
+    casts_i32(-2147483647 - 1)
+    casts_i32(-65537)
+    casts_i32(-1)
+    casts_i32(65535)
+    casts_i32(65536)
+    casts_i32(2147483647)
+    casts_u32(0)
+    casts_u32(65535)
+    casts_u32(65536)
+    casts_u32(2147483648)
+    casts_u32(4294967295)
+    casts_u64(0)
+    casts_u64(1)
+    casts_u64(4294967296)
+    casts_u64(9223372036854775808)
+    casts_u64(18446744073709551615)
+    casts_int(-1)
+    casts_int(0)
+    casts_int(255)
+    casts_int(256)
+    casts_int(65536)
+    casts_int(4294967296)
+    casts_int(0 - 2147483649)
+    from_bool(true)
+    from_bool(false)
+    let x: u32 = 4000000000
+    println((x as u64) * 3, (x as i32) + 1, (x as u8) as u64)
+}

@@ -1,0 +1,22 @@
+// `Str` is another spelling of `string`: sema and the interpreter accept it, and the self-hosted tokenizer writes its
+// string fields that way.
+struct Token {
+    kind:    int,
+    str_val: Str,
+    num:     int
+}
+
+fn text_of(t: Token) Str {
+    return t.str_val
+}
+
+fn join(a: Str, b: string) string {
+    return a + b
+}
+
+fn main() void {
+    let t = Token { kind = 1, str_val = "hello", num = 7 }
+    println(text_of(t), t.num)
+    let s: Str = "abc"
+    println(join(s, "def"), join(text_of(t), $" {t.kind}"))
+}

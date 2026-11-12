@@ -1,0 +1,12 @@
+// Remainder by zero at a signed width other than 64 bits.
+fn rem(a: i16, b: i16) i16 {
+    return a % b
+}
+
+fn main() void {
+    println(rem(-32768, 7), rem(100, -1))
+    let z: i16 = 0
+    println("before")
+    println(rem(5, z))
+    println("not reached")
+}

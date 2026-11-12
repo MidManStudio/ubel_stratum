@@ -64,31 +64,31 @@ The emitter's own list of refusals is the authority (87 distinct messages in `em
 
 | Group | Refused today |
 |---|---|
-| **Types** | `double`/floats (literals are int, bool and string only), sized integers `u8`..`u64`, `i8`..`i64` (a typed literal is refused), tuples, generic types and structs and enums (so `Pool<T>` and `Handle<T>` too), `&mut`, references to anything but a struct, qualified type names, fallible types |
+| **Types** | `double`/`float` (no float literals or types), `short`/`ushort` casts, `char`, tuples, generic types and structs and enums (so `Pool<T>` and `Handle<T>` too), `&mut`, references to anything but a struct, qualified type names, fallible types |
 | **Collections** | `List<T>`, `Dictionary`, `Queue`, `InlineList`, `Unique<T>`, `Shared<T>`, indexing, `push`, `len` on a list, `for` over anything but an integer range |
 | **Declarations** | traits, `impl` and `extend` blocks, struct methods and properties, attributes (`@derive`), `static` items and other declaration kinds, generic functions, `async`/`await`; imports do not exist because the language has no modules yet |
-| **Calls** | only your own functions and `println`/`print`; no builtins (`assert`, `len`, `push`, ...), no named arguments, no calling a value that is not a local |
+| **Calls** | your own functions, `println`/`print`, `assert` and `panic` (a string message only); no other builtins (`len`, `push`, math, ...), no named arguments, no calling a value that is not a local |
 | **Patterns and control** | guards (`where`), nested patterns, struct-style variants, destructuring `let` and `for`, `break` with a value, an `if` expression that lacks an `else` |
 | **Operators** | most operators on bools, any operator on structs, enums or closures |
 | **Strings** | format specifiers in interpolation, `chars`, `split` (they return lists) |
 | **Memory** | allocation in LOW (decision open), building a string or a struct in MID outside `with arena` (decision open), `with gc`/`heap`/`pool`, `Pool<T>`/`Handle<T>` |
 | **Closures** | captures of mutable variables, closures that capture more than 30 variables, a closure inside a closure inside an arena |
 
-How much does each group matter? The first refusal of each `ok_` fixture, measured with the current binary
-(`tests/fixtures/ok_*.ubl`, 168 files; a program refused for one reason is usually refused for several, so these
-count what a program would hit first, and the ranking is more reliable than the numbers):
+How much does each group matter? The first refusal of each `ok_` fixture, measured with the binary after M2a
+(`tests/fixtures/ok_*.ubl`, 176 files; **28 of them compile now**, they were 4 of 168 before M2a; a program refused for one
+reason is usually refused for several, so these count what a program would hit first, and the ranking is more reliable than
+the numbers). The 148 that are still refused:
 
 | First refusal | Fixtures | What would unlock it |
 |---|---|---|
-| a value of an unsupported type (mostly `List<T>`, then `Dictionary`, `Queue`, `InlineList`, `Unique`, `Shared`, `u8`, `u64`, `double`, `&mut`) | 42 | collections, numeric types |
+| a value or annotation of an unsupported type (`List<T>` 12, `InlineList`, `Dictionary`, `Unique` 3 each, `Queue`, `Shared`, `&mut`, `Callback`, `char`, `double`, and 12 annotations of other types) | 38 | collections (M3), `float`/`double` (M2b) |
+| trait, `impl` and `extend` declarations | 28 | traits (the traits chat) |
+| generic structs, types and functions | 26 | monomorphization (decision) |
 | attributes on structs (`@derive`) | 21 | derives, which wait on traits |
-| the call to a builtin (`assert`, 18 of 18) | 18 | a small slice: `assert` |
-| generic structs, types and functions | 24 | monomorphization (decision) |
-| trait, `impl` and `extend` declarations | 25 | traits (the traits chat) |
-| references that are not to a struct, struct-style variants, `static`, other blocks | 18 | several small slices |
+| references that are not to a struct, struct-style variants, `static`, constants, struct methods, other blocks, format specifiers | 35 | several small slices |
 
 The self-hosted tokenizer (137 lines, the project's own next target in `self-hosted/docs/SELF_HOSTED.md`) is refused
-at its `Str` and `double` types and would next need `List<int>`, `List<Token>`, `List.new()`, `push`, indexing and
+at its `double` field (M2b; its `Str` type is accepted since M2a, example 37), and would then need `List<int>`, `List<Token>`, `List.new()`, `push`, indexing and
 `len`. That is a short, concrete list.
 
 ## 3. From source to an executable, today and as it should be
@@ -132,7 +132,7 @@ than that or dependent on language work that is not done. These are estimates fr
 |---|---|---|---|---|---|
 | M0 | Subset and target program | done | | done | `ast_builder` equals the interpreter in the suite |
 | M1 | `ubel build` and packaging (M1a done: `ubel-llvm build`; M1b open: the CLI and the workspace) | the thing a user can try | nothing in the language | S to M | `ubel build examples/x.ubl -o x && ./x` on Linux, and CI does it through the real CLI |
-| M2 | Numeric tower and `assert` | floats and sized integers are in the tokenizer and everywhere else | a decision on overflow behaviour (interpreter: real wrapping) | M | the fixtures that first fail on `u8`, `u64`, `double`, `assert` compile and match the interpreter |
+| M2 | Numeric tower and `assert` (M2a done: sized integers, `assert`, `panic`; M2b open: `float` and `double`) | floats and sized integers are in the tokenizer and everywhere else | overflow behaviour is decided for the sized integers (wrap, as the interpreter does); plain `int` in the interpreter saturates through `f64`, a core bug (`LLVM_POC.md`, known differences) | M | the fixtures that first fail on `u8`, `u64`, `double`, `assert` compile and match the interpreter |
 | M3 | Collections v1: `List<T>`, indexing, `push`, `len`, `for` over a list, bounds checks | most of the 42 | the generics decision (below) for `List<T>` | L | the self-hosted tokenizer compiles and equals the interpreter on its inputs |
 | M4 | Generics (monomorphization) and traits (static dispatch), `@derive` | 24 + 25 + 21 first refusals | the traits chat; decision on monomorphization versus uniform representation | XL | the generic and trait fixtures compile; `Dictionary`, `Unique`, `Shared` follow |
 | M5 | Modules, imports and a minimal standard library (arguments, stdin and files, exit code) | real programs, the self-hosted parser | language work: modules do not exist yet | L, language-dependent | a multi-file program builds; the self-hosted parser compiles |
@@ -204,7 +204,8 @@ Two cautions that stay true after the rename:
 2. Done: the pointer in `LLVM_ROADMAP.md` and the Phase 4 row of `web/site/src/project-status.md`.
 3. M1b: `ubel build` in the CLI and the workspace join (M1a, `ubel-llvm build`, is done), with the layout decided first
    (section 3, point 5).
-4. The `assert` slice and the numeric tower (M2): the cheapest large unlock.
+4. M2b: `float` and `double`, including printing them exactly like the interpreter does (Rust's shortest round-trip `{}`), tested
+   differentially against Rust itself. M2a (sized integers, `assert`, `panic`) is done.
 5. Make the generics decision (section 4) before starting collections, with the self-hosted tokenizer as the test.
 
 ## 9. How this was measured, and what was not

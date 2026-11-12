@@ -1,0 +1,7 @@
+// A failed assert without a message.
+fn main() void {
+    let x: u8 = 200
+    println("before", x)
+    assert(x + 100 > x)
+    println("not reached")
+}

@@ -42,6 +42,7 @@ uint64_t ubel_now_ns(void) {
 /* ------------------------------------------------------ emitted-program support */
 
 void ubel_print_i64(int64_t v)            { fprintf(stdout, "%lld", (long long)v); }
+void ubel_print_u64(uint64_t v)           { fprintf(stdout, "%llu", (unsigned long long)v); }
 void ubel_print_bool(int32_t b)           { fputs(b ? "true" : "false", stdout); }
 void ubel_print_str(const char *s, int64_t len) { fwrite(s, 1, (size_t)len, stdout); }
 void ubel_print_nl(void)                  { fputc('\n', stdout); }
@@ -399,12 +400,29 @@ void ubel_i64_write(char *dst, int64_t v) {
     if (v < 0) dst[0] = '-';
     for (int64_t i = ubel_i64_len(v) - 1; i >= first; i--) { dst[i] = (char)('0' + (int)(u % 10)); u /= 10; }
 }
+/* The same for an unsigned 64-bit integer (`u64`; the narrower integers are widened to i64 and use the pair above). */
+int64_t ubel_u64_len(uint64_t u) {
+    int64_t n = 1;
+    while (u >= 10) { u /= 10; n++; }
+    return n;
+}
+void ubel_u64_write(char *dst, uint64_t u) {
+    for (int64_t i = ubel_u64_len(u) - 1; i >= 0; i--) { dst[i] = (char)('0' + (int)(u % 10)); u /= 10; }
+}
 
 void ubel_put(char *dst, const char *src, int64_t n) { memcpy(dst, src, (size_t)n); }
 
 void ubel_trap_div_zero(void) {
     fflush(stdout);
     fprintf(stderr, "runtime error: division by zero\n");
+    exit(1);
+}
+/* A failed `assert` or a `panic`: the message goes to stderr, and the program exits with status 1 like the interpreter. */
+void ubel_panic(const char *s, int64_t len) {
+    fflush(stdout);
+    fputs("panic: ", stderr);
+    fwrite(s, 1, (size_t)len, stderr);
+    fputc('\n', stderr);
     exit(1);
 }
 

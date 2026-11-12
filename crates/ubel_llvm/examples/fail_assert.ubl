@@ -1,0 +1,14 @@
+// A failed assert with a message: the interpreter reports an error and the native build exits with status 1. Both must
+// fail, and what was printed before the failure must match.
+fn check(n: int) void {
+    assert(n < 3, "n is too big")
+    println("checked", n)
+}
+
+fn main() void {
+    println("before")
+    for i in 0 .. 5 {
+        check(i)
+    }
+    println("not reached")
+}

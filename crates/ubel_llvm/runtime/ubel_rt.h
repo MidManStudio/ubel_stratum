@@ -27,6 +27,7 @@ uint64_t ubel_now_ns(void);
 /* What `println` / `print` lower to (Stage 1B). Output goes to stdout in the same
  * format the interpreter uses: integers in decimal, bools as true / false. */
 void ubel_print_i64(int64_t v);
+void ubel_print_u64(uint64_t v);
 void ubel_print_bool(int32_t b);
 void ubel_print_str(const char *s, int64_t len);
 void ubel_print_nl(void);
@@ -43,6 +44,9 @@ void *ubel_str_trim_start(const void *s, void *arena);
 void *ubel_str_trim_end(const void *s, void *arena);
 void *ubel_str_replace(const void *s, const void *from, const void *to, void *arena);
 int64_t ubel_i64_len(int64_t v);
+int64_t ubel_u64_len(uint64_t v);
+void ubel_u64_write(char *dst, uint64_t v);
+void ubel_panic(const char *s, int64_t len);
 void ubel_i64_write(char *dst, int64_t v);
 void ubel_put(char *dst, const char *src, int64_t n);
 

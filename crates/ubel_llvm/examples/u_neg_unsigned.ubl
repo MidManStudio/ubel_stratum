@@ -1,0 +1,7 @@
+// Not supported yet: negating an unsigned integer. Sema accepts it; the interpreter panics at run time ("cannot negate u8").
+// The emitter refuses it at compile time instead of picking a result.
+// expect-refusal: negating an unsigned integer
+fn main() void {
+    let x: u8 = 5
+    println(-x)
+}
