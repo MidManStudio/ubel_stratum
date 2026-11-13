@@ -1,0 +1,38 @@
+// tests/fixtures/ok_operators_combined.ubl
+// Built-in operators beside the operator traits. A user type goes through its
+// `Add` impl, a type parameter with an `Add` bound goes through the bound, and
+// the numbers and strings in the same function use the built-in operators. The
+// compile-time check for built-in operands leaves all of them alone.
+// Expected: sema OK, interpret OK.
+
+struct V { n: int }
+
+impl Add<V, V> for V {
+    fn add(self, rhs: V) V { return V { n = self.n + rhs.n } }
+}
+
+fn twice<T: Add<T, T>>(x: T) T { return x + x }
+
+fn describe(v: V, scale: int) string {
+    let doubled = twice(v)
+    let total = doubled.n * scale + 1
+    return "n=" + "ok" + (if total > 0 { "+" } else { "-" })
+}
+
+fn main() void {
+    let a = V { n = 1 }
+    let b = V { n = 2 }
+    assert((a + b).n == 3, "a user type through its impl")
+    assert(twice(4) == 8, "a bound on a number")
+    assert(twice(a).n == 2, "a bound on a user type")
+    assert(twice(1.5) == 3.0, "a bound on a double")
+    assert(describe(a, 3) == "n=ok+", "numbers and strings beside it")
+
+    let mut t = a
+    t = t + b
+    assert(t.n == 3, "assignment of a user sum")
+    let flags: u8 = 5
+    assert((flags & 4) == 4, "a bit test")
+    assert(1 == 1 and "a" < "b", "comparison and logical operators")
+    println("operators combined ok")
+}

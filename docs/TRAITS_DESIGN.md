@@ -767,7 +767,7 @@ Decided 2026-11-03.
   explicit form `a.mul(3.0)` on a type with several impls of one trait resolves against the first
   impl, in sema and at run time (the operator form finds the right one). Operators on `List`,
   `Dictionary`, tuples and other built-in left operands cannot be implemented, and `list + list`
-  or `bool & bool` still passes sema and panics at run time.
+  or `bool & bool` is `TYPE-139` (thirty-first delivery) instead of a run-time panic.
 
 ### What S5d settled
 

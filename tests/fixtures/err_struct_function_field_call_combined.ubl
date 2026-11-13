@@ -4,8 +4,8 @@
 // typed from the field's return type, and a name that is neither a
 // method nor a field is still NoSuchMethod. Four mistakes, four
 // diagnostics.
-// Expected: sema FAIL (NoSuchMethod TYPE-104, TypeMismatch TYPE-101 twice,
-// NoSuchMethod TYPE-104).
+// Expected: sema FAIL (NotCallable TYPE-140 for the string field, TypeMismatch
+// TYPE-101 twice, NoSuchMethod TYPE-104 for the missing name).
 
 struct Config {
     cb:   fn(int) int,

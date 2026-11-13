@@ -127,6 +127,7 @@ use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
 
 mod impl_patterns;
 mod dyn_trait;
+mod builtin_ops;
 use self::impl_patterns::{ImplGuard, ImplPattern};
 use std::rc::Rc;
 
@@ -4795,6 +4796,17 @@ impl<'a> InferCtx<'a> {
                 }
                 match &index.kind {
                     ExprKind::Lit(Literal::Int(n)) if *n >= 0 && (*n as usize) < items.len() => items[*n as usize],
+                    ExprKind::Lit(Literal::Int(n)) => {
+                        self.report_tuple_index(ty, items.len(), n.to_string(), index.span);
+                        self.unknown()
+                    }
+                    ExprKind::UnaryOp { op: UnaryOp::Neg, operand }
+                        if matches!(&operand.kind, ExprKind::Lit(Literal::Int(_))) =>
+                    {
+                        let ExprKind::Lit(Literal::Int(n)) = &operand.kind else { unreachable!() };
+                        self.report_tuple_index(ty, items.len(), format!("-{}", n), index.span);
+                        self.unknown()
+                    }
                     _ => self.unknown(),
                 }
             }
@@ -5054,6 +5066,9 @@ impl<'a> InferCtx<'a> {
                     }
                 }
                 if through_trait { return self.void_ty(); }
+                if let Some((trait_name, text)) = assign_operator_trait(*op) {
+                    self.check_builtin_operator(trait_name, text, target_ty, expr.span);
+                }
                 // GAP 2 — check for an arena escape first. If the assign
                 // itself is the escape, report that specifically and skip
                 // the generic structural unify below: since ArenaRef pairs
@@ -5094,14 +5109,11 @@ impl<'a> InferCtx<'a> {
                 // a suffixed literal does), and only signed suffixes have
                 // a most-negative value to special-case in the first
                 // place — this deliberately does not touch (or excuse)
-                // `-5u8`, which stays exactly what it already was: sema
-                // accepts it (there's no compile-time negation-validity
-                // check for *any* type here, signed or not — matches
-                // this codebase's existing convention of leaving
-                // operator-validity to the interpreter's own runtime
-                // panic, same as e.g. `"hello" + 5`), and the interpreter
-                // panics on it at runtime ("cannot negate u8") the same
-                // way it already did before this feature existed.
+                // `-5u8`, which is rejected like `-x` for an unsigned `x`:
+                // an unsigned integer has no negation, and the operator
+                // table in `type_infer/builtin_ops.rs` reports it as
+                // `TYPE-139` (the interpreter panics on it otherwise,
+                // "cannot negate u8").
                 if let (UnaryOp::Neg, ExprKind::Lit(Literal::TypedInt { raw, suffix })) =
                     (op, &operand.kind)
                 {
@@ -5128,9 +5140,22 @@ impl<'a> InferCtx<'a> {
                 }
                 let op_ty = self.infer_expr(operand);
                 match op {
-                    UnaryOp::Not    => self.bool_ty(),
-                    UnaryOp::Neg    => self.operator_site("Neg", "-", op_ty, None, expr.span).unwrap_or(op_ty),
-                    UnaryOp::BitNot => self.operator_site("BitNot", "~", op_ty, None, expr.span).unwrap_or(op_ty),
+                    UnaryOp::Not    => {
+                        // `!x` needs a `bool`, as a condition does.
+                        let bool_ty = self.bool_ty();
+                        self.unify(bool_ty, op_ty, operand.span);
+                        bool_ty
+                    }
+                    UnaryOp::Neg    => match self.operator_site("Neg", "-", op_ty, None, expr.span) {
+                        Some(t) => t,
+                        None if self.check_builtin_operator("Neg", "-", op_ty, expr.span) => op_ty,
+                        None => self.unknown(),
+                    },
+                    UnaryOp::BitNot => match self.operator_site("BitNot", "~", op_ty, None, expr.span) {
+                        Some(t) => t,
+                        None if self.check_builtin_operator("BitNot", "~", op_ty, expr.span) => op_ty,
+                        None => self.unknown(),
+                    },
                     UnaryOp::Await  => self.unwrap_task(op_ty, expr.span),
                 }
             }
@@ -5155,6 +5180,7 @@ impl<'a> InferCtx<'a> {
                     }
                     self.infer_expr(value);
                 }
+                if !self.check_callable(callee_ty, callee.span) { return self.unknown(); }
 
                 // GAP 1 FIX — `<Collection>.new()` (e.g. `List.new()`) is
                 // parsed as Call { callee: Field { target: Ident(ns), field:
@@ -6042,6 +6068,14 @@ impl<'a> InferCtx<'a> {
                 // args (if any) get inferred from.
                 let root = path.first().copied().unwrap_or("");
                 if let Some(def_id) = self.type_def_of(root) {
+                    // `type_def_of` sees through an alias to a struct or an
+                    // enum; an alias that is still an alias here has some
+                    // other target (`type Score = int`).
+                    if matches!(self.ctx.symbols.lookup(def_id).kind, DefKind::TypeAlias) {
+                        for f in fields.iter() { self.infer_expr(f.value); }
+                        self.report_alias_not_a_struct(root, def_id, expr.span);
+                        return self.unknown();
+                    }
                     if let Some(decl_fields) = self.struct_fields.get(&def_id).cloned() {
                         let struct_ty  = self.instantiate(def_id, expr.span);
                         let inst_args: Vec<TypeId> = match self.ctx.types.get(struct_ty).clone() {
@@ -6555,7 +6589,15 @@ impl<'a> InferCtx<'a> {
                     }
                 }
                 self.unify(lhs, rhs, span);
-                self.apply(lhs)
+                let result = self.apply(lhs);
+                // A built-in type with no operator trait: the table in
+                // `type_infer/builtin_ops.rs` says what the run time accepts.
+                if let Some((trait_name, text)) = binop_operator_trait(op) {
+                    if !self.check_builtin_operator(trait_name, text, result, span) {
+                        return self.unknown();
+                    }
+                }
+                result
             }
             BinOp::Eq | BinOp::Ne => {
                 self.unify(lhs, rhs, span);
@@ -7248,8 +7290,10 @@ impl<'a> InferCtx<'a> {
             SemaType::Var(_)   => self.fresh_var(),
             SemaType::Unknown  => self.unknown(),
             _ => {
-                self.errors.add_type_error(TypeError::NoSuchMethod {
-                    method:  "<call>".into(),
+                // Anything else that is settled is never a function: a number,
+                // a string, a collection, a struct value (`TYPE-140`). This
+                // used to be a `NoSuchMethod` for a method called `<call>`.
+                self.errors.add_type_error(TypeError::NotCallable {
                     on_type: self.display_type(callee_ty),
                     span,
                 });

@@ -1,0 +1,39 @@
+// tests/fixtures/ok_alias_tuple_call_isolated.ubl
+// The forms the new checks sit next to and must leave alone: a struct literal
+// through an alias of a struct, an alias of a plain type, a tuple read at every
+// valid index and by a computed index, and a call of functions, a closure and a
+// method.
+// Expected: sema OK, interpret OK.
+
+struct Point { x: int, y: int }
+type P = Point
+type N = int
+
+struct Acc { n: int }
+extend Acc {
+    fn plus(self, x: int) int { return self.n + x }
+}
+
+fn add(x: int, y: int) int { return x + y }
+
+fn main() void {
+    let p = P { x = 1, y = 2 }
+    let n: N = 5
+    assert(p.x + p.y + n == 8, "an alias of a struct and of a plain type")
+
+    let t = (1, "a", 2.5)
+    assert(t[0] == 1, "tuple element 0")
+    assert(t[1] == "a", "tuple element 1")
+    assert(t[2] == 2.5, "tuple element 2")
+    let i = 1
+    assert(t[i] == "a", "a computed index")
+
+    let f = fn(v: int) v + 1
+    let g = add
+    let a = Acc { n = 10 }
+    assert(f(1) == 2, "a closure")
+    assert(add(1, 2) == 3, "a function")
+    assert(g(3, 4) == 7, "a function value")
+    assert(a.plus(5) == 15, "a method")
+    println("alias tuple call ok")
+}

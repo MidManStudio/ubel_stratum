@@ -1,0 +1,10 @@
+// tests/fixtures/err_operator_bool_bitand_isolated.ubl
+// `&` is an integer operator; a bool uses `and`. This type-checked before and
+// panicked when it ran.
+// Expected: sema FAIL (TYPE-139).
+
+fn main() void {
+    let a = true
+    let b = false
+    println(a & b)
+}

@@ -162,8 +162,10 @@ fn the_call_result_is_typed_from_the_fields_return_type() {
 
 #[test]
 fn calling_a_field_that_is_not_a_function_is_an_error() {
+    // `TYPE-140` NotCallable. It was `TYPE-104`, "no method `<call>`", until the
+    // thirty-first delivery gave the call of a value that is not a function its own code.
     let src = format!("{CONFIG}fn main() void {{\n    let c = Config {{ cb = fn(x: int) x * 2, name = \"n\" }}\n    let a = c.name(3)\n}}\n");
-    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-104"]));
+    assert_eq!(codes(&src), (Stage::Sema, vec!["TYPE-140"]));
 }
 
 #[test]

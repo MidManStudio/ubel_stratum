@@ -1,0 +1,10 @@
+// tests/fixtures/err_tuple_index_isolated.ubl
+// A literal index past the end of a tuple. The size of a tuple is part of its
+// type, so this is known when the program is checked. It used to panic when it
+// ran.
+// Expected: sema FAIL (TYPE-141).
+
+fn main() void {
+    let t = (1, 2)
+    println(t[5])
+}

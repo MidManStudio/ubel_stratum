@@ -1,0 +1,9 @@
+// tests/fixtures/err_already_reported_isolated.ubl
+// A method call on an expression whose error is already reported (`*5`: a
+// dereference of an `int`). One diagnostic, the root cause. The type checker
+// used to panic with "index out of bounds" on the receiver.
+// Expected: sema FAIL (TYPE-114).
+
+fn main() void {
+    let t = (*5).go()
+}

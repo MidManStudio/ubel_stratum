@@ -1,0 +1,7 @@
+// tests/fixtures/err_operator_float_bitwise_isolated.ubl
+// A float has no bitwise operators.
+// Expected: sema FAIL (TYPE-139).
+
+fn main() void {
+    println(1.5 & 2.5)
+}

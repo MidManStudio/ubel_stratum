@@ -479,6 +479,9 @@ impl SemaType {
 
 // ── TypeTable ────────────────────────────────────────────────────
 
+/// What `TypeTable::get` returns for `TypeId::ERROR`.
+static UNKNOWN_TYPE: SemaType = SemaType::Unknown;
+
 /// The flat table of all semantic types, indexed by `TypeId`.
 ///
 /// Interning: `intern` checks whether an identical `SemaType` already exists
@@ -605,7 +608,14 @@ impl TypeTable {
     }
 
     /// Retrieve a type by its `TypeId`. Panics on an invalid id.
+    ///
+    /// `TypeId::ERROR` is not an index: it marks a type whose error was already
+    /// reported (`*5`, `await 5`), and every consumer that forgot to test for it
+    /// used to index past the end of the table (a compiler panic, "index out of
+    /// bounds"). It reads as an unknown type here, which every consumer already
+    /// treats leniently and without a second diagnostic.
     pub fn get(&self, id: TypeId) -> &SemaType {
+        if id.is_error() { return &UNKNOWN_TYPE; }
         &self.types[id.0]
     }
 

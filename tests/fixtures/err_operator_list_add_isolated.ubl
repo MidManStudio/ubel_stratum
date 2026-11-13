@@ -1,0 +1,11 @@
+// tests/fixtures/err_operator_list_add_isolated.ubl
+// `+` is not defined for a list. This type-checked before and the interpreter
+// stopped with "arithmetic not supported on List".
+// Expected: sema FAIL (TYPE-139).
+
+fn main() void {
+    let a = [1]
+    let b = [2]
+    let c = a + b
+    println(c.len())
+}

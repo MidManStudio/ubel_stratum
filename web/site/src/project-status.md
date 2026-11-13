@@ -125,6 +125,21 @@ verified safe.
     function, a returned value, a struct field, an enum variant field and
     inside another literal, not only on the right of a `let` with a written
     type
+- A second round of fixes, for programs that passed the type checker and then
+  stopped when they ran:
+  - Operators on built-in types are checked when the program is checked:
+    `[1] + [2]`, `true & false`, `1.5 & 2.5`, `-x` for an unsigned `x` and
+    `~true` are an error (`TYPE-139`) instead of a run-time panic, and `!5`
+    needs a `bool`
+  - Calling something that is not a function (`let n = 5` then `n()`) is
+    `TYPE-140`, a literal tuple index past the end (`t[5]` for a pair) is
+    `TYPE-141`, and a struct literal through an alias of `int` is `TYPE-142`
+  - An expression that already reported an error (`*5`, `await 5`) no longer
+    crashes the type checker when it is called, indexed, matched on or
+    assigned
+  - A `.` after an integer belongs to the number only when a digit follows
+    it, so `7.double()` is a method call and `0..3` is a range without
+    spaces; `3.` is no longer a float, write `3.0`
 
 ## Active work
 
@@ -196,9 +211,13 @@ verified safe.
 - An array literal of different `dyn` shapes is still typed by its first
   element as the argument of a method call, the tail expression of a
   function, a tuple variant payload and an argument of a generic function
-- Constructing through an alias to a type that is not a struct or enum
-  (`type Score = int`, then `Score { x = 1 }`) is not rejected at compile
-  time
+- `low`, `mid`, `high`, `with`, `using` and `Task` are reserved, so they
+  cannot be used as a function, field, method or struct name
+- A range used as an index (`a[1 .. 3]`) is not a slice, and a fixed-size
+  array type (`[3]int`) cannot be built from a literal
+- `Dictionary.get` is typed as the value and is `null` at run time for a
+  missing key, so a chained `.unwrap()` on it passes the type checker and
+  stops when the program runs
 - `pub` written on a `const` or `type` item, and `@tier(...)` written on
   a `type` item, are parsed and then ignored; constants are global to
   the file and readable from every tier

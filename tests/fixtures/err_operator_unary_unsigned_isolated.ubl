@@ -1,0 +1,9 @@
+// tests/fixtures/err_operator_unary_unsigned_isolated.ubl
+// An unsigned integer has no negation. This type-checked before and the
+// interpreter stopped with "cannot negate u8".
+// Expected: sema FAIL (TYPE-139).
+
+fn main() void {
+    let x: u8 = 5
+    println(-x)
+}

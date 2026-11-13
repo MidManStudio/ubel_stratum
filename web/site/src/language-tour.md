@@ -129,6 +129,19 @@ the last stage. Arithmetic binds tighter than `|>`, so `1 + 2 |> double` is
 `double(3)`; a comparison binds looser, so `5 |> double == 10` compares the
 result.
 
+## Operators on built-in types
+
+Each operator is defined for a fixed set of types, and using it on another
+type is a compile error. `+` works on numbers and on two strings, `-` `*`
+`/` `%` on numbers, `&` `|` `^` `<<` `>>` and unary `~` on integers, unary
+`-` on signed integers and floats, and `!` on a `bool`. A `bool` uses `and`
+and `or`, a list is not added with `+`, and an unsigned integer has no
+negation. A struct or enum gets an operator by implementing its trait
+(`impl Add<V, V> for V`).
+
+A number written with a dot needs a digit after it: `3.0` is a float, and
+`7.double()` is a method call on the integer 7.
+
 ## Extension functions
 
 ```ubel

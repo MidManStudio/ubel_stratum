@@ -1,0 +1,11 @@
+// tests/fixtures/err_alias_struct_literal_isolated.ubl
+// A struct literal written with the name of an alias of `int`. It was accepted
+// and ran as if the alias were not there.
+// Expected: sema FAIL (TYPE-142).
+
+type Score = int
+
+fn main() void {
+    let s = Score { x = 1 }
+    println(1)
+}

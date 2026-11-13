@@ -621,6 +621,60 @@ caught.
 1100 or 2000, reporting twice, and not suppressing later errors are each caught. Four mutants
 survive, all behaviour-equivalent (see `tests/pipe.rs` and `PARSER_RULES.md` 5.13).
 
+### `tests/sema_runtime_panics.rs`
+
+**What it does:** Programs that passed sema and panicked when they ran, now compile errors (49 tests,
+`DIAGNOSTICS_RULES.md` `TYPE-139` to `TYPE-142`). Every test that expects an error has a sibling that runs the
+nearest correct program.
+
+**Decisions:**
+- `TYPE-139`: a table of bad binary operators (a list, a bool, a char, a tuple, a string, a double, each
+  collection), the shifts, the compound forms (named as written, also on an element), every unary form, the
+  suggestion per operator, and that the error is reported once and the result is `unknown`.
+- Every unsigned type has no negation (`u8`, `u16`, `u32`, `u64`, `usize`, `uint`, `ulong`), every signed type
+  and `double` has one, and `f32`, `f64`, `float` and `double` have no bitwise operators. The parameters of a
+  function carry the type, since a literal of the sized float types is a `double`.
+- What stays valid: arithmetic on every number, bitwise operators, unary and compound forms, an unconstrained
+  literal, a user type through its `Add` impl, a type parameter with an `Add` bound, comparison operators, and a
+  user type without the impl, which is still `TYPE-136`.
+- `TYPE-140`: an integer, a typed parameter, a string field, a struct value, a literal; its arguments are still
+  checked; functions, closures and methods still run. `TYPE-141`: a variable, a literal, a negative index, the
+  first index past the end, the one-element and empty suggestions; a computed index and a list index are not
+  checked here. `TYPE-142`: an alias of `int`, its fields still checked; an alias of a struct runs.
+
+**Mutation:** the table and the classification are pinned by mutants that drop each operator group, each type
+group and each accepted class, and by mutants of the call, tuple, alias and message code. Five of the 52
+mutants of this round survive, each with a reason: a default arm of the operator match that no trait name
+reaches; the signed-integer class (no operator is invalid for a signed integer, so dropping it changes
+nothing); the error-type guard in `operand_class` (the match falls through to the same `None`); and the early
+return after a reported call, in two spellings (continuing past it reports the same single error).
+
+### `tests/number_dot_lexing.rs`
+
+**What it does:** A float literal needs a digit after the dot (14 tests, `ubel_stratum.md`, lexer).
+
+**Decisions:**
+- `7.double()` and `1_000.double()` are method calls on an integer; `0..4`, `1..=3` and `0 .. 4` are the same
+  range; floats with a fraction (`1.5`, `1_000.5`, `2.5e3`, `1.5f`) lex as before.
+- `3.` is the integer 3 and a dot: a parse error at the end of a block, and `3.println(x)` before a name, which
+  is a name error, never a silent change of value. The tokens are checked directly for `7.double()` and `0..3`.
+
+**Mutation:** restoring either old float rule fails a test.
+
+### `tests/already_reported_types.rs`
+
+**What it does:** An expression whose error was already reported, used in any position (5 tests).
+
+**Decisions:**
+- `TypeId::ERROR` is a sentinel, not an index, and `TypeTable::get` indexed with it: `(*5).go()`, `(await 5)`
+  as a receiver, a callee, a `match` scrutinee and an assignment value panicked with "index out of bounds".
+  `get` now reads the sentinel as an unknown type.
+- `FAILED` holds the two failed expressions (`*5`, `await 5`) and `POSITIONS` 29 places they can stand (a typed
+  `let`, either side of an operator, every kind of condition, an argument, an index, a field, a cast, a pipe, a
+  borrow and so on); each must give exactly the root-cause diagnostic.
+
+**Mutation:** removing the guard in `get` fails three of the five tests.
+
 ### `tests/builtin_impls.rs`
 
 **What it does:** Integration tests for impls and `extend` blocks on built-in

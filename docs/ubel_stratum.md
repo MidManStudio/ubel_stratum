@@ -1835,3 +1835,38 @@ unsupported call reports). The docs `PARSER_RULES.md` (sections 5.13 to 5.15), `
 array literal as a method argument, a tail expression, a tuple variant payload and a generic callee;
 a pipe stage that returns a function to apply. The added lines were checked for em dashes and first
 or second person.
+
+A thirty-first delivery is the second small-bug round: programs that type-checked and then stopped when they
+ran. `sema/type_infer/builtin_ops.rs` (new) holds a table of what each operator accepts on a built-in type,
+used by the binary arm (`binop_result`), the compound assignment arm and the unary arm: `+` takes every number
+and a string with a string, `-` `*` `/` `%` every number, `&` `|` `^` `<<` `>>` and `~` every integer type,
+unary `-` every signed integer and float, and `!` needs a `bool` (a unify, so a mismatch is `TYPE-101`);
+anything else is `TYPE-139` `OperatorNotSupported`, including `-5u8`, which the old comment on the unary arm
+described as accepted. The same file reports a literal tuple index past the end (`TYPE-141`), a struct literal
+through an alias whose target is not a struct or an enum (`TYPE-142`), and the call of an unsuffixed integer
+literal. `call_return_type` now reports every other settled callee that is not a function as `TYPE-140`
+`NotCallable`, replacing `TYPE-104` for a method named `<call>` (two fixtures, `err_call_non_function` and
+`err_struct_function_field_call_combined`, changed their expected code). `TypeTable::get` reads `TypeId::ERROR`
+as an unknown type, which closes the compiler panics listed in `PARKED_IDEAS.md` for an expression that
+already failed to type (a method receiver, the callee, the scrutinee of a `match`, an assigned value; `*5`
+and `await 5` were the triggers). The lexer reads `.` after an integer as part of the number only when a
+digit follows, so `7.double()` is a method call and `0..3` a range (no existing program used `3.` or an
+unspaced range). Three test files were added (`sema_runtime_panics`, `number_dot_lexing`,
+`already_reported_types`, 68 tests) and 12 fixtures (`ok_operators_isolated`, `ok_operators_combined`,
+`err_operator_list_add_isolated`, `err_operator_bool_bitand_isolated`, `err_operator_unary_unsigned_isolated`,
+`err_operator_float_bitwise_isolated`, `err_not_callable_isolated`, `err_tuple_index_isolated`,
+`err_alias_struct_literal_isolated`, `err_already_reported_isolated`, `ok_number_dot_isolated`,
+`ok_alias_tuple_call_isolated`). Verification: the workspace has 1422 tests in 43 suites and none
+fails; the `check` result of every one of the 451 `.ubl` files in the tree was compared with a binary built
+from live before the change, and only the 12 expected files differ (9 of the new fixtures, the two fixtures above, and the
+LLVM example `crates/ubel_llvm/examples/u_neg_unsigned.ubl`, whose premise that sema accepts a negated unsigned
+integer is now a compile error); the 370 files of `tests/fixtures` were also run and differ only in
+those, and no program in the tree used a trailing-dot float or an unspaced range. A mutation pass over the
+changed rules (52 mutants) catches 47; the 5 survivors, all equivalent, are named in the `sema_runtime_panics` entry
+in `docs/ubel_stratum_rd.md`. `tests/fixtures/random.ubl` (one newline, no `fn main`) is deleted by
+`.mdix/patches/patch.mdix`. Parked, with their evidence, in the new "small-bug round after S6" section of
+`PARKED_IDEAS.md`: reserved words as names, range slicing, a fixed-size array from a literal, `int.zero()`,
+`Dictionary.get`/`unwrap`, collection method arguments, `@derive(Clone)` fields. The docs
+`DIAGNOSTICS_RULES.md` (`TYPE-139` to `TYPE-142`), `PARKED_IDEAS.md`, `TRAITS_DESIGN.md`, `ubel_stratum_rd.md`,
+`web/site/src/language-tour.md` and `web/site/src/project-status.md` were updated with it. The added lines were
+checked for em dashes and first or second person.

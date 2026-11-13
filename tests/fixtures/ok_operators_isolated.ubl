@@ -1,0 +1,54 @@
+// tests/fixtures/ok_operators_isolated.ubl
+// Operators on built-in types, every form that is defined. Arithmetic works on
+// every number and `+` also joins two strings; `&`, `|`, `^`, `<<`, `>>` and
+// unary `~` work on integers; unary `-` works on signed integers and floats;
+// `!` works on a bool; the compound forms follow their operator.
+// Expected: sema OK, interpret OK.
+
+fn main() void {
+    let a = 7
+    let b = 2
+    assert(a + b == 9, "int +")
+    assert(a - b == 5, "int -")
+    assert(a * b == 14, "int *")
+    assert(a / b == 3, "int /")
+    assert(a % b == 1, "int %")
+    assert(1.5 + 2.0 == 3.5, "double +")
+    assert("a" + "b" == "ab", "string +")
+
+    let x: u8 = 6
+    let y: u8 = 3
+    assert((x & y) == 2, "u8 &")
+    assert((x | y) == 7, "u8 |")
+    assert((x ^ y) == 5, "u8 ^")
+    assert((x << 1) == 12, "u8 <<")
+    assert((6 >> 1) == 3, "int >>")
+    assert((~5) == -6, "int ~")
+    let big: i64 = 4
+    assert((big << 2) == 16, "i64 <<")
+    assert(x - y == 3, "u8 -")
+
+    let f = 2.5
+    assert((-a) == -7, "unary - on an int")
+    assert((-f) == -2.5, "unary - on a double")
+    let small: i8 = -128
+    assert(small < 0, "unary - on an i8 literal")
+    assert(!false, "unary !")
+    assert(!(a > 3) == false, "! of a comparison")
+
+    let mut n = 1
+    n += 2
+    n *= 3
+    n -= 1
+    n /= 2
+    n %= 3
+    assert(n == 1, "compound arithmetic")
+    let mut s = "x"
+    s += "y"
+    assert(s == "xy", "compound string +")
+    let mut u: u32 = 1
+    u <<= 2
+    u |= 1
+    assert(u == 5, "compound bitwise")
+    println("operators ok")
+}

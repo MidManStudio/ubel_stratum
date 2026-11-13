@@ -2,7 +2,7 @@
 // Calling something that is not a function is a sema error. It used to panic the type checker
 // (the error type reached `unify` through the `return`), so this also guards against that.
 //
-// Expected: sema FAIL (NoSuchMethod).
+// Expected: sema FAIL (TYPE-140 NotCallable; it was TYPE-104 NoSuchMethod for a method named `<call>`).
 
 fn f(x: int) int {
     return x(1)

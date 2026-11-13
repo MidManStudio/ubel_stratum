@@ -322,6 +322,41 @@ pub enum TypeError {
         span:      Span,
     },
 
+    /// A built-in operator applied to a built-in type it is not defined for:
+    /// `[1] + [2]`, `true & false`, `1.5 & 2.5`, `-x` for an unsigned `x`.
+    /// `op` is the operator as written, `+=` and `~` included. A user type goes
+    /// through `OperatorNotImplemented` instead, which asks for an impl.
+    OperatorNotSupported {
+        op:      &'static str,
+        on_type: String,
+        span:    Span,
+    },
+
+    /// A call whose callee has a type that is never a function: `n()` for an
+    /// `int`, a string, a collection, a tuple or a struct value. Before this
+    /// variant it was a `NoSuchMethod` for a method called `<call>`.
+    NotCallable {
+        on_type: String,
+        span:    Span,
+    },
+
+    /// A literal tuple index past the end: `t[5]` for a tuple of two. `index`
+    /// is the index as written (`5`, `-1`).
+    TupleIndexOutOfRange {
+        index: String,
+        len:   usize,
+        tuple: String,
+        span:  Span,
+    },
+
+    /// A struct literal written with the name of an alias whose target is not a
+    /// struct or an enum: `type Score = int`, then `Score { x = 1 }`.
+    NotAStruct {
+        name:   String,
+        target: String,
+        span:   Span,
+    },
+
     /// `dyn Trait` written for a trait that cannot be used that way: a method
     /// with no `self` receiver, with generic parameters of its own, or that
     /// mentions `Self` outside the receiver, in the trait or in one it builds
@@ -498,6 +533,10 @@ impl TypeError {
             TypeError::OperatorNotImplemented      { span, .. } => *span,
             TypeError::NotIndexable                { span, .. } => *span,
             TypeError::NotObjectSafe               { span, .. } => *span,
+            TypeError::OperatorNotSupported        { span, .. } => *span,
+            TypeError::NotCallable                 { span, .. } => *span,
+            TypeError::TupleIndexOutOfRange        { span, .. } => *span,
+            TypeError::NotAStruct                  { span, .. } => *span,
             TypeError::TypeAliasCycle              { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
@@ -606,6 +645,18 @@ impl TypeError {
 
             TypeError::NotIndexable { type_name, write: true, .. } =>
                 format!("cannot assign through an index of a value of type `{}`", type_name),
+
+            TypeError::OperatorNotSupported { op, on_type, .. } =>
+                format!("operator `{}` is not defined for `{}`", op, on_type),
+
+            TypeError::NotCallable { on_type, .. } =>
+                format!("cannot call a value of type `{}`", on_type),
+
+            TypeError::TupleIndexOutOfRange { index, len, tuple, .. } =>
+                format!("tuple index {} is out of range for `{}`, which has {} element(s)", index, tuple, len),
+
+            TypeError::NotAStruct { name, target, .. } =>
+                format!("`{}` is an alias for `{}`, which is not a struct or an enum", name, target),
 
             TypeError::NotObjectSafe { trait_name, reasons, .. } =>
                 format!("the trait `{}` cannot be used as `dyn {}`: {}", trait_name, trait_name, reasons.join("; ")),
@@ -773,6 +824,27 @@ impl TypeError {
             TypeError::NotIndexable { write: true, .. } =>
                 Some("a `List`, an array, a `Dictionary`, and a struct or enum that implements `IndexSet<Idx, Val>` can be assigned through an index; a `string` and a tuple are read only".to_string()),
 
+            TypeError::OperatorNotSupported { op, on_type, .. } => Some(match op.trim_end_matches('=') {
+                "+"                              => "`+` works on numbers, and on a string with a string".to_string(),
+                "&" | "|" if on_type == "bool"   => "for booleans use `and` and `or`".to_string(),
+                "-" if matches!(on_type.as_str(), "uint" | "ulong" | "usize" | "u8" | "u16" | "u32" | "u64") =>
+                    "an unsigned integer has no negative; use a signed type".to_string(),
+                "-" | "*" | "/" | "%"            => format!("`{}` works on numbers", op),
+                _                                => format!("`{}` works on integers", op),
+            }),
+
+            TypeError::NotCallable { .. } =>
+                Some("only a function, a closure, a method or an enum variant can be called".to_string()),
+
+            TypeError::TupleIndexOutOfRange { len, .. } => Some(if *len == 0 {
+                "an empty tuple has no elements".to_string()
+            } else {
+                format!("the valid indexes are 0 to {}", len - 1)
+            }),
+
+            TypeError::NotAStruct { target, .. } =>
+                Some(format!("a struct literal needs the name of a struct; write a value of `{}` directly, or alias a struct", target)),
+
             TypeError::NotObjectSafe { .. } =>
                 Some("a trait can be `dyn` when every method takes `self`, has no generic parameters of its own and does not mention `Self` outside the receiver; move the other methods to a separate trait".to_string()),
 
@@ -867,6 +939,10 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::OperatorNotImplemented { .. }        => "TYPE-136",
             TypeError::NotIndexable { .. }                  => "TYPE-137",
             TypeError::NotObjectSafe { .. }                 => "TYPE-138",
+            TypeError::OperatorNotSupported { .. }          => "TYPE-139",
+            TypeError::NotCallable { .. }                   => "TYPE-140",
+            TypeError::TupleIndexOutOfRange { .. }          => "TYPE-141",
+            TypeError::NotAStruct { .. }                    => "TYPE-142",
         }
     }
     fn span(&self) -> Span { self.span() }

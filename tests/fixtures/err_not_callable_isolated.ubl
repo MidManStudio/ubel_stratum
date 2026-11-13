@@ -1,0 +1,9 @@
+// tests/fixtures/err_not_callable_isolated.ubl
+// Calling a value that is not a function. This type-checked before and
+// panicked when it ran.
+// Expected: sema FAIL (TYPE-140).
+
+fn main() void {
+    let n = 5
+    n()
+}

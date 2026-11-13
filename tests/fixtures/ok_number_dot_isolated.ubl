@@ -1,0 +1,27 @@
+// tests/fixtures/ok_number_dot_isolated.ubl
+// A `.` after an integer is part of the number only when a digit follows it.
+// `7.double()` is a method call on the integer 7 and `0..4` is a range with
+// no spaces; floats with a fraction lex as before.
+// Expected: sema OK, interpret OK.
+
+extend int {
+    fn double(self) int { return self * 2 }
+}
+
+fn main() void {
+    assert(7.double() == 14, "a method on an integer literal")
+    assert(1_000.double() == 2000, "with digit separators")
+
+    let mut t = 0
+    for i in 0..4 { t += i }
+    assert(t == 6, "a range without spaces")
+    for j in 1..=3 { t += j }
+    assert(t == 12, "an inclusive range without spaces")
+    for k in 0 .. 2 { t += k }
+    assert(t == 13, "a range with spaces")
+
+    assert(1.5 + 1.0 == 2.5, "a float")
+    assert(2.5e3 == 2500.0, "an exponent")
+    assert(1_000.5 == 1000.5, "separators in a float")
+    println("number dot ok")
+}

@@ -175,8 +175,8 @@ enum LogosToken {
     #[regex(r"0b[01][01_]*(u8|i8|u16|i16|u32|i32|u64|i64|usize|isize)?", parse_binary)]
     IntLit(u64),
 
-    #[regex(r"[0-9][0-9_]*\.[0-9_]*[fF]?", parse_float)]
-    #[regex(r"[0-9][0-9_]*\.[0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
+    #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*[fF]?", parse_float)]
+    #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
     #[regex(r"[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
     FloatLit(f64),
 

@@ -490,12 +490,6 @@ it actually turned up:
   function-typed struct field is `NoSuchMethod`~~ and ~~a `TypeMismatch`
   from unifying generic arguments carries `Span::at(0)`~~: all four fixed,
   see "Built" below.
-- Constructing through an alias to a type that is not a struct or enum
-  passes sema: `type Score = int` then `Score { x = 1 }` is accepted and
-  `Score.new()` panics at runtime (`undefined name 'Score'`). A struct
-  literal or an associated call naming a type that has no such members is
-  not checked for any non-struct name, alias or not; only the alias route
-  is new reachable surface.
 - The implicit calls of operators and `for-in` into a trait method are not
   tier-checked: `a == b` and `a < b` run a hand-written `eq` or `partial_cmp`
   with no check against the caller's tier. Every other call to a method is
@@ -531,16 +525,12 @@ it actually turned up:
   sema and at run time, so another impl's right operand is a type mismatch
   there; the operator form and a call through a bound find the right impl by
   the right operand's kind. There is no `AddAssign` family: `a += b` is
-  `a = a + b`. A built-in operand with no arithmetic still passes sema and
-  panics at run time (`list + list`, `bool & bool`: "arithmetic not supported"),
-  and `native_operator` in sema and `eval_binop` at run time each list what
-  numbers support, to be kept in step by hand.
-- An expression that already failed to type (`await` on a non-task, `*` on a non-reference)
-  still panics the type checker where it is the receiver of a method call (`t.go()`), the
-  indexed value (`t[0]`), the callee (`t()`), the scrutinee of a `match`, or the value of an
-  assignment (`m = t`, `m += t` on a number), all verified on a baseline built before S5c. A
-  field read of it, an operator on it and a `for` over it are guarded (S5b, S5c). Each site
-  reads the type table with the error sentinel and needs the same early return.
+  `a = a + b`. A built-in operand with no arithmetic (`list + list`,
+  `bool & bool`, `-x` for an unsigned `x`) is `TYPE-139` since the thirty-first
+  delivery. The table of what each operator accepts is in
+  `sema/type_infer/builtin_ops.rs`, and `native_operator` in sema and
+  `eval_binop` at run time still each list what numbers support, to be kept in
+  step with it by hand.
 - Array literals of different `dyn` shapes are still typed by their own first element as an
   argument of a method call, as the tail expression of a function body, as a tuple variant payload
   and as an argument of a generic callee (the hint covers a `let`, a plain function argument, a
@@ -573,6 +563,42 @@ it actually turned up:
   "Mutable globals" under "Built".)
 - Struct field default values (`n: u32 = 5u32`) do not parse. A
   top-level `let` is a parse error; use `static` for a mutable global.
+
+## Found in the small-bug round after S6 (verified by execution, parked)
+
+Each item below was run against the build from live before the thirty-first delivery, and is
+parked because the right behavior is a design choice, not because it is hard.
+
+- `low`, `mid`, `high`, `with` and `using` are keywords, so none of them can be a function, a
+  field or a method name (`struct S { with: int }`, `fn low()`, `fn using(self)` are `PARSE-001`).
+  Whether they stay reserved or become contextual words is open. `Task` is a built-in type name,
+  so `struct Task { .. }` fails with four `PARSE-001` errors in a row; a single "`Task` is a
+  reserved type name" would be clearer.
+- Indexing with a range, `a[1 .. 3]`, is typed `int`, so `let b = a[1 .. 3]` is accepted and the
+  first use of `b` gives a misleading error (`type int has no method len`). Slices as values are a
+  decision of their own (they are `TYPE-129` as an impl target today).
+- A fixed-size array cannot be built from a literal: `let a: [3]int = [1, 2, 3]` is `TYPE-101`,
+  expected `[3]int`, found `List<?T>`. The type exists; nothing produces a value of it.
+- Static methods on a primitive type cannot be called: `int.zero()` is `NAME-001`.
+- `Dictionary.get(k)` is typed as the value type and is `null` at run time for a missing key
+  (`DATASTRUCTURES.md`). A chained `.unwrap()` on it passes sema for a struct value type and
+  panics at run time ("no method 'unwrap' on 'Money'"), while `.unwrap()` on a plain struct is
+  `TYPE-104`. Whether `get` should be `Optional<V>` is the open question.
+- The arguments of the built-in collection methods are not type-checked in general:
+  `List<u8>.push(200)` and `List<u8>.push("x")` are accepted. Only an element of `dyn` type is
+  checked (S6).
+- An unannotated `Dictionary.new()` learns nothing from `set`: `d.set("a", 1)` then
+  `let v: string = d.get("a")` is accepted.
+- The items of a `for` over a string are untyped: `for c in "abc" { let n: int = c }` is accepted.
+- `@derive(Clone)` on a struct does not require its fields to be `Clone`.
+- A malformed interpolation hole, `$"v = {1 +}"`, is reported as `PARSE-002` "unexpected end of
+  file while parsing top-level declaration", which names the wrong place. (An escaped quote inside
+  a hole is `LEX-006` and a plain quote works: write `$"{id("x")}"`.)
+- `bool & bool`, `bool | bool` and `bool ^ bool` are `TYPE-139` (a bool uses `and` and `or`).
+  Rust accepts them as non-short-circuit operators; adding that is a run-time and sema change
+  together, if it is wanted.
+- A float literal needs a digit after the dot (`3.0`, not `3.`), so that `7.double()` and `0..3`
+  read as a method call and a range.
 
 ## Built
 
@@ -1050,8 +1076,6 @@ Known gaps of S3d, recorded rather than hidden:
   as `int` when the impl is looked up.
 - A diagnostic that names a tuple with an undecided integer literal in it writes
   the literal's variable (`(?T14, string)`).
-- `7.double()` lexes as `7.` followed by a name. The literal has to be in
-  parentheses: `(7).double()`.
 - A native method of a built-in type wins over an `extend` method of the same name
   without a diagnostic (`extend string { fn len(self) int { .. } }` is never
   called as `s.len()`).
