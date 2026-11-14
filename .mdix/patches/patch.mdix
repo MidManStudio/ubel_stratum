@@ -1,11 +1,16 @@
 // Brought to u by MidManStudio
 //
-// Delete tests/fixtures/random.ubl: a stray file holding one newline, with no `fn main`, so the interpreter skips
-// it and it checks nothing. No test, workflow or document reads it by name (docs/ubel_stratum.md mentions it only
-// in the sweep notes of past deliveries, which stay as written).
+// M1b: `ubel build` in the `ubel` command line, and `ubel_llvm` joins the main workspace. One template:
+//   delete_files::   crates/ubel_llvm/Cargo.lock (a nested lockfile is unused once the crate is a workspace member), and
+//                    the example crates/ubel_llvm/examples/u_neg_unsigned.ubl (sema now rejects what it tested)
+//   patch_files::    12 anchored edits: root Cargo.toml (new member), crates/cli (dependency, module, subcommand),
+//                    crates/ubel_llvm/Cargo.toml (its own [workspace] table goes), docs/ubel_stratum_cli.md.
+// The two edits that must go together (the new member and the removed [workspace] table) are both here, so this patch
+// never leaves the workspace half-changed. It needs crates/cli/src/commands/build.rs, which comes in the tarball
+// ubel-llvm-ubuild-7: APPLY THE TARBALL FIRST. Without it the CLI does not compile (the module file is missing).
+// The committed Cargo.lock is NOT touched: it is from the initial commit and lists only ubel_stratum.
 //
-// Checked on a fresh clone of master 06fe0e0 with the real applier: patched : 0, deleted : 1, no error. A dry run
-// reports the delete without doing it.
+// Checked on a fresh clone of master cd9cf5d with the real applier (tarball first, then this).
 
 @CONFIG(
   version    -> "1.0.0",
@@ -18,9 +23,27 @@
   ~delete_file<object>(_path) {
     return { path = _path }
   }
+  ~patch_replace_text<object>(_path, _anchor, _content) {
+    return { path = _path, op = "replace_text", anchor = _anchor, content = _content }
+  }
 )
 
 @DATA(
   delete_files::
-    delete_file("tests/fixtures/random.ubl")
+    delete_file("crates/ubel_llvm/Cargo.lock")
+    delete_file("crates/ubel_llvm/examples/u_neg_unsigned.ubl")
+
+  patch_files::
+    patch_replace_text("Cargo.toml", "members  = [\"crates/core\", \"crates/rd_parser\", \"crates/cli\", \"crates/lsp\"]", "#\n# crates/ubel_llvm (the LLVM backend: the `ubel-llvm` binary, and the library that `ubel build` calls) is a\n# member for the same reason, and because `ubel_stratum_cli` depends on it. It needs nothing beyond core and\n# the parser (by path), and `cargo test --workspace` runs its tests: they build native programs when a clang\n# 15 or newer is installed and skip themselves when none is (set UBEL_REQUIRE_CC=1 to make that a failure).\nmembers  = [\"crates/core\", \"crates/rd_parser\", \"crates/cli\", \"crates/lsp\", \"crates/ubel_llvm\"]")
+    patch_replace_text("crates/cli/Cargo.toml", "ubel_stratum_rd = { path = \"../rd_parser\" }\n", "ubel_stratum_rd = { path = \"../rd_parser\" }\nubel_llvm       = { path = \"../ubel_llvm\" }\n")
+    patch_replace_text("crates/cli/src/commands/mod.rs", "pub mod check;\n", "pub mod build;\npub mod check;\n")
+    patch_replace_text("crates/cli/src/main.rs", "//! terminal and JSON presentation. Only `check`, `run` and `debug-tokens`\n//! exist so far.", "//! terminal and JSON presentation. `check`, `run`, `build` and `debug-tokens`\n//! exist so far.")
+    patch_replace_text("crates/cli/src/main.rs", "use commands::{check::CheckArgs, debug_tokens::DebugTokensArgs, run::RunArgs, GlobalOpts};", "use commands::{build::BuildArgs, check::CheckArgs, debug_tokens::DebugTokensArgs, run::RunArgs, GlobalOpts};")
+    patch_replace_text("crates/cli/src/main.rs", "    /// Check a .ubl file, then run its `main`\n    Run(RunArgs),\n", "    /// Check a .ubl file, then run its `main`\n    Run(RunArgs),\n    /// Check a .ubl file, then build a native executable (LLVM backend; needs clang 15 or newer)\n    Build(BuildArgs),\n")
+    patch_replace_text("crates/cli/src/main.rs", "        Commands::Run(args)         => commands::run::run(args, &global),\n", "        Commands::Run(args)         => commands::run::run(args, &global),\n        Commands::Build(args)       => commands::build::run(args, &global),\n")
+    patch_replace_text("crates/ubel_llvm/Cargo.toml", "# This crate is deliberately its own workspace root (the `[workspace]` table at the bottom),\n# the same arrangement as crates/wasm_playground. Nothing in the main workspace changes,\n# and the main workspace's members, profiles and lockfile are untouched. It depends on the\n# core and parser crates by path, read-only.\n#\n# Build and run it explicitly:\n#   cargo build --release --manifest-path crates/ubel_llvm/Cargo.toml\n#   bash crates/ubel_llvm/scripts/run_equiv.sh\n", "# Until M1b this crate was its own workspace root, like crates/wasm_playground. It is now a member of the\n# main workspace (root Cargo.toml): the `ubel` command line depends on it (`ubel build`), and\n# `cargo test --workspace` runs its tests. It is not a default member, and it still depends only on the\n# core and parser crates, by path. The profiles are the workspace's.\n#\n# Build and run it:\n#   cargo build --release -p ubel_llvm        # the binary is target/release/ubel-llvm\n#   bash crates/ubel_llvm/scripts/run_equiv.sh\n")
+    patch_replace_text("crates/ubel_llvm/Cargo.toml", "ubel_stratum_rd = { path = \"../rd_parser\" }\n\n[workspace]\n", "ubel_stratum_rd = { path = \"../rd_parser\" }\n")
+    patch_replace_text("docs/ubel_stratum_cli.md", "only three commands exist, but", "only four commands exist, but")
+    patch_replace_text("docs/ubel_stratum_cli.md", "### `commands/debug_tokens.rs`\n", "### `commands/build.rs`\n\n`ubel build <file> [-o PATH] [--cc PATH] [-O 0|1|2|3|s] [--keep-temps] [-- CLANG_ARGS]`. Runs the same check as `check`\nand `run` (a failed check is reported by `check::report`, so the diagnostics and the `--json` object are the same),\nthen calls `ubel_llvm::driver::build`: it emits LLVM IR, writes it with the embedded C runtime to a private temporary\ndirectory and makes one `clang` call (version 15 or newer; `--cc` or `$UBEL_CC` choose one). The default output is the\nfile name without its extension, in the current directory, and the command refuses to write over the source file. The\nLLVM backend handles a subset of the language: what it cannot do yet is refused with a located `not supported yet`\nmessage.\n\nExit codes follow the rest of the CLI: `0` built; `1` the program has diagnostics, the backend refuses it, or clang\nfails on it; `2` the build could not be carried out (no usable clang, an output directory that does not exist, a bad\noption). `--verbose` shows the compiler and the full command, `--quiet` prints nothing on success, `--keep-temps` keeps\nthe IR and the runtime files and prints where they are. With `--json` the object has `file`, `ok`, `stage` (`build`,\nor `emit` when the backend refused the program), `output`, `compiler`, `command`, `error` and `elapsed_ms`. The backend\nitself is described in `LLVM_POC.md` (\"Building an executable\"); for Android see `ANDROID_TERMUX.md`.\n\n### `tests/build_tests.rs`\n\nEnd-to-end tests of `ubel build`, in the style of `cli_tests.rs`. The ones that need a real clang skip themselves, with a\nmessage, when none is installed, unless `UBEL_REQUIRE_CC=1` is set. The others always run: a program with diagnostics,\none the backend refuses, a compiler that is not there, the guard against writing over the source, and usage errors.\n\n### `commands/debug_tokens.rs`\n")
+    patch_replace_text("docs/ubel_stratum_cli.md", "`cargo build -p ubel_stratum_cli`; the binary is `target/<profile>/ubel`.\n", "`cargo build -p ubel_stratum_cli`; the binary is `target/<profile>/ubel`.\n\n`crates/ubel_llvm` (the LLVM backend, which `ubel build` calls) is a member too, so `cargo test --workspace` also runs its\ntests: they build native programs when a clang 15 or newer is installed and skip themselves when none is. The workspace\nrelease profile is LTO with one codegen unit; a build on a small machine can switch that off with\n`CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`.\n")
 )
