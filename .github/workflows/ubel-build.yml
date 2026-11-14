@@ -1,0 +1,97 @@
+name: Ubel build (the ubel command makes native programs)
+
+# Manual only, like the other LLVM workflows. Builds the `ubel` command, then runs
+# crates/ubel_llvm/scripts/run_ubel_build.sh: `ubel build` on every supported example (what it makes must print
+# exactly what `ubel run` prints), on the examples that are refused on purpose, and over the whole fixture corpus.
+# All the logic is in that script, so it can change without touching this file.
+#
+# Needs the `ubel build` command (M1b) and that script on the branch. To run it on every push as well, add
+# `push:` and `pull_request:` triggers below.
+on:
+  workflow_dispatch:
+    inputs:
+      clang:
+        description: 'Compiler on the runner'
+        type: choice
+        default: 'clang'
+        options: ['clang', 'clang-16', 'clang-17', 'clang-18']
+      opt:
+        description: 'Optimisation level for ubel build'
+        type: choice
+        default: '2'
+        options: ['0', '1', '2', '3', 's']
+      shipped_profile:
+        description: 'Build ubel with the workspace release profile (LTO, one codegen unit): slower, but it is the shipped binary'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ubel build (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    env:
+      CLANG: ${{ inputs.clang }}
+      OPT: ${{ inputs.opt }}
+      OUT_DIR: ${{ github.workspace }}/ubel-build-out
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          uname -m
+          "$CLANG" --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubel-build-${{ matrix.arch }}-${{ inputs.shipped_profile }}
+          cache-on-failure: true
+
+      # The workspace release profile is LTO with one codegen unit. Unless asked for, build without it: the
+      # check is about `ubel build`, not about how well the compiler itself is optimised.
+      - name: Build the ubel command
+        shell: bash
+        run: |
+          if [ "${{ inputs.shipped_profile }}" != "true" ]; then
+            export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+          fi
+          cargo build --release -p ubel_stratum_cli
+          ls -l target/release/ubel
+
+      - name: ubel build against the interpreter
+        shell: bash
+        run: bash crates/ubel_llvm/scripts/run_ubel_build.sh target/release/ubel 2>&1 | tee ubel-build.log
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$OUT_DIR/summary.md" ]; then cat "$OUT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubel-build-${{ matrix.arch }}
+          path: |
+            ubel-build.log
+            ubel-build-out/summary.md
+            ubel-build-out/results.tsv
+          if-no-files-found: warn
+          retention-days: 30
