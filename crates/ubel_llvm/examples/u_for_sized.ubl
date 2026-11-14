@@ -1,0 +1,10 @@
+// Not supported yet: a `for` loop over a range of a sized integer type. The loop counter is a 64-bit `int`; write `int`
+// bounds and cast inside the loop (`i as u8`). The refusal says so, instead of an internal-sounding type error.
+// expect-refusal: a `for` loop over a range of a sized integer type
+fn main() void {
+    let mut total: u8 = 0
+    for i in 0u8 .. 10u8 {
+        total += i
+    }
+    println(total)
+}

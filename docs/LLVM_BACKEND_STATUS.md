@@ -15,9 +15,10 @@ table in `LLVM_ROADMAP.md` stops at slice 4 and should be replaced by a pointer 
 
 - **A native executable can already be made, for a subset, by hand.** `ubel-llvm emit prog.ubl -o prog.ll`, then
   `clang prog.ll runtime/ubel_rt.c runtime/ubel_main.c -o prog`. That is what `scripts/run_equiv.sh` does for 33
-  programs and the target program at -O0, -O2 and under the sanitizers, at 64-bit and 32-bit. There is **no
-  `ubel build`**: the `ubel` command line has `check`, `run` and `debug-tokens` only, and the LLVM crate is its own
-  workspace root that the main workspace does not build.
+  programs and the target program at -O0, -O2 and under the sanitizers, at 64-bit and 32-bit. `ubel build` and
+  `ubel-llvm build` exist since M1: one command from source to a native executable, with a clang 15 or newer on the PATH.
+  The `ubel` command line has `check`, `run`, `build` and `debug-tokens`, and the LLVM crate is a member of the main
+  workspace.
 - **The subset is small next to the language.** Measured on current master: the target program
   (`examples/arena_demo/ast_builder.ubl`) compiles; the self-hosted tokenizer does not; **4 of the 168 `ok_`
   fixtures compile** (they are sema snippets, so this measures which features the language tests use, not how many
@@ -93,9 +94,9 @@ at its `double` field (M2b; its `Str` type is accepted since M2a, example 37), a
 
 ## 3. From source to an executable, today and as it should be
 
-Today: `ubel-llvm build prog.ubl -o prog` (M1a, 2026-11-10; a separate binary, its own cargo workspace) does the whole
-route in one command: IR, the embedded C runtime, one clang invocation. The `ubel` command line does not call it yet
-(M1b). `ubel-llvm emit` still writes just the `.ll`, and the scripts still run clang themselves.
+Today: `ubel build prog.ubl` (M1b, 2026-11-13) and `ubel-llvm build prog.ubl -o prog` (M1a, 2026-11-10) do the whole
+route in one command: IR, the embedded C runtime, one clang invocation. `ubel build` checks the file first with the
+CLI's own diagnostics. `ubel-llvm emit` still writes just the `.ll`, and the scripts still run clang themselves.
 
 What a user would expect: `ubel build prog.ubl -o prog`. What that needs, beyond the language coverage:
 
@@ -116,11 +117,12 @@ What a user would expect: `ubel build prog.ubl -o prog`. What that needs, beyond
    include one failing program (`fail_div_zero`). User-facing panics with source
    locations, integer overflow policy for the fixed-width types, bounds checks on indexing and an out-of-memory policy
    (today the runtime aborts) are not designed.
-5. **Layout in the repository.** The LLVM crate is deliberately its own workspace root (like `wasm_playground`),
-   so nothing in the main workspace builds it and the `ubel` CLI cannot call it. Putting `ubel build` in the CLI
-   means either joining the workspace or making the CLI shell out to a separate binary. The first is cleaner; it
-   interacts with the workspace `Cargo.lock` version, which the sandbox toolchain used here cannot read (a 1.75
-   cargo needed a patched copy to run the real `cargo test`), so it is worth deciding with a current toolchain in hand.
+5. **Layout in the repository.** *Decided and done in M1b (2026-11-13): `ubel_llvm` joined the main workspace* (a member,
+   not a default member), the CLI depends on it, and `ubel build` calls its library; the shell-out alternative was
+   not needed. The workspace lockfile is version 4, which the 1.75 cargo of the earlier work cannot read, so M1b was
+   verified with Rust 1.85. The committed `Cargo.lock` is from the initial commit and lists only `ubel_stratum`; cargo
+   rewrites it on any build, so it was left alone. The cost of joining: the workspace release profile (LTO, one
+   codegen unit) applies to the emitter; the suite scripts switch that off for their own builds.
 
 ## 4. The roadmap
 
@@ -131,7 +133,7 @@ than that or dependent on language work that is not done. These are estimates fr
 | # | Milestone | Why | Depends on | Size | Exit |
 |---|---|---|---|---|---|
 | M0 | Subset and target program | done | | done | `ast_builder` equals the interpreter in the suite |
-| M1 | `ubel build` and packaging (M1a done: `ubel-llvm build`; M1b open: the CLI and the workspace) | the thing a user can try | nothing in the language | S to M | `ubel build examples/x.ubl -o x && ./x` on Linux, and CI does it through the real CLI |
+| M1 | `ubel build` and packaging (done: M1a `ubel-llvm build`, M1b `ubel build` and the workspace join) | the thing a user can try | nothing in the language | S to M | `ubel build examples/x.ubl -o x && ./x` on Linux, and CI does it through the real CLI |
 | M2 | Numeric tower and `assert` (M2a done: sized integers, `assert`, `panic`; M2b open: `float` and `double`) | floats and sized integers are in the tokenizer and everywhere else | overflow behaviour is decided for the sized integers (wrap, as the interpreter does); plain `int` in the interpreter saturates through `f64`, a core bug (`LLVM_POC.md`, known differences) | M | the fixtures that first fail on `u8`, `u64`, `double`, `assert` compile and match the interpreter |
 | M3 | Collections v1: `List<T>`, indexing, `push`, `len`, `for` over a list, bounds checks | most of the 42 | the generics decision (below) for `List<T>` | L | the self-hosted tokenizer compiles and equals the interpreter on its inputs |
 | M4 | Generics (monomorphization) and traits (static dispatch), `@derive` | 24 + 25 + 21 first refusals | the traits chat; decision on monomorphization versus uniform representation | XL | the generic and trait fixtures compile; `Dictionary`, `Unique`, `Shared` follow |
@@ -202,8 +204,7 @@ Two cautions that stay true after the rename:
 
 1. Done on 2026-11-10: the folder is `crates/ubel_llvm` (section 7).
 2. Done: the pointer in `LLVM_ROADMAP.md` and the Phase 4 row of `web/site/src/project-status.md`.
-3. M1b: `ubel build` in the CLI and the workspace join (M1a, `ubel-llvm build`, is done), with the layout decided first
-   (section 3, point 5).
+3. Done on 2026-11-13: M1b, `ubel build` in the CLI and the workspace join (section 3, point 5).
 4. M2b: `float` and `double`, including printing them exactly like the interpreter does (Rust's shortest round-trip `{}`), tested
    differentially against Rust itself. M2a (sized integers, `assert`, `panic`) is done.
 5. Make the generics decision (section 4) before starting collections, with the self-hosted tokenizer as the test.

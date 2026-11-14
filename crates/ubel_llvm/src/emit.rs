@@ -1377,8 +1377,14 @@ impl<'a> Emitter<'a> {
             _ => return unsupported(iter.span, "`for` over anything but an integer range"),
         };
         let lo = self.expr(lo_e)?;
-        self.need(Ty::I64, &lo, lo_e.span)?;
         let hi = self.expr(hi_e)?;
+        if matches!(lo.ty, Ty::Int(_)) || matches!(hi.ty, Ty::Int(_)) {
+            return unsupported(
+                iter.span,
+                "a `for` loop over a range of a sized integer type (use `int` bounds and cast inside the loop)",
+            );
+        }
+        self.need(Ty::I64, &lo, lo_e.span)?;
         self.need(Ty::I64, &hi, hi_e.span)?;
 
         let counter = self.alloca(Ty::I64, "for.i");

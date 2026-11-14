@@ -427,6 +427,13 @@ passed, as with 18.1.3), and on emulated 32-bit ARM and aarch64 Linux (see `ANDR
 Windows (the `.exe` suffix and the `.exe` search are written and never run), macOS, Termux itself and Android's libc,
 a clang newer than 20, and any CI run. Android: `ANDROID_TERMUX.md`.
 
+`ubel build prog.ubl` (M1b) is the same thing through the main command line: `crates/cli/src/commands/build.rs` runs the
+CLI's own check first, so the diagnostics look like `ubel check`'s, and then calls `ubel_llvm::driver::build`. `ubel_llvm`
+is a member of the main workspace since M1b (the CLI depends on it, and `cargo test --workspace` runs its tests); build
+the emitter binary with `cargo build --release -p ubel_llvm`, which puts it in `target/release/ubel-llvm`. The suite
+scripts ask for a plain release profile (no LTO, 16 codegen units), because the workspace's own is slow to build; set
+`CARGO_PROFILE_RELEASE_LTO` and `CARGO_PROFILE_RELEASE_CODEGEN_UNITS` yourself to override that.
+
 ### What the subset covers
 
 Top-level functions with `int`, `bool` and `void` parameters and results; `@tier`
@@ -451,7 +458,8 @@ over every operator at every width:
 - `MIN / -1` is `MIN` and `MIN % -1` is 0 (LLVM's `sdiv` and `srem` are undefined there and trap on x86, so a divisor
   of -1 is replaced by 1 and the quotient corrected);
 - a division or remainder by zero stops the program at every width (exit status 1, message on stderr);
-- `-x` wraps for the signed widths; negating an unsigned integer is refused (the interpreter panics at run time);
+- `-x` wraps for the signed widths; negating an unsigned integer is rejected by sema in the current front end (an
+  older one accepted it, and the interpreter panics on it at run time), and the emitter keeps a refusal as a backstop;
 - `x as T` between integer types, and from `bool`, follows Rust's `as`: a narrower target truncates, a wider one extends
   by the *source's* signedness, the same width reinterprets. `short` and `ushort` are refused: sema and the interpreter
   both widen them (`short` is `int`, `ushort` is `u32`; `70000 as short` is `70000`), which looks like a placeholder, so
@@ -459,7 +467,7 @@ over every operator at every width:
 
 Printing and interpolation widen to 64 bits (sign- or zero-extended); `u64` has its own unsigned helpers
 (`ubel_print_u64`, `ubel_u64_len`, `ubel_u64_write`). Not yet: `float` and `double` (M2b), the sized integers as a `for`
-loop variable or in a `match`, and `as` to or from `char` or `string`.
+range or in a `match` (both are refused with a located message), and `as` to or from `char` or `string`.
 
 `assert(cond)`, `assert(cond, "message")`, `panic()` and `panic("message")` call `ubel_panic`: flush standard output,
 print the message to standard error, exit with status 1. Every argument is evaluated first and in order, as the
@@ -947,7 +955,8 @@ Found while building the struct slice, same status (found, not fixed):
   is a `u64` and does not go into a `ulong`.
 - `let x: T = e` takes its type from `e`; the emitter ignores the annotation (sema has checked it). That is harmless for
   the integers, and it is why `let x: short = 5` needs no refusal.
-- Negating an unsigned integer passes sema and panics in the interpreter at run time (`cannot negate u8`).
+- Negating an unsigned integer used to pass sema and panic in the interpreter at run time (`cannot negate u8`); the
+  operator checks added to the front end since then reject it in sema (`operator `-` is not defined for `u8``).
 - `short` and `ushort` are widened by sema and by the interpreter (`70000 as short` is `70000`); `byte` is `i8`, which
   is signed, and `ubyte` is `u8`.
 - `Str`, with a capital, is another spelling of `string` for sema and the interpreter; the self-hosted tokenizer writes
@@ -1143,6 +1152,21 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-13: M1b: `ubel build` in the `ubel` command line (`crates/cli/src/commands/build.rs`, `tests/build_tests.rs`), and
+  `ubel_llvm` joins the main workspace (a member, not a default member; its own `[workspace]` table and its nested
+  `Cargo.lock` are gone). Re-checked on master `cd9cf5d`, which has the owner's new operator checks in sema: the suite then
+  failed one example, `u_neg_unsigned`, because sema now rejects negating an unsigned integer before the emitter can refuse
+  it. That example is deleted and `u_for_sized` replaces it; a `for` loop over a sized-integer range used to fail with an
+  internal-sounding type error and now gets a located "not supported yet". Verified on a fresh clone with Rust 1.85, because the workspace lockfile is version 4 and the
+  1.75 used for the earlier work cannot read it: the CLI and the emitter build in the workspace; `cargo test` passes
+  (5 + 12 for `ubel_llvm`, 10 new + 14 existing for the CLI); `cargo test --workspace --all-targets`, which is what CI
+  runs, passes (44 test binaries, 1381 tests; with Rust 1.89, because the LSP crate's newest dependencies need 1.88); the
+  equivalence suite gives 86 passed and 0 failed at 64-bit and at `-m32` (with Rust 1.85 it first regenerated the
+  Unicode tables, 15.0.0 to 16.0.0, and then passed); a release build of the CLI with the workspace's LTO profile works
+  and `ubel build` of the target program matches `ubel run`; all 15 hand-made mutants of the new command were caught.
+  `cargo test --workspace` in CI now runs the `ubel_llvm` tests too (they skip when no clang 15 or newer is installed). **Found:** the committed `Cargo.lock` is
+  from the initial commit and lists only `ubel_stratum`, so cargo rewrites most of it on any build and CI does not use
+  `--locked`; it was left alone. Not done: a CI step that runs `ubel build` on a runner, float and double (M2b).
 - 2026-11-10: M2a: `assert` and `panic`, and the fixed-width integers `i8 i16 i32 u8 u16 u32 u64` ("Integers and `assert`"
   above): literals, every operator, casts, printing, struct fields, enum payloads, closures. New: examples 33 to 36, five
   `fail_` examples and two refusal examples, a regenerated `u_sized_int` (now a refusal for `short`), `ubel_print_u64`,

@@ -39,6 +39,11 @@ command -v "$CLANG" >/dev/null 2>&1 || { echo "error: compiler '$CLANG' not foun
 command -v "$CARGO" >/dev/null 2>&1 || { echo "error: '$CARGO' not found; the emitter is a Rust crate" >&2; exit 1; }
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$out/target}"
+# The emitter is a member of the main workspace, whose release profile is LTO with one codegen unit: slow
+# and memory-hungry to build. These scripts do not need the optimised compiler, so they ask for a plain build.
+# (Set the variables yourself to override; a normal `cargo build --release` is unaffected.)
+export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 echo "compiler: $("$CLANG" --version | head -n 1)" >&2
 echo "cargo:    $("$CARGO" --version)" >&2
 

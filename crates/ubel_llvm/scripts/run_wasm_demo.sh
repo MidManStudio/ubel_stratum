@@ -31,6 +31,11 @@ if ! "$CLANG" --print-targets 2>/dev/null | grep -q wasm32; then
 fi
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$out/target}"
+# The emitter is a member of the main workspace, whose release profile is LTO with one codegen unit: slow
+# and memory-hungry to build. These scripts do not need the optimised compiler, so they ask for a plain build.
+# (Set the variables yourself to override; a normal `cargo build --release` is unaffected.)
+export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 echo "building the emitter..." >&2
 cargo build --release --manifest-path "$here/Cargo.toml" >"$out/cargo.log" 2>&1 || { tail -n 30 "$out/cargo.log" >&2; exit 1; }
 bin="$CARGO_TARGET_DIR/release/ubel-llvm"
