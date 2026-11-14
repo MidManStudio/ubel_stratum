@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 ubel_stratum    = { path = "../core" }
 ubel_stratum_rd = { path = "../rd_parser" }
+ubel_llvm       = { path = "../ubel_llvm" }
 
 # Same stack the mdix CLI in DixScript-Rust uses: clap derive for the
 # command tree, colored for terminal output, serde for --json.

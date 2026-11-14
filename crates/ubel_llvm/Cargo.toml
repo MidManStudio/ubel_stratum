@@ -2,13 +2,13 @@
 #
 # Stage 1B of the LLVM proof of concept: emit textual LLVM IR from Ubel source.
 #
-# This crate is deliberately its own workspace root (the `[workspace]` table at the bottom),
-# the same arrangement as crates/wasm_playground. Nothing in the main workspace changes,
-# and the main workspace's members, profiles and lockfile are untouched. It depends on the
-# core and parser crates by path, read-only.
+# Until M1b this crate was its own workspace root, like crates/wasm_playground. It is now a member of the
+# main workspace (root Cargo.toml): the `ubel` command line depends on it (`ubel build`), and
+# `cargo test --workspace` runs its tests. It is not a default member, and it still depends only on the
+# core and parser crates, by path. The profiles are the workspace's.
 #
-# Build and run it explicitly:
-#   cargo build --release --manifest-path crates/ubel_llvm/Cargo.toml
+# Build and run it:
+#   cargo build --release -p ubel_llvm        # the binary is target/release/ubel-llvm
 #   bash crates/ubel_llvm/scripts/run_equiv.sh
 #
 # There is no libLLVM dependency: the emitter writes textual IR and clang assembles it.
@@ -30,5 +30,3 @@ path = "src/main.rs"
 [dependencies]
 ubel_stratum    = { path = "../core" }
 ubel_stratum_rd = { path = "../rd_parser" }
-
-[workspace]

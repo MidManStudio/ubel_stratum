@@ -5,6 +5,7 @@
 // crates/cli/src/commands/mod.rs
 //! Shared command types, exit codes, and the `CliError` enum.
 
+pub mod build;
 pub mod check;
 pub mod debug_tokens;
 pub mod run;

@@ -8,7 +8,7 @@
 //! Layout mirrors the `mdix` CLI in DixScript-Rust: `commands/` holds one
 //! file per subcommand (clap `Args` plus a `run` function returning an exit
 //! code), `services/` holds the logic those commands share, `output/` holds
-//! terminal and JSON presentation. Only `check`, `run` and `debug-tokens`
+//! terminal and JSON presentation. `check`, `run`, `build` and `debug-tokens`
 //! exist so far.
 
 mod commands;
@@ -16,7 +16,7 @@ mod output;
 mod services;
 
 use clap::{Parser, Subcommand};
-use commands::{check::CheckArgs, debug_tokens::DebugTokensArgs, run::RunArgs, GlobalOpts};
+use commands::{build::BuildArgs, check::CheckArgs, debug_tokens::DebugTokensArgs, run::RunArgs, GlobalOpts};
 
 #[derive(Parser)]
 #[command(
@@ -48,6 +48,8 @@ pub enum Commands {
     Check(CheckArgs),
     /// Check a .ubl file, then run its `main`
     Run(RunArgs),
+    /// Check a .ubl file, then build a native executable (LLVM backend; needs clang 15 or newer)
+    Build(BuildArgs),
     /// [DEBUG] Print the token stream with positions
     ///
     /// Output format is internal and not guaranteed stable across versions.
@@ -69,6 +71,7 @@ fn main() {
     let code = ubel_stratum::stack::with_big_stack(move || match cli.command {
         Commands::Check(args)       => commands::check::run(args, &global),
         Commands::Run(args)         => commands::run::run(args, &global),
+        Commands::Build(args)       => commands::build::run(args, &global),
         Commands::DebugTokens(args) => commands::debug_tokens::run(args, &global),
     });
 

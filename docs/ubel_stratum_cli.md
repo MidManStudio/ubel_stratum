@@ -3,7 +3,7 @@
 ## Overview
 
 `crates/cli` builds the `ubel` binary, the command-line front end for
-Ubel Stratum. It is a stub in the sense that only three commands exist, but
+Ubel Stratum. It is a stub in the sense that only four commands exist, but
 the layout is the final one and the commands are real.
 
 It is modeled on the `mdix` CLI in DixScript-Rust (`mdix-cli`), which uses
@@ -55,6 +55,29 @@ renderer `examples/diagnose.rs` uses, so the text matches everywhere. With
 then runs `main` through the interpreter. A failed check is reported exactly
 as `check` reports it (`check::report` is shared).
 
+### `commands/build.rs`
+
+`ubel build <file> [-o PATH] [--cc PATH] [-O 0|1|2|3|s] [--keep-temps] [-- CLANG_ARGS]`. Runs the same check as `check`
+and `run` (a failed check is reported by `check::report`, so the diagnostics and the `--json` object are the same),
+then calls `ubel_llvm::driver::build`: it emits LLVM IR, writes it with the embedded C runtime to a private temporary
+directory and makes one `clang` call (version 15 or newer; `--cc` or `$UBEL_CC` choose one). The default output is the
+file name without its extension, in the current directory, and the command refuses to write over the source file. The
+LLVM backend handles a subset of the language: what it cannot do yet is refused with a located `not supported yet`
+message.
+
+Exit codes follow the rest of the CLI: `0` built; `1` the program has diagnostics, the backend refuses it, or clang
+fails on it; `2` the build could not be carried out (no usable clang, an output directory that does not exist, a bad
+option). `--verbose` shows the compiler and the full command, `--quiet` prints nothing on success, `--keep-temps` keeps
+the IR and the runtime files and prints where they are. With `--json` the object has `file`, `ok`, `stage` (`build`,
+or `emit` when the backend refused the program), `output`, `compiler`, `command`, `error` and `elapsed_ms`. The backend
+itself is described in `LLVM_POC.md` ("Building an executable"); for Android see `ANDROID_TERMUX.md`.
+
+### `tests/build_tests.rs`
+
+End-to-end tests of `ubel build`, in the style of `cli_tests.rs`. The ones that need a real clang skip themselves, with a
+message, when none is installed, unless `UBEL_REQUIRE_CC=1` is set. The others always run: a program with diagnostics,
+one the backend refuses, a compiler that is not there, the guard against writing over the source, and usage errors.
+
 ### `commands/debug_tokens.rs`
 
 `ubel debug-tokens <file>`. Prints the token stream with `line:column`.
@@ -85,6 +108,11 @@ template).
 `cargo build` or `cargo test` skips it and `cargo test --workspace`, which
 `ci-check.yml` runs, includes it. Build it directly with
 `cargo build -p ubel_stratum_cli`; the binary is `target/<profile>/ubel`.
+
+`crates/ubel_llvm` (the LLVM backend, which `ubel build` calls) is a member too, so `cargo test --workspace` also runs its
+tests: they build native programs when a clang 15 or newer is installed and skip themselves when none is. The workspace
+release profile is LTO with one codegen unit; a build on a small machine can switch that off with
+`CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`.
 
 `ubel-publish.yml` tests `ubel_stratum` and `ubel_stratum_rd` only and does
 not touch this crate.

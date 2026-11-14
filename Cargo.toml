@@ -21,7 +21,12 @@
 # scoped to core and the parser: the language server pulls in tokio and
 # tower-lsp, which are not worth compiling on every local run. Build them
 # explicitly with `cargo build -p ubel_stratum_cli` / `-p ubel_stratum_lsp`.
-members  = ["crates/core", "crates/rd_parser", "crates/cli", "crates/lsp"]
+#
+# crates/ubel_llvm (the LLVM backend: the `ubel-llvm` binary, and the library that `ubel build` calls) is a
+# member for the same reason, and because `ubel_stratum_cli` depends on it. It needs nothing beyond core and
+# the parser (by path), and `cargo test --workspace` runs its tests: they build native programs when a clang
+# 15 or newer is installed and skip themselves when none is (set UBEL_REQUIRE_CC=1 to make that a failure).
+members  = ["crates/core", "crates/rd_parser", "crates/cli", "crates/lsp", "crates/ubel_llvm"]
 default-members = ["crates/core", "crates/rd_parser"]
 resolver = "2"
 
