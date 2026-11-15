@@ -1,5 +1,3 @@
-// Brought to u by MidManStudio
-
 @CONFIG(
   version  -> "1.0.0",
   features -> "quickfuncs,data"
@@ -15,16 +13,5 @@
   target_root = "."
 
   overrides::
-    target("Cargo.toml", "Cargo.toml")
     target("README.md", "README.md")
-    target("crates/core/Cargo.toml", "crates/core/Cargo.toml")
-    target("crates/rd_parser/Cargo.toml", "crates/rd_parser/Cargo.toml")
-    target("crates/cli/Cargo.toml", "crates/cli/Cargo.toml")
-    target("crates/lsp/Cargo.toml", "crates/lsp/Cargo.toml")
-    target("crates/parser/Cargo.toml", "crates/parser/Cargo.toml")
-    target("crates/wasm_playground/Cargo.toml", "crates/wasm_playground/Cargo.toml")
-    target("crates/ubel_llvm/Cargo.toml", "crates/ubel_llvm/Cargo.toml")
-    target("web/home/index.html", "web/home/index.html")
-    target("web/playground/index.html", "web/playground/index.html")
-    target("web/dashboard/index.html", "web/dashboard/index.html")
 )
