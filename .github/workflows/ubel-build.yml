@@ -5,8 +5,8 @@ name: Ubel build (the ubel command makes native programs)
 # exactly what `ubel run` prints), on the examples that are refused on purpose, and over the whole fixture corpus.
 # All the logic is in that script, so it can change without touching this file.
 #
-# Needs the `ubel build` command (M1b) and that script on the branch. To run it on every push as well, add
-# `push:` and `pull_request:` triggers below.
+# Needs the `ubel build` command (M1b) and the scripts run_ubel_build.sh and regen_unicode.sh on the branch.
+# To run it on every push as well, add `push:` and `pull_request:` triggers below.
 on:
   workflow_dispatch:
     inputs:
@@ -57,11 +57,20 @@ jobs:
           uname -m
           "$CLANG" --version
           cargo --version
+          rustc --version
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ubel-build-${{ matrix.arch }}-${{ inputs.shipped_profile }}
           cache-on-failure: true
+
+      # `to_upper`, `to_lower` and `trim` follow the Unicode version of the Rust that builds `ubel` (the interpreter),
+      # while the native runtime uses committed tables. When the runner's Rust has another Unicode version than
+      # the committed tables, example 29 (string_unicode) differs. This step regenerates the tables in this
+      # checkout only (nothing is committed) and must run BEFORE the build: the header is compiled into `ubel`.
+      - name: Match the Unicode tables to this Rust
+        shell: bash
+        run: bash crates/ubel_llvm/scripts/regen_unicode.sh
 
       # The workspace release profile is LTO with one codegen unit. Unless asked for, build without it: the
       # check is about `ubel build`, not about how well the compiler itself is optimised.
