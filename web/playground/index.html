@@ -28,13 +28,9 @@
   header nav a { color: var(--text-muted); text-decoration: none; }
   header nav a:hover, header nav a.current { color: var(--tok); }
   header .spacer { flex: 1; }
-  #fixture-select {
-    background: var(--panel-alt); color: var(--text); border: 1px solid var(--border);
-    font-family: var(--font-body); font-size: 0.82rem;
-    padding: 0.45rem 0.6rem; border-radius: 5px; cursor: pointer;
-    max-width: 220px;
-  }
-  #fixture-select:disabled { opacity: 0.6; cursor: wait; }
+  /* The fixture picker is a search box with a result list; its own styles
+     come with /shared/ubel-fixture-picker.js. This only sizes it in the header. */
+  #fixture-picker { width: 240px; }
   #run-btn {
     background: var(--tok); color: #1B1815; border: none;
     font-family: var(--font-body); font-weight: 600; font-size: 0.85rem;
@@ -55,7 +51,7 @@
     header { flex-wrap: wrap; row-gap: 0.6rem; padding: 0.75rem 1rem; }
     header .spacer { display: none; }
     header nav { order: 3; flex: 1 1 100%; gap: 0.9rem; }
-    #fixture-select { order: 4; flex: 1 1 auto; max-width: none; min-width: 0; }
+    #fixture-picker { order: 4; flex: 1 1 auto; width: auto; min-width: 0; }
     #run-btn { order: 5; flex: 0 0 auto; }
     header [data-ubel-syntax-mount] { order: 4; }
   }
@@ -116,9 +112,10 @@
   </nav>
   <div class="spacer"></div>
   <span data-ubel-syntax-mount></span>
-  <select id="fixture-select" disabled>
-    <option value="">Loading fixtures…</option>
-  </select>
+  <div id="fixture-picker" class="fx-picker">
+    <input id="fixture-search" type="search" placeholder="Loading fixtures…" aria-label="Search test fixtures by name" disabled>
+    <ul id="fixture-list" class="fx-list" hidden></ul>
+  </div>
   <button id="run-btn" disabled>Loading…</button>
 </header>
 
@@ -139,6 +136,7 @@
 <script src="/shared/ubel-highlight.js"></script>
 <script>window.UBEL_SYNTAX_NO_AUTOMOUNT = false;</script>
 <script src="/shared/ubel-syntax-theme.js"></script>
+<script src="/shared/ubel-fixture-picker.js"></script>
 <script type="module">
   import init, { run_pipeline, init_panic_hook } from './ubel_stratum_wasm.js';
 
@@ -148,7 +146,9 @@
 `;
 
   const runBtn      = document.getElementById('run-btn');
-  const fixtureSel  = document.getElementById('fixture-select');
+  const fixtureInput = document.getElementById('fixture-search');
+  const fixtureList  = document.getElementById('fixture-list');
+  let fixturePicker = null;   // created once the manifest is loaded
   const outputEl    = document.getElementById('output-pane');
   const resultDot   = document.getElementById('result-dot');
   const resultLbl   = document.getElementById('result-label');
@@ -236,14 +236,9 @@
   let fixturesReady = false;
 
   function maybeEnableFixtureSelect() {
-    if (wasmReady && fixturesReady) fixtureSel.disabled = false;
-  }
-
-  function labelFor(filename) {
-    return filename
-      .replace(/\.ubl$/, '')
-      .replace(/^(ok|err)_/, '')
-      .replace(/_/g, ' ');
+    if (wasmReady && fixturesReady && fixturePicker) {
+      fixturePicker.setDisabled(false, 'Search fixtures by name…  (press / to focus)');
+    }
   }
 
   async function loadFixtureManifest() {
@@ -252,21 +247,16 @@
       if (!res.ok) throw new Error('manifest fetch failed: ' + res.status);
       const names = await res.json();
 
-      const okNames  = names.filter(n => n.startsWith('ok_')).sort();
-      const errNames = names.filter(n => n.startsWith('err_')).sort();
-      const other    = names.filter(n => !n.startsWith('ok_') && !n.startsWith('err_')).sort();
-
-      function group(label, list) {
-        if (!list.length) return '';
-        const opts = list.map(n => '<option value="' + n + '">' + labelFor(n) + '</option>').join('');
-        return '<optgroup label="' + label + '">' + opts + '</optgroup>';
-      }
-
-      fixtureSel.innerHTML =
-        '<option value="">Load a fixture…</option>' +
-        group('Passing (ok_)', okNames) +
-        group('Errors (err_)', errNames) +
-        group('Other', other);
+      // Searchable list (see /shared/ubel-fixture-picker.js): type part of a
+      // fixture's name, e.g. "move after", "err trait", "ok_". The names keep
+      // the suite's ok_ / err_ prefixes, so they can be searched as written.
+      fixturePicker = UbelFixturePicker.create({
+        input: fixtureInput,
+        list: fixtureList,
+        names: names.slice().sort(),
+        onSelect: loadFixture,
+      });
+      fixturePicker.setDisabled(true, 'Loading…');
 
       fixturesReady = true;
       maybeEnableFixtureSelect();
@@ -275,12 +265,11 @@
       // just means the manifest wasn't reachable (e.g. running
       // web/playground/index.html outside the built dist/ tree, where
       // ./fixtures/ was never assembled).
-      fixtureSel.innerHTML = '<option value="">Fixtures unavailable</option>';
+      fixtureInput.placeholder = 'Fixtures unavailable';
     }
   }
 
-  fixtureSel.addEventListener('change', async () => {
-    const name = fixtureSel.value;
+  async function loadFixture(name) {
     if (!name) return;
     try {
       const res = await fetch('./fixtures/' + name);
@@ -292,6 +281,17 @@
       outputEl.innerHTML = '<div class="internal-error">Could not load fixture "' +
         escapeHtml(name) + '": ' + escapeHtml(String(e)) + '</div>';
     }
+  }
+
+  // "/" jumps to the fixture search from anywhere that is not a text field
+  // (the editor included), the way most search-driven pages do.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (fixtureInput.disabled) return;
+    e.preventDefault();
+    fixtureInput.focus();
   });
 
   loadFixtureManifest();

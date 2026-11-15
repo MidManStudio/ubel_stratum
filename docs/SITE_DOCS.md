@@ -18,6 +18,7 @@ web/
     ubel-theme.css          design tokens + syntax-colour variables (--ubl-*)
     ubel-highlight.js       the Ubel highlighter (docs + CodeMirror mode)
     ubel-syntax-theme.js    the "Syntax colours" panel readers use
+    ubel-fixture-picker.js  the playground's searchable fixture list
     favicon.png, ubel-logo.png
 ```
 
@@ -35,6 +36,12 @@ dist/
 
 `web/shared/` is referenced by absolute URL (`/shared/...`) from the docs
 theme, because mdBook only copies files from inside the book's own folder.
+
+The deploy copies **only** `web/playground/index.html` into `dist/playground/`.
+A script the playground needs therefore goes in `web/shared/` (copied
+wholesale), or is inlined in `index.html`; a new file next to `index.html`
+would not be deployed. That is why the playground's fixture search lives in
+`web/shared/ubel-fixture-picker.js`.
 
 ## The docs: pages, structure, drafts
 
