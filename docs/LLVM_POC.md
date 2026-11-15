@@ -414,8 +414,14 @@ The compiler is found like this: `--cc`, else `$UBEL_CC`, else the first of `cla
 versions differently and is not held to the minimum. A compiler that was named is never replaced by another one;
 during the automatic search an unusable candidate is skipped, and the first problem is reported if nothing works.
 
-The Unicode tables the runtime carries are the committed `runtime/ubel_unicode.h` (Unicode 15.0.0 today). The driver
-embeds that file as it is and does not regenerate it; `run_equiv.sh` still does when its toolchain differs.
+The Unicode tables are the one runtime file the driver does not take from `runtime/`: `build.rs` generates them on every
+build from the standard library of the toolchain that compiles the crate (`scripts/gen_unicode.rs`, included as a
+module), and the driver embeds that output from `OUT_DIR`. A program built with `ubel build` therefore agrees with
+`ubel run` on `to_upper`, `to_lower` and `trim` whatever Rust is installed. It costs about a second, and only when the
+toolchain or the generator changes. If the generator fails, the build does not: it falls back to the committed
+`runtime/ubel_unicode.h` with a cargo warning, and the unit test `unicode_tables_are_those_of_this_toolchain` fails
+unless that header happens to be the right version. The committed header stays for the scripts that compile the C
+runtime directly (`run_equiv.sh`, `run_bench.sh`, the collector harness).
 
 Tested (`crates/ubel_llvm/tests/build.rs`, and the unit tests in `src/driver.rs`): eight programs, among them the
 target program, built through the driver and equal to the interpreter; a program that fails at run time (a build that
@@ -604,20 +610,23 @@ The semantics are Rust's, because the interpreter calls Rust's own `str::to_uppe
 final-sigma rule (`ΑΣ` lowercases to `ας` but `ΑΣΑ` to `ασα`; the context skips Case_Ignorable characters, so `Α.Σ`
 gives `α.ς`), `trim` removes Unicode White_Space (no-break space, U+3000, NEL; not U+200B or U+FEFF), and
 `replace` is non-overlapping, left to right, with an empty needle matching at every character boundary
-(`"abc".replace("", "-")` is `"-a-b-c-"`). The tables are `runtime/ubel_unicode.h` (53 KB), **generated** by
+(`"abc".replace("", "-")` is `"-a-b-c-"`). The tables (`ubel_unicode.h`, 53 KB) are **generated** by
 `scripts/gen_unicode.rs` from the standard library of the toolchain that runs it: White_Space (10 ranges), the
 upper and lower mappings that differ from the identity (1,525 and 1,433 entries, with a 222-code-point pool for
 the expansions such as `ß` to `SS`), and the two sets the sigma rule consults. `Cased` and `Case_Ignorable` are
 not public on stable Rust, so the generator measures them through `str::to_lowercase`; a character that is both
 counts as ignorable, as in Rust's rule, so the table called `cased` holds the cased characters that are not
 ignorable, which is all the rule can find after skipping. Lookups are binary searches with an ASCII fast path;
-a stray byte that is not valid UTF-8 is passed through unchanged. **The tables are per toolchain**: the
-interpreter uses whatever Unicode version its Rust has, and the committed header is Unicode 15.0.0 (Rust 1.75,
-the only toolchain I had), while CI builds with the runner's stable Rust, which is newer. So `run_equiv.sh`
-compares its toolchain's Unicode version with the header's and regenerates the header and
-`examples/29_string_unicode.ubl` when they differ (tested by faking the version: the regenerated files were
-identical to the committed ones; commit the regenerated files to keep them). Characters added to Unicode after
-15.0 are therefore only as right as the last regeneration. Checked by `examples/29_string_unicode` (generated;
+a stray byte that is not valid UTF-8 is passed through unchanged. **The tables follow the toolchain**: the
+interpreter uses whatever Unicode version its Rust has (1.75 has 15.0.0, 1.85 and 1.89 have 16.0.0), so the native
+tables have to be the same version. Until chat 8 the header was committed (15.0.0) and the first real CI run, on
+GitHub's newer Rust, failed example 29 on both runners. Now `build.rs` generates the tables at build time from the
+toolchain that compiles the crate, so the product cannot drift, and the committed `runtime/ubel_unicode.h` is only
+what the scripts that compile the C runtime directly read. `run_equiv.sh` regenerates that header and
+`examples/29_string_unicode.ubl` when its toolchain's version differs (commit the regenerated files to keep
+them); without that the example only tests the characters of the version it was generated with, while the tables
+are always the toolchain's. The generator was split into functions for `build.rs` and writes byte-identical files:
+the same on 1.85 before and after, and on stock 1.75 equal to the committed files. Checked by `examples/29_string_unicode` (generated;
 528 `show` and 200 `replace` calls: every code point whose upper or lower mapping is not itself, so every table
 entry; the white-space set and look-alikes; the final-sigma rule around both edges of every Cased and
 Case_Ignorable range; random strings from a pool of awkward characters; random `replace` calls), by
@@ -1152,6 +1161,20 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-15: First real CI run of the `Ubel build` workflow (run 1, the x86_64 and aarch64 runners, master `d439222`):
+  80 of 81 checks passed on both and `29_string_unicode` failed, the Unicode drift above: the committed tables were
+  15.0.0 and the runner's Rust is newer. Cause on my side: the tarball I delivered (ubuildci-8) held only
+  `run_ubel_build.sh`, not `regen_unicode.sh`, and the workflow did not regenerate. Reproduced locally on master with
+  Rust 1.85 (1 failed, 80 passed, the same counts); `unicodeci-9` added `regen_unicode.sh` and a workflow step (81 pass,
+  exit 0 on a fresh clone). The owner then chose to remove the cause: `crates/ubel_llvm/build.rs` generates the tables
+  at build time (`gen_unicode.rs` split into `tables`, `header`, `example`, `main` unchanged for the scripts; the driver
+  embeds the result from `OUT_DIR`). Verified on a fresh clone of master with Rust 1.85: with the committed 15.0.0
+  header and example left alone and no regeneration, `ubel build` equals `ubel run` on all 81 checks; the generated
+  header equals the standalone generator's; `cargo test` passes (6 + 12 for `ubel_llvm`, 10 + 14 for the CLI, one new unit
+  test); `run_equiv.sh` 86 passed, 0 failed; 3 of 3 hand mutants caught (the committed header embedded again, the
+  generator panicking, where the build still succeeds with a cargo warning, an empty header). Not verified: a real
+  GitHub run of this, Termux, and a different Unicode version end to end (1.85 and 1.89 both have 16.0.0; 1.75 can only
+  run the generator, not the workspace).
 - 2026-11-13: M1b: `ubel build` in the `ubel` command line (`crates/cli/src/commands/build.rs`, `tests/build_tests.rs`), and
   `ubel_llvm` joins the main workspace (a member, not a default member; its own `[workspace]` table and its nested
   `Cargo.lock` are gone). Re-checked on master `cd9cf5d`, which has the owner's new operator checks in sema: the suite then

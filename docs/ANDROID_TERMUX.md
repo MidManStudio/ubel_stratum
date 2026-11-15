@@ -65,6 +65,8 @@ builds every example natively and compares it with the interpreter. It takes a w
   passing, `git diff` shows the regenerated files; committing them is the right thing to do, because the project's real
   toolchain is newer than the one the committed tables came from. Do not commit them if any example fails. (Tried here
   with Rust 1.85, whose tables are Unicode 16.0.0: the script regenerated both files, and all 86 examples then passed.)
+  Only this script does that. `ubel build` and `ubel-llvm build` take their Unicode tables from `build.rs`, which
+  generates them from Termux's own Rust while the crate is compiled, so there is nothing to regenerate or commit for them.
 - Something that fails here and passes elsewhere is the interesting case: keep `OUT_DIR=...` and send the first failing
   example's `.build.log` and `.run.err`.
 
