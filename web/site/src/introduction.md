@@ -48,13 +48,13 @@ use right now:
   borrow, move and lifetime checker.
 - **An interpreter** that runs every tier. It is the reference
   implementation of the language's behaviour.
-- **The `ubel` command line** to [check and run](./tooling/cli.md) files, and
+- **The `ubel` command line** to [check, run and build](./tooling/cli.md) files, and
   **`ubel-lsp`**, a [language server](./tooling/lsp.md) that shows compiler
   diagnostics in your editor.
 - **A browser [playground](./tooling/playground.md)** that runs the real
   compiler compiled to WebAssembly.
-- **A native backend, in preview**: a growing subset of the language
-  compiles to LLVM IR and then to an executable. See
+- **A native backend, in preview**: `ubel build` compiles a growing subset of
+  the language to LLVM IR and then to an executable. See
   [Native backend](./tooling/native-backend.md) for exactly what works.
 
 What does **not** exist yet: a standard library beyond the built-in

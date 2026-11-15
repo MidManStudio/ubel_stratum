@@ -47,7 +47,63 @@ fn section(name: &str) {
     println!("\n=== {name} ===");
 }
 
+// The most a single `{:#?}` dump may write. `{:#?}` indents every nesting
+// level further, so its output for a deeply nested tree grows with the square
+// of the depth: ok_nesting_long_chain_isolated.ubl (a 900-operand `a + a + ...`
+// chain, the deepest tree the parser accepts) produced hundreds of megabytes
+// and ran past the 30 s `timeout` that pipeline-dashboard.yml puts on every
+// fixture, which failed the whole deploy. The largest dump of any other
+// fixture is about 600 KB, so this limit changes none of their reports; it
+// only cuts a dump that is not readable anyway.
+const DUMP_LIMIT_BYTES: usize = 1024 * 1024;
+
+// `format!("{:#?}", value)`, but stops formatting once `limit` bytes have been
+// produced (the Debug impls propagate the writer's error, so the work stops
+// too, not just the output) and says so at the end of what it kept.
+fn pretty_capped<T: fmt::Debug>(value: &T, limit: usize) -> String {
+    use fmt::Write;
+    struct Capped {
+        out: String,
+        limit: usize,
+        hit: bool,
+    }
+    impl Write for Capped {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            let room = self.limit - self.out.len();
+            if s.len() > room {
+                let mut cut = room;
+                while !s.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                self.out.push_str(&s[..cut]);
+                self.hit = true;
+                return Err(fmt::Error);
+            }
+            self.out.push_str(s);
+            Ok(())
+        }
+    }
+    let mut w = Capped { out: String::new(), limit, hit: false };
+    let _ = write!(w, "{:#?}", value);
+    if w.hit {
+        w.out.push_str(&format!(
+            "\n... [dump truncated after {} KiB: too deeply nested to print in full]",
+            limit / 1024
+        ));
+    }
+    w.out
+}
+
+// The same large stack the `ubel` command and the language server run the
+// pipeline on (see `ubel_stratum::stack`). On the 8 MB stack of a main thread a
+// deeply nested but legal file (ok_nesting_long_chain_isolated.ubl, 900
+// operands, within the parser's nesting limit) overflowed the stack in sema
+// and aborted this tool, which is not what the fixture sweep is meant to test.
 fn main() {
+    ubel_stratum::stack::with_big_stack(run);
+}
+
+fn run() {
     let path = match env::args().nth(1) {
         Some(p) => p,
         None => {
@@ -102,7 +158,7 @@ fn main() {
         Ok(p) => {
             let view = UserProgram(&p);
             println!("status: OK ({} top-level items)", view.user_items().len());
-            println!("{:#?}", view);
+            println!("{}", pretty_capped(&view, DUMP_LIMIT_BYTES));
             p
         }
         Err(mut errs) => {
@@ -126,7 +182,7 @@ fn main() {
     let sema_ok = match &sema_result {
         Ok(ctx) => {
             println!("status: OK");
-            println!("{:#?}", ctx);
+            println!("{}", pretty_capped(ctx, DUMP_LIMIT_BYTES));
             int_literal_types = ctx.int_literal_types.clone();
             trait_call_sites  = ctx.trait_call_sites.clone();
             true

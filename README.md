@@ -38,10 +38,10 @@ Early development. What exists today:
 | Front end: lexer, parser, name resolution, type inference, generics, traits, tier enforcement | **Working** |
 | LOW-tier safety: borrow, move and lifetime checking | **Working**, intra-function, with documented scope limits ([`docs/OUTLIVES_RULES.md`](docs/OUTLIVES_RULES.md), [`docs/MEMORY_MODEL.md`](docs/MEMORY_MODEL.md) §9) |
 | Tree-walking interpreter | **Working**; the reference for the language's behaviour |
-| `ubel` command line (`check`, `run`) | **Working** ([`docs/ubel_stratum_cli.md`](docs/ubel_stratum_cli.md)) |
+| `ubel` command line (`check`, `run`, `build`) | **Working** ([`docs/ubel_stratum_cli.md`](docs/ubel_stratum_cli.md)) |
 | `ubel-lsp` language server | **Stub**: publishes diagnostics only ([`docs/ubel_stratum_lsp.md`](docs/ubel_stratum_lsp.md)) |
 | Browser playground and docs site | **Working** (`web/`, see [`docs/SITE_DOCS.md`](docs/SITE_DOCS.md)) |
-| Native code through LLVM | **Preview**: a growing subset of the language compiles to an executable ([`docs/LLVM_BACKEND_STATUS.md`](docs/LLVM_BACKEND_STATUS.md)) |
+| Native code through LLVM | **Preview**: `ubel build` compiles a growing subset of the language to an executable ([`docs/LLVM_BACKEND_STATUS.md`](docs/LLVM_BACKEND_STATUS.md)) |
 | Standard library, package manager, releases | **Not started** |
 
 **The end goal is native machine code via LLVM.** The interpreter is a
@@ -49,8 +49,9 @@ deliberate stepping stone: building it first proves out the language's
 semantics before taking on code generation. The native backend (`ubel-llvm`,
 in `crates/ubel_llvm`) emits LLVM IR for a subset (integers and booleans,
 strings, structs, enums and `match`, closures, arenas and the collector) and
-checks every program against the interpreter. Collections, floats, generics
-and traits are not there yet, and the `ubel` command does not call it.
+checks every program against the interpreter. `ubel build prog.ubl` runs it
+end to end (clang 15+). Collections, floats, generics and traits are not
+there yet.
 
 No stable version has been released, so the website's docs are the
 *development* docs and track `master`; the site is versioned and will show
@@ -243,11 +244,13 @@ cargo build -p ubel_stratum_lsp            # the `ubel-lsp` language server
 
 ubel check hello.ubl                       # lex, parse, type-check
 ubel run   hello.ubl                       # check, then run `main`
+ubel build hello.ubl -o hello              # native executable (subset; needs clang 15+)
 ubel --json check hello.ubl                # machine-readable diagnostics
 ```
 
 A bare `cargo build` builds only `core` and `rd_parser` (the workspace's
-default members); the CLI and LSP are workspace members built explicitly.
+default members); the CLI, the LSP and the LLVM backend are workspace members
+built explicitly.
 
 ```bash
 cargo build --workspace --all-targets
@@ -257,12 +260,13 @@ cargo bench                                # core and rd_parser have benches/
 
 ### The native backend and the playground
 
-Both are separate cargo workspaces (their own profiles and targets):
+The LLVM backend is a workspace member (`ubel build` calls it); the playground
+is its own cargo workspace, with its own profile and target:
 
 ```bash
 # native: needs clang 15+
-cargo build --release --manifest-path crates/ubel_llvm/Cargo.toml
-ubel-llvm build prog.ubl -o prog
+ubel build prog.ubl -o prog
+cargo build --release -p ubel_llvm        # also gives the `ubel-llvm` tool (emit, build, interp)
 
 # playground (WebAssembly)
 cargo build --manifest-path crates/wasm_playground/Cargo.toml \
@@ -311,7 +315,7 @@ documented example cannot go stale.
 | `crates/core` | lexer, AST, semantic analysis, interpreter, diagnostics |
 | `crates/rd_parser` | the live parser, plus `check_source` shared by CLI and LSP |
 | `crates/cli`, `crates/lsp` | the `ubel` command and the `ubel-lsp` server |
-| `crates/ubel_llvm` | the native-backend preview (own workspace) |
+| `crates/ubel_llvm` | the native-backend preview (`ubel build` calls it) |
 | `crates/wasm_playground` | the browser build (own workspace) |
 | `crates/parser` | inactive LALRPOP reference parser |
 | `tests/fixtures` | the `ok_*` / `err_*` fixture programs |

@@ -1,6 +1,6 @@
 # The `ubel` command line
 
-`ubel` is the command-line front end for `.ubl` files. It has three
+`ubel` is the command-line front end for `.ubl` files. It has four
 commands today. The layout is final; more commands are planned (below).
 
 ```text
@@ -9,6 +9,8 @@ ubel [OPTIONS] <COMMAND>
 Commands:
   check         Lex, parse and type-check a .ubl file without running it
   run           Check a .ubl file, then run its `main`
+  build         Check a .ubl file, then build a native executable
+                (LLVM backend; needs clang 15 or newer)
   debug-tokens  [DEBUG] Print the token stream with positions
 
 Options:
@@ -112,6 +114,33 @@ tier: 4 letters
 stratum: 7 letters
 ```
 
+## `ubel build <file>`
+
+Checks the file exactly as `ubel check` does, then builds a **native
+executable** through the [LLVM backend](./native-backend.md). It needs a
+`clang` version 15 or newer. The backend compiles a *subset* of the language;
+what it cannot translate yet is refused with a located `not supported yet`
+message instead of being compiled wrongly.
+
+```text
+ubel build prog.ubl                 # writes ./prog
+ubel build prog.ubl -o out/prog -O3
+ubel build prog.ubl -- -m32         # everything after -- goes to clang
+```
+
+| Option | Meaning |
+|--------|---------|
+| `-o, --output <PATH>` | where to write the executable (default: the file name without its extension, in the current directory). It refuses to overwrite the source file. |
+| `--cc <PATH>` | the C compiler (default: `$UBEL_CC`, then `clang-18` down to `clang-15`, then `clang`) |
+| `-O, --opt-level <0\|1\|2\|3\|s>` | optimisation level passed to clang (default `2`) |
+| `--keep-temps` | keep the generated IR and the runtime files, and print where they are |
+| `-- <CLANG_ARGS>` | extra arguments for clang |
+
+`--verbose` shows which compiler was used and the full command, and `--quiet`
+prints nothing on success. With `--json` the object has `file`, `ok`, `stage`
+(`build`, or `emit` when the backend refused the program), `output`,
+`compiler`, `command`, `error` and `elapsed_ms`.
+
 ## `ubel debug-tokens <file>`
 
 Prints the token stream with `line:column` positions. It is marked
@@ -123,15 +152,15 @@ debug the lexer, not to build tooling on.
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | The file has diagnostics, or the program failed at run time |
-| `2` | The command could not be carried out (missing or unreadable file) |
+| `1` | The file has diagnostics, the program failed at run time, or (for `build`) the backend refuses the program or clang fails on it |
+| `2` | The command could not be carried out: a missing or unreadable file, a bad option, or (for `build`) no usable clang |
 
 ## Planned
 
 In the order the sibling `mdix` CLI suggests: `debug-ast`, `debug-symbols`,
 `fmt` (blocked on a formatter existing), `completions`, and `new` (a project
-template). There is no `ubel build` yet; see
-[Native backend](./native-backend.md) for what exists instead.
+template). What `ubel build` can compile is described on
+[Native backend](./native-backend.md).
 
 ## Notes for contributors
 

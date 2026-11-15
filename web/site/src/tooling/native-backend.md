@@ -22,11 +22,22 @@ current state.
 
 ## Using it
 
-The backend is its own cargo workspace and its own binary,
-`ubel-llvm`, separate from `ubel`:
+From source to an executable in one command, with a clang 15 or newer on
+the `PATH`:
 
 ```text
-cargo build --release --manifest-path crates/ubel_llvm/Cargo.toml
+ubel build prog.ubl -o prog
+```
+
+`ubel build` checks the file first, with the same diagnostics as
+[`ubel check`](./cli.md), then calls the backend. Its options are on the
+[command-line page](./cli.md#ubel-build-file).
+
+The backend also has a binary of its own, `ubel-llvm`, which is a member of
+the main cargo workspace and is the tool for looking at the IR:
+
+```text
+cargo build --release -p ubel_llvm
 
 ubel-llvm emit   prog.ubl -o prog.ll     # textual LLVM IR
 ubel-llvm interp prog.ubl                # run in the interpreter, for comparison
@@ -34,13 +45,12 @@ ubel-llvm check  prog.ubl                # front end only
 ubel-llvm build  prog.ubl -o prog        # a native executable
 ```
 
-`build` needs **clang 15 or newer**. Options: `-o <path>`, `--cc <path>`
-(otherwise `$UBEL_CC`, then `clang-18` down to `clang-15`, then `clang`),
-`-O0 -O1 -O2 -O3 -Os` (default `-O2`), `--keep-temps`, `-v`, and
+`ubel-llvm build` needs **clang 15 or newer**. Options: `-o <path>`,
+`--cc <path>` (otherwise `$UBEL_CC`, then `clang-18` down to `clang-15`, then
+`clang`), `-O0 -O1 -O2 -O3 -Os` (default `-O2`), `--keep-temps`, `-v`, and
 `-- <flags>` to pass the rest to clang (for example `-m32`). It exits `0` on
-success, `1` on any error, `2` on a usage error.
-
-The `ubel` command does not call it yet, so there is no `ubel build`.
+success, `1` on any error, `2` on a usage error. `ubel build` is the same
+route behind the main command.
 
 ## What compiles today
 
