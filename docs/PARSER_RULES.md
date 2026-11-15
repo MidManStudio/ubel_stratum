@@ -1154,7 +1154,7 @@ would couple parsing and semantics, which we specifically avoid.
 
 | Question | Answer |
 |---|---|
-| Does `await` appear outside HIGH tier? | **Parser**: warn; **TierChecker**: hard error |
+| Does `await` appear outside HIGH tier? | **Parser**: warn; **TierChecker**: hard error (today; the rule is being opened to every tier, see `docs/ASYNC_SYNC_DESIGN.md`) |
 | Is this a valid type expression? | **Parser**: syntactic validity only; **TypeInfer**: structural validity |
 | Is this attribute recognised? | **Parser**: known vs unknown via phf; **ECS codegen**: ECS-specific validation |
 | Are these lifetime constraints satisfiable? | **TierChecker / Borrow pass**: not the parser |

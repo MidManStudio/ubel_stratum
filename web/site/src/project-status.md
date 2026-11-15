@@ -196,6 +196,11 @@ verified safe.
   impl, a trait that cannot work that way (a method with no `self`, a generic method, or `Self` in a
   signature) is a compile error, and a value whose type does not implement the trait is a compile
   error instead of a run-time panic. Next: associated types
+- Async and synchronization are designed and not built (`docs/ASYNC_SYNC_DESIGN.md`, decided
+  2026-11-14): tasks run in parallel on a thread pool in every tier, `async` and `await` become
+  compiler-generated state machines, a compile-time rule decides what may be shared between
+  tasks, and the usual locks, atomics and channels ship. Next: the `using` cleanup, then the
+  async core
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to
@@ -212,6 +217,14 @@ verified safe.
 - An array literal of different `dyn` shapes is still typed by its first
   element as the argument of a method call, the tail expression of a
   function, a tuple variant payload and an argument of a generic function
+- `async fn`, `await` and `Task<T>` type-check but cannot run: no program can build a `Task`,
+  an `async fn` call has its declared return type, and `await` does nothing at run time
+- `using` is parsed and type-checked but runs no cleanup at the end of its block
+- There are no threads, locks, atomics or channels, `SyncShared<T>` is single-threaded, and
+  `SyncShared.new` is LOW only
+- `summon` accepts any path and the interpreter ignores imports, so
+  `summon std.collections.List as L` followed by `L.new()` passes the check and stops with
+  `undefined name 'L'` when the program runs
 - `low`, `mid`, `high`, `with`, `using` and `Task` are reserved, so they
   cannot be used as a function, field, method or struct name
 - A range used as an index (`a[1 .. 3]`) is not a slice, and a fixed-size

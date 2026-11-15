@@ -5,6 +5,15 @@
 > good parts of a long brainstorm don't have to be re-derived later, and
 > so the confused parts don't get carried forward by accident.
 >
+> **Correction, checked 2026-11-14 against the live build.** The status paragraph above is out of
+> date. The lexer, the parser (`from X summon [Y]`, see `docs/ubel.ebnf`), the AST and name
+> resolution already handle `summon`, and `package` is parsed. Resolution stops there: `summon`
+> accepts any path (`UnresolvedImport`, `NAME-003`, is defined and never reported), the
+> interpreter ignores imports, so `summon std.collections.List as L` followed by `L.new()` passes
+> the check and stops with `undefined name 'L'` when the program runs, and `pub` is recorded in
+> the symbol table and never read. The grammar that shipped is `from X summon [A, B]`, which
+> differs from the form this document writes.
+>
 > Source: a separate conversation's brainstorm on Ubel's future module
 > system. Filtered here — kept what's genuinely good and consistent
 > with the rest of the language, corrected one real mistake, dropped
