@@ -1028,7 +1028,7 @@ Questions and the proposed v1 answer to each:
 |---|---|
 | Two impls of one trait for one type | Error (`OverlappingImpl`). No specialization. |
 | Impl for a built-in type (`impl Shape for int`) | Allowed. Needed so that `T: Ord` can be satisfied by `int` and `string` at all (D5). |
-| Orphan rule | Deferred until modules exist. The intended rule, to avoid painting into a corner: an impl is allowed only in the package that declares the trait or the type. |
+| Orphan rule | Deferred until modules exist. The intended rule, to avoid painting into a corner: an impl is allowed only in the package that declares the trait or the type. Settled 2026-11-15 in `docs/MODULE_DESIGN.md` (M2). |
 | Blanket impls (`impl<T: A> B for T`) | Not in v1. Revisit once bounds and supertraits are solid. |
 | Inherent method and trait method with the same name | The inherent method wins. |
 | Two traits supplying the same method name to one type | Error at an unqualified call (`AmbiguousTraitMethod`); resolved with a qualified call, `Shape.area(q)`. C#-style explicit implementation (`fn Renderable.draw(self)`) is a proven mechanic and is deferred, not rejected. |

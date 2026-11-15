@@ -12,7 +12,8 @@
 > interpreter ignores imports, so `summon std.collections.List as L` followed by `L.new()` passes
 > the check and stops with `undefined name 'L'` when the program runs, and `pub` is recorded in
 > the symbol table and never read. The grammar that shipped is `from X summon [A, B]`, which
-> differs from the form this document writes.
+> differs from the form this document writes. The decisions of 2026-11-15 are in
+> `docs/MODULE_DESIGN.md`; this document stays as the list of parked ideas.
 >
 > Source: a separate conversation's brainstorm on Ubel's future module
 > system. Filtered here — kept what's genuinely good and consistent

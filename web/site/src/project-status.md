@@ -201,6 +201,10 @@ verified safe.
   compiler-generated state machines, a compile-time rule decides what may be shared between
   tasks, and the usual locks, atomics and channels ship. Next: the `using` cleanup, then the
   async core
+- Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a
+  module is a file named by its path, cycles between modules are allowed, everything is private
+  unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.
+  Next: single-file fixes for imports and initialization cycles, then multi-file checking
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to
@@ -225,6 +229,9 @@ verified safe.
 - `summon` accepts any path and the interpreter ignores imports, so
   `summon std.collections.List as L` followed by `L.new()` passes the check and stops with
   `undefined name 'L'` when the program runs
+- `from m summon [a as b]` is accepted and imports both `a` and `b` as separate names
+- Constants or statics that depend on each other circularly pass the check and stop with
+  `undefined name` when the program runs
 - `low`, `mid`, `high`, `with`, `using` and `Task` are reserved, so they
   cannot be used as a function, field, method or struct name
 - A range used as an index (`a[1 .. 3]`) is not a slice, and a fixed-size
