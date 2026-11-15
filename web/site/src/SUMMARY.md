@@ -2,7 +2,53 @@
 
 [Introduction](./introduction.md)
 
+# Start here
+
 - [Getting Started](./getting-started.md)
+- [A Tour of Ubel](./language-tour.md)
+- [The Playground](./tooling/playground.md)
+
+# The Guide
+
+- [Values and variables](./guide/values.md)
+- [Strings and formatting](./guide/strings.md)
+- [Control flow](./guide/control-flow.md)
+- [Functions and closures](./guide/functions.md)
+- [Structs and enums](./guide/structs-enums.md)
+- [Collections](./guide/collections.md)
+- [Generics and traits](./guide/generics-traits.md)
+- [Optionals and failure](./guide/errors-and-optionals.md)
+- [Modules and imports]()
+- [Async]()
+
+# Memory and tiers
+
 - [The Tier Model](./tier-model.md)
-- [Language Tour](./language-tour.md)
+- [Arenas and pools]()
+- [Ownership: Unique, Shared, SyncShared]()
+- [References, borrowing and lifetimes]()
+- [Edge structs and cross-tier patterns]()
+
+# Tooling
+
+- [The `ubel` command line](./tooling/cli.md)
+- [Editor support (ubel-lsp)](./tooling/lsp.md)
+- [Native backend (preview)](./tooling/native-backend.md)
+
+# Reference
+
+- [Built-in functions](./reference/builtins.md)
+- [Grammar]()
+- [Keywords and operators]()
+- [Errors and diagnostics](./errors/index.md)
+  - [Lexical errors (LEX)](./errors/lex.md)
+  - [Parse errors (PARSE)](./errors/parse.md)
+  - [Name resolution (NAME)](./errors/name.md)
+  - [Type errors (TYPE)](./errors/type.md)
+  - [Tier errors (TIER)](./errors/tier.md)
+  - [Ownership errors (BORROW, MOVE, LIFETIME)](./errors/ownership.md)
+
+# Project
+
 - [Project Status](./project-status.md)
+- [Versions and releases](./versions.md)

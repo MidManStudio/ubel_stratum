@@ -6,6 +6,12 @@
  * itself is untouched and still carries its own copy inline; if these
  * ever need to change, update both places or fold the dashboard over to
  * this file too.
+ *
+ * Syntax colours (--ubl-*) are the DEFAULT palette. A reader can override
+ * any of them from the site itself (/shared/ubel-syntax-theme.js sets the
+ * same variables on <html> and remembers them in localStorage), so nothing
+ * in this file or in the highlighter may hard-code a token colour: always
+ * go through a variable.
  */
 
 :root {
@@ -23,23 +29,59 @@
   --skip:        #55504A;
 
   /* Ubel source syntax highlighting, Nord-derived (nordtheme.com),
-     blue-dominant with red/yellow accents. Numbers reuse --tok above
-     rather than a 5th imported color, so it still reads as native to
-     this palette rather than a bolted-on import. */
+     blue-dominant with red/yellow accents. */
+  --ubl-bg:      #211D19; /* code block / editor background (= --panel)   */
+  --ubl-text:    #EDE6DA; /* plain, unclassified code (= --text)          */
   --ubl-keyword: #81a1c1; /* Nord9  frost blue:  fn, let, if, return, ... */
-  --ubl-type:    #8fbcbb; /* Nord8  frost teal:  int, string, List, ...    */
+  --ubl-type:    #8fbcbb; /* Nord8  frost teal:  int, string, List, Rectangle */
   --ubl-tier:    #bf616a; /* Nord11 aurora red:  tier/high/mid/low/arena/pool/gc/heap */
   --ubl-string:  #ebcb8b; /* Nord13 aurora yellow */
+  --ubl-number:  #C9A46A; /* sandstone (= --tok) */
   --ubl-comment: #6b7a99; /* muted blue-gray */
+  --ubl-attr:    #b48ead; /* Nord15 aurora purple: @tier, @derive */
+  --ubl-fn:      #88c0d0; /* Nord7  frost cyan: function and method names */
+  --ubl-const:   #d08770; /* Nord12 aurora orange: ALL_CAPS constants */
 
   --font-display: 'Fraunces', Georgia, serif;
   --font-body:    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* Rendered code (docs site, anything run through UbelSyntax.highlight). */
 .ubl-keyword { color: var(--ubl-keyword); }
 .ubl-type    { color: var(--ubl-type); }
 .ubl-tier    { color: var(--ubl-tier); font-weight: 600; }
 .ubl-string  { color: var(--ubl-string); }
-.ubl-number  { color: var(--tok); }
+.ubl-number  { color: var(--ubl-number); }
 .ubl-comment { color: var(--ubl-comment); font-style: italic; }
+.ubl-attr    { color: var(--ubl-attr); }
+.ubl-fn      { color: var(--ubl-fn); }
+.ubl-const   { color: var(--ubl-const); }
+
+pre > code.language-ubel {
+  background: var(--ubl-bg);
+  color: var(--ubl-text);
+}
+
+/* CodeMirror 5, mode "ubel" (the playground editor). The mode returns
+   "ubl-keyword" and friends, which CodeMirror turns into cm-ubl-keyword.
+   Theme name is "ubel": new CodeMirror({ mode: 'ubel', theme: 'ubel' }). */
+.cm-s-ubel.CodeMirror {
+  background: var(--ubl-bg);
+  color: var(--ubl-text);
+}
+.cm-s-ubel .CodeMirror-gutters { background: var(--ubl-bg); border-right: 1px solid var(--border); }
+.cm-s-ubel .CodeMirror-linenumber { color: var(--text-muted); }
+.cm-s-ubel .CodeMirror-cursor { border-left: 2px solid var(--ubl-text); }
+.cm-s-ubel .CodeMirror-selected { background: rgba(128, 128, 128, 0.28); }
+.cm-s-ubel .CodeMirror-activeline-background { background: rgba(128, 128, 128, 0.10); }
+.cm-s-ubel .CodeMirror-matchingbracket { color: inherit !important; outline: 1px solid var(--ubl-keyword); }
+.cm-s-ubel .cm-ubl-keyword { color: var(--ubl-keyword); }
+.cm-s-ubel .cm-ubl-type    { color: var(--ubl-type); }
+.cm-s-ubel .cm-ubl-tier    { color: var(--ubl-tier); font-weight: 600; }
+.cm-s-ubel .cm-ubl-string  { color: var(--ubl-string); }
+.cm-s-ubel .cm-ubl-number  { color: var(--ubl-number); }
+.cm-s-ubel .cm-ubl-comment { color: var(--ubl-comment); font-style: italic; }
+.cm-s-ubel .cm-ubl-attr    { color: var(--ubl-attr); }
+.cm-s-ubel .cm-ubl-fn      { color: var(--ubl-fn); }
+.cm-s-ubel .cm-ubl-const   { color: var(--ubl-const); }

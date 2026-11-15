@@ -1,36 +1,43 @@
 // web/site/theme/ubel-nav.js
 //
-// mdBook's menu bar (title + icon buttons) comes from its own built-in
-// index.hbs template, which book.toml has no hook to add arbitrary links
-// into; the only supported extension points are additional-css and
-// additional-js. This runs on every page and inserts a small nav
-// (Home / Docs / Playground / CI Results) between the book title and
-// mdBook's own icon buttons, so the four sections of the site read as
-// one property instead of unrelated pages. The GitHub icon itself is
-// unaffected; that one mdBook already adds on its own via book.toml's
-// git-repository-url.
+// Runs on every docs page. mdBook's menu bar comes from its own built-in
+// template, which book.toml has no hook to add arbitrary markup into; the
+// only supported extension points are additional-css and additional-js. So
+// this script adds, at runtime:
 //
-// The docs site now lives under /docs/ rather than site root (site root
-// is the standalone landing page in web/home/), so "current" can no
-// longer be hardcoded to the Docs link the way it was when this book was
-// the only thing living behind "/". Detected from location.pathname
-// instead, which also means this same nav markup can be reused verbatim
-// by the landing/playground/dashboard pages without each one having to
-// hand-pick which link gets the "current" class.
+//   * a small site nav (Home / Docs / Playground / CI Results) next to the
+//     book title, so the sections read as one site;
+//   * a documentation VERSION PICKER and, when the page is not the latest
+//     release, a banner saying so (see "Versioned docs" below);
+//   * the shared Ubel highlighter and the reader-customisable syntax colours
+//     (/shared/ubel-highlight.js, /shared/ubel-syntax-theme.js);
+//   * the Ubel favicon in place of mdBook's own.
 //
-// This file also loads the shared Ubel syntax highlighter from
-// /shared/ubel-highlight.js (an absolute, site-root-relative path) rather
-// than book.toml referencing it directly via additional-js: that file
-// lives in web/shared/, outside this book's own source tree, and mdBook
-// only copies/rewrites additional-js paths that live inside the book
-// source. A path like ../shared/ubel-highlight.js would resolve correctly
-// in this local checkout but not once book/ becomes docs/ under the
-// deployed site root, since ../ from docs/ has nowhere further to go once
-// docs/ itself is one level under root. The deploy workflow copies
-// web/shared/ to dist/shared/ as a sibling of docs/, playground/, and
-// results/, which is what makes the absolute path resolve correctly once
-// live, regardless of how deep the current page is nested.
+// ── Versioned docs ──────────────────────────────────────────────────────
+// The deploy workflow (.github/workflows/pipeline-dashboard.yml) builds this
+// book once per documentation version and lays them out like this:
+//
+//   /docs/next/        built from master: the unreleased, in-development docs
+//   /docs/vX.Y.Z/      built from the git tag vX.Y.Z (one per release)
+//   /docs/latest/      a copy of the newest release, or of next while no
+//                      release exists yet
+//   /docs/versions.json   what exists (read below)
+//   /docs/index.html   redirects to /docs/latest/
+//
+// versions.json: { "schema": 1, "latest": "v0.1.0" | null,
+//                  "versions": [ { "id": "v0.1.0", "date": "2026-12-01" }, ... ] }
+// newest first; "next" is always present and is not listed in "versions".
+// Nothing here needs a release to exist: with "latest": null the picker shows
+// only the development docs and the banner says no release has shipped.
+//
+// ── Why /shared/... is an absolute path ─────────────────────────────────
+// web/shared/ lives outside this book's source tree and mdBook only copies
+// additional-js files from inside it, so the shared scripts are loaded by
+// absolute URL. The deploy workflow copies web/shared/ to dist/shared/, a
+// sibling of docs/, playground/ and results/.
 (function () {
+  'use strict';
+
   var LINKS = [
     { href: '/',            label: 'Home' },
     { href: '/docs/',       label: 'Docs' },
@@ -38,29 +45,26 @@
     { href: '/results/',    label: 'CI Results' }
   ];
 
+  var DOCS_PATH = /^\/docs\/([^\/]+)\//;
+
   function isCurrent(href) {
     var path = window.location.pathname;
     if (href === '/') return path === '/' || path === '/index.html';
     return path.indexOf(href) === 0;
   }
 
-  function loadSharedHighlighter() {
-    if (document.querySelector('script[data-ubel-highlight]')) return;
+  function loadScriptOnce(src, marker) {
+    if (document.querySelector('script[' + marker + ']')) return;
     var script = document.createElement('script');
-    script.src = '/shared/ubel-highlight.js';
-    script.setAttribute('data-ubel-highlight', 'true');
+    script.src = src;
+    script.setAttribute(marker, 'true');
     document.body.appendChild(script);
   }
 
   function injectFavicon() {
-    // mdBook always emits its own default favicon <link> tags (a
-    // rust-book icon, via a hashed filename baked in at build time) —
-    // confirmed by actually building web/site and inspecting the output
-    // rather than assumed, since mdBook's docs don't clearly say so.
-    // Placing a favicon.svg in the book's src/ root gets it copied as a
-    // static asset but does NOT replace those link tags, so the only way
-    // to make the docs pages show the same mark as the rest of the site
-    // is to remove mdBook's own tags and add ours, not just add-if-absent.
+    // mdBook always emits its own favicon <link> tags with a hashed
+    // filename baked in at build time; the only way to show the Ubel mark
+    // is to remove those and add ours, not just add-if-absent.
     document.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]')
       .forEach(function (el) { el.remove(); });
     var link = document.createElement('link');
@@ -72,7 +76,7 @@
 
   function injectNav() {
     var title = document.querySelector('.menu-title');
-    if (!title || document.querySelector('.ubel-nav-links')) return;
+    if (!title || document.querySelector('.ubel-nav-links')) return null;
 
     var nav = document.createElement('div');
     nav.className = 'ubel-nav-links';
@@ -81,12 +85,88 @@
       return '<a href="' + l.href + '"' + cls + '>' + l.label + '</a>';
     }).join('');
     title.insertAdjacentElement('afterend', nav);
+    return nav;
+  }
+
+  // ── Version picker ────────────────────────────────────────────────────
+  function pageIn(versionId) {
+    return window.location.pathname.replace(DOCS_PATH, '/docs/' + versionId + '/') +
+      window.location.search + window.location.hash;
+  }
+
+  function goToVersion(versionId) {
+    var target = pageIn(versionId);
+    // The same page may not exist in another version (a chapter added or
+    // renamed between releases); fall back to that version's front page
+    // rather than a 404.
+    fetch(target.split('#')[0], { method: 'HEAD' }).then(function (res) {
+      window.location.href = res.ok ? target : '/docs/' + versionId + '/';
+    }).catch(function () {
+      window.location.href = '/docs/' + versionId + '/';
+    });
+  }
+
+  function injectVersionUi(manifest, navEl) {
+    var m = window.location.pathname.match(DOCS_PATH);
+    if (!m || !manifest) return;
+    var shown = m[1];                       // what the URL says
+    var latest = manifest.latest || null;   // newest release id, or null
+    // /docs/latest/ is a copy; for the picker it means "the newest release",
+    // or "next" while none has shipped.
+    var effective = shown === 'latest' ? (latest || 'next') : shown;
+
+    var select = document.createElement('select');
+    select.className = 'ubel-version-select';
+    select.setAttribute('aria-label', 'Documentation version');
+    var options = [{ id: 'next', label: 'Development (next)' }];
+    (manifest.versions || []).forEach(function (v) {
+      options.push({ id: v.id, label: v.id + (v.id === latest ? ' (latest)' : '') });
+    });
+    options.forEach(function (o) {
+      var opt = document.createElement('option');
+      opt.value = o.id;
+      opt.textContent = o.label;
+      if (o.id === effective) opt.selected = true;
+      select.appendChild(opt);
+    });
+    select.addEventListener('change', function () { goToVersion(select.value); });
+    if (navEl) navEl.appendChild(select);
+
+    // Banner
+    var main = document.querySelector('#mdbook-content main') || document.querySelector('main');
+    if (!main || document.querySelector('.ubel-version-banner')) return;
+    var text = null;
+    if (effective === 'next') {
+      text = latest
+        ? 'This is the <strong>development</strong> documentation: it describes unreleased changes and can differ from the current release. ' +
+          '<a href="' + pageIn(latest) + '">View this page in ' + latest + '</a>.'
+        : 'This is the <strong>development</strong> documentation. No stable version of Ubel Stratum has been released yet, so these pages describe the language as it is on the <code>master</code> branch and can change at any time.';
+    } else if (latest && effective !== latest) {
+      text = 'You are reading the documentation for <strong>' + effective + '</strong>. ' +
+        '<a href="' + pageIn(latest) + '">The latest release is ' + latest + '</a>.';
+    }
+    if (text) {
+      var banner = document.createElement('div');
+      banner.className = 'ubel-version-banner';
+      banner.innerHTML = text;
+      main.insertBefore(banner, main.firstChild);
+    }
+  }
+
+  function loadManifest(navEl) {
+    if (!DOCS_PATH.test(window.location.pathname)) return;
+    fetch('/docs/versions.json', { cache: 'no-cache' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (manifest) { injectVersionUi(manifest, navEl); })
+      .catch(function () { /* local preview or offline: no picker, nothing breaks */ });
   }
 
   function init() {
     injectFavicon();
-    injectNav();
-    loadSharedHighlighter();
+    var navEl = injectNav();
+    loadScriptOnce('/shared/ubel-syntax-theme.js', 'data-ubel-syntax-theme');
+    loadScriptOnce('/shared/ubel-highlight.js', 'data-ubel-highlight');
+    loadManifest(navEl);
   }
 
   if (document.readyState === 'loading') {

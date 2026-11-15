@@ -2,7 +2,8 @@
 
 Ubel Stratum is early and under active development. This page tracks
 what exists today at a language level; the [CI Results](/results/) page
-tracks the fixture suite and benchmark history behind these claims.
+tracks the fixture suite and benchmark history behind these claims. These
+are the development docs; see [Versions and releases](./versions.md).
 
 ## Phases
 
@@ -12,7 +13,7 @@ tracks the fixture suite and benchmark history behind these claims.
 | 2 | Done | Semantic analysis: name resolution, type inference, tier enforcement, generics, the three-tier escape-boundary checker |
 | 3 | Done | Tree-walking interpreter, the current execution model |
 | 4 | Started | LLVM backend, native binaries. Hand-written IR measured the three tiers, and an emitter turns a growing subset of Ubel into LLVM IR that is checked against the interpreter at every step: int, bool and string values, structs, enums and `match`, closures, arenas and the garbage-collected heap, Unicode string methods. The target program `examples/arena_demo/ast_builder.ubl` compiles. Collections, floats and sized integers, generics, traits and a `ubel build` command are not there yet (`docs/LLVM_BACKEND_STATUS.md`) |
-| 5 | Not started | Standard library, tooling, package manager |
+| 5 | Not started | Standard library, package manager. (The `ubel` command and `ubel-lsp` exist as stubs; see Recently landed.) |
 
 Phase 2 being marked done covers full generics for structs and enums,
 enum discriminants and payloads, arena and pool escape checking, and

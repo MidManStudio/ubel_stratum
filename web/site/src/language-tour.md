@@ -1,91 +1,41 @@
-# Language Tour
+# A Tour of Ubel
 
-A tour of the surface syntax. Every example below is real syntax the
-project documents; none is invented for this page.
+A quick pass over the language, with one runnable program per idea. Each
+section links to the Guide chapter that goes deep, and every example here is
+compiled by the project's CI.
 
-## Tier annotations
+## Hello, tiers
 
+Functions are HIGH tier (garbage collected) unless you say otherwise.
+`@tier(mid)` allocates in arenas and `@tier(low)` uses ownership and
+borrowing. [The Tier Model](./tier-model.md) is the full story.
+
+<!-- ubel-test: run -->
 ```ubel
-// Default: HIGH, no annotation needed for most code
-fn handle_request(req: Request) Response {
-    let user = fetch_user(req.user_id)
-    return Response.ok(user.to_json())
-}
-
-// Opt into MID for a hot path
 @tier(mid)
-fn parse_payload(body: string) ParsedData {
-    with arena(1MB) { }
+fn sum_squares(n: int) int {
+    let mut total = 0
+    with arena(64KB) {
+        for i in 1..=n {
+            total += i * i
+        }
+    }
+    return total
 }
 
-// Opt into LOW for systems code
-@tier(low)
-fn write_packet(buf: &mut [u8]) usize {
-    // raw ownership; borrow checker enforcement is still in progress
-}
-```
-
-## Collections
-
-Collection names follow C# convention rather than Rust's.
-
-```ubel
-let mut numbers = List.new()
-numbers.push(1)
-numbers.push(2)
-
-let mut scores = Dictionary<string, int>.new()
-scores.set("Alice", 100)   // set/get, not insert, for symmetry
-
-let items = [1, 2, 3, 4, 5]
-let names = ["Alice", "Bob"]   // inferred as List<string>
-```
-
-## Unified member access
-
-There is no `::`. Type-level calls and instance calls both use `.`.
-
-```ubel
-summon std.collections.List
-let list = List.new()   // type-level call
-list.push(42)            // instance call
-```
-
-## Error handling
-
-A trailing `!` on a return type means the function may fail; `?`
-propagates a failure out of the current function.
-
-```ubel
-fn parse_int(s: string) int! {
-    // returns a Result-like value
-}
-
-fn process(s: string) int! {
-    let n = parse_int(s)?
-    return n * 2
+fn main() {
+    println($"sum of squares: {sum_squares(10)}")
 }
 ```
 
-## Async
+## Values, structs and enums
 
-Async is HIGH tier only. MID and LOW are synchronous by design: arenas
-have lexical lifetimes, which do not compose with the way an `async`
-function suspends and resumes across `await` points.
+[Values and variables](./guide/values.md), [Structs and enums](./guide/structs-enums.md)
 
-```ubel
-@tier(high)
-async fn fetch_user(id: int) Task<User>! {
-    let resp = await http_get($"/users/{id}")?
-    return await parse_user(resp.body)?
-}
-```
-
-## Structs and methods
-
+<!-- ubel-test: run -->
 ```ubel
 struct Rectangle {
-    width: int,
+    width: int
     height: int
 
     pub fn new(w: int, h: int) Rectangle {
@@ -96,124 +46,134 @@ struct Rectangle {
         return self.width * self.height
     }
 }
-```
 
-## Pattern matching
+enum Shape {
+    Circle(int),
+    Square(int),
+    Nothing
+}
 
-```ubel
-match response {
-    Ok(data) where data.status == 200 => process_success(data),
-    Ok(data) => log_warning($"Status: {data.status}"),
-    Err(NetworkError(extract { code, message })) => {
-        log_error($"Network error {code}: {message}")
+fn describe(s: Shape) string {
+    match s {
+        Circle(r) => return $"circle, radius {r}",
+        Square(side) => return $"square, side {side}",
+        Nothing => return "no shape",
     }
-    Err(e) => log_error($"Unknown: {e}"),
+}
+
+fn main() {
+    let r = Rectangle.new(3, 4)
+    println($"area = {r.area()}")
+    println(describe(Shape.Circle(2)))
+    println(describe(Shape.Nothing))
 }
 ```
 
-## Pipe operator
+Names use `.` everywhere: `Rectangle.new(...)`, `value.method()`,
+`Shape.Circle(2)`. There is no `::`.
 
+## Collections and queries
+
+[Collections](./guide/collections.md)
+
+<!-- ubel-test: run -->
 ```ubel
-let result = data
-    |> parse?
-    |> validate?
-    |> transform
-    |> save
+fn main() {
+    let scores = Dictionary.new()      // get/set, not insert
+    scores.set("ada", 100)
+    scores.set("alan", 90)
+    println(scores.get("ada"))
+
+    let names = ["ada", "alan", "grace"]
+    let long_names = List.new()
+    for n in names {
+        long_names.push(n)
+    }
+    let shout = long_names.query()
+        .where(fn(n) n.len() > 3)
+        .select(fn(n) n.to_upper())
+        .to_list()
+    println(shout.len())
+}
 ```
 
-`x |> f` calls `f(x)`. A stage with arguments gets the piped value as its
-first argument, so `x |> f(a, b)` calls `f(x, a, b)`, and a `?` after a stage
-unwraps the result of the call (`x |> parse?` is `parse(x)?`). Stages chain
-left to right, a lambda can be a stage, and the result has the return type of
-the last stage. Arithmetic binds tighter than `|>`, so `1 + 2 |> double` is
-`double(3)`; a comparison binds looser, so `5 |> double == 10` compares the
-result.
+## Functions, closures and the pipe
 
-## Operators on built-in types
+[Functions and closures](./guide/functions.md)
 
-Each operator is defined for a fixed set of types, and using it on another
-type is a compile error. `+` works on numbers and on two strings, `-` `*`
-`/` `%` on numbers, `&` `|` `^` `<<` `>>` and unary `~` on integers, unary
-`-` on signed integers and floats, and `!` on a `bool`. A `bool` uses `and`
-and `or`, a list is not added with `+`, and an unsigned integer has no
-negation. A struct or enum gets an operator by implementing its trait
-(`impl Add<V, V> for V`).
-
-A number written with a dot needs a digit after it: `3.0` is a float, and
-`7.double()` is a method call on the integer 7.
-
-## Extension functions
-
+<!-- ubel-test: run -->
 ```ubel
+fn twice(x: int) int { return x * 2 }
+fn add(x: int, y: int) int { return x + y }
+
 extend int {
     fn is_even(self) bool { return self % 2 == 0 }
 }
 
-if 42.is_even() { println("Even!") }
+fn main() {
+    let r = 5 |> twice |> add(1)       // add(twice(5), 1)
+    println(r)
+    println(42.is_even())
+
+    let offset = 10
+    let shifted = fn(x: int) x + offset
+    println(shifted(5))
+}
 ```
 
-## References and lifetimes (LOW tier)
+## Generics and traits
 
-`&`/`ref` and `&mut`/`ref mut` are dual spellings of the same borrow
-operator, `*`/`deref` likewise for dereference, the same relationship
-`and`/`&&` and `or`/`||` already have. Either spelling compiles to the
-identical AST node; named lifetimes are only needed for cross-function
-borrows complex enough that inference cannot resolve them alone.
+[Generics and traits](./guide/generics-traits.md)
 
+<!-- ubel-test: run -->
 ```ubel
-// inferred, no annotation needed
-fn first(list: &List<int>) &int {
-    return &list[0]
+trait Shape {
+    fn area(self) int
 }
 
-// same thing, keyword spelling
-fn first(list: ref List<int>) ref int {
-    return ref list[0]
+struct Sq {
+    s: int
 }
 
-// explicit lifetime for a genuinely ambiguous case
-fn longest[lifetime L](x: &L str, y: &L str) &L str {
-    if x.len() > y.len() { return x } else { return y }
+impl Shape for Sq {
+    fn area(self) int { return self.s * self.s }
+}
+
+fn total_area<T: Shape>(a: T, b: T) int {
+    return a.area() + b.area()
+}
+
+fn main() {
+    println(total_area(Sq { s = 2 }, Sq { s = 3 }))
 }
 ```
 
-The syntax and structural typing for references are complete. The borrow
-checker that actually verifies a program's borrows are sound (loan
-tracking, liveness, move checking) is still in progress; see
-[The Tier Model](./tier-model.md#what-is-enforced-today) for exactly
-where that line sits today.
+## Failure and absence
 
-## RAII with `using`
+[Optionals and failure](./guide/errors-and-optionals.md)
 
+<!-- ubel-test: run -->
 ```ubel
-using let file = File.open("data.txt") {
-    let content = file.read()
-    process(content)
-}   // file.close() runs automatically
-```
+fn parse_positive(n: int) int! {
+    if n < 0 {
+        fail "negative"
+    }
+    return n
+}
 
-## Query pipelines
+fn double_it(n: int) int! {
+    let v = parse_positive(n)?
+    return v * 2
+}
 
-`Linqerizer<T>` is a lazy, chainable query pipeline over any collection,
-HIGH tier only. `.query()` snapshots the source once; nothing runs until
-a terminal call (`.to_list()`, `.first()`, `.count()`) walks the
-pipeline, and each chained call returns a new pipeline rather than
-mutating in place.
-
-```ubel
-@tier(high)
-fn active_adult_names(users: List<User>) List<string> {
-    return users.query()
-        .where(fn(u) u.age >= 18 and u.status == "active")
-        .order_by(fn(u) u.name)
-        .select(fn(u) u.name)
-        .to_list()
+fn main() {
+    let r = double_it(4)
+    println("ok")
 }
 ```
 
-`.group_by(...)` produces a real `Dictionary<Key, List<Value>>`. An
-earlier query-comprehension grammar (`from x in ... where ... select`,
-closer to C#'s LINQ syntax) was removed outright rather than kept
-alongside this: it was eager, List-only, `group_by` was a stub, and it
-had no fixture coverage. `Linqerizer<T>` needs no dedicated grammar at
-all; it parses as ordinary method calls.
+## Where next
+
+- Something fails? [The error reference](./errors/index.md) explains every code.
+- Try it without installing anything: [the playground](./tooling/playground.md).
+- Build the tools: [Getting Started](./getting-started.md).

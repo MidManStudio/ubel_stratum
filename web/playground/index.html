@@ -7,7 +7,6 @@
 <link rel="icon" type="image/png" href="/shared/favicon.png">
 <link rel="stylesheet" href="/shared/ubel-theme.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/nord.min.css">
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -58,6 +57,7 @@
     header nav { order: 3; flex: 1 1 100%; gap: 0.9rem; }
     #fixture-select { order: 4; flex: 1 1 auto; max-width: none; min-width: 0; }
     #run-btn { order: 5; flex: 0 0 auto; }
+    header [data-ubel-syntax-mount] { order: 4; }
   }
 
   main {
@@ -93,6 +93,9 @@
     letter-spacing: 0.04em; color: var(--text-muted); margin: 0 0 0.4rem 0;
   }
   .diagnostics { color: var(--fail); }
+  .diagnostics a.err-code { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
+  .diagnostics a.err-code:hover { text-decoration: underline; }
+  .hint { color: var(--text-muted); font-size: 0.75rem; font-family: var(--font-body); margin: 0 0 1rem 0; }
   .program-output { color: var(--text); background: var(--panel-alt); padding: 0.75rem; border-radius: 4px; }
   .placeholder { color: var(--text-muted); font-style: italic; }
   .internal-error {
@@ -112,6 +115,7 @@
     <a href="/results/">CI Results</a>
   </nav>
   <div class="spacer"></div>
+  <span data-ubel-syntax-mount></span>
   <select id="fixture-select" disabled>
     <option value="">Loading fixtures…</option>
   </select>
@@ -126,14 +130,15 @@
   <div class="pane">
     <div class="pane-header"><span class="stage-dot" id="result-dot"></span> <span id="result-label">Pipeline output</span></div>
     <div id="output-pane">
-      <p class="placeholder">Run to see tokenize &rarr; parse &rarr; sema &rarr; interpret results.</p>
+      <p class="placeholder">Run (or press Ctrl/Cmd+Enter) to see tokenize &rarr; parse &rarr; sema &rarr; interpret results.</p>
     </div>
   </div>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
 <script src="/shared/ubel-highlight.js"></script>
+<script>window.UBEL_SYNTAX_NO_AUTOMOUNT = false;</script>
+<script src="/shared/ubel-syntax-theme.js"></script>
 <script type="module">
   import init, { run_pipeline, init_panic_hook } from './ubel_stratum_wasm.js';
 
@@ -148,22 +153,47 @@
   const resultDot   = document.getElementById('result-dot');
   const resultLbl   = document.getElementById('result-label');
 
-  // clike is a reasonable stand-in token mode for editing (brace matching,
-  // string/comment detection); the highlight colors themselves come from
-  // /shared/ubel-highlight.js re-applied to the read-only output panel,
-  // not from CodeMirror's own mode, which does not know Ubel's keywords.
+  // The editor uses a real Ubel mode (registered by /shared/ubel-highlight.js
+  // from the same keyword tables the docs use) and the "ubel" theme from
+  // /shared/ubel-theme.css, whose colours are CSS variables. A reader changes
+  // them with the Colours button in the header (/shared/ubel-syntax-theme.js);
+  // the editor repaints immediately because nothing here hard-codes a colour.
+  UbelSyntax.defineCodeMirrorMode(CodeMirror);
   const editor = CodeMirror(document.getElementById('editor').parentNode, {
     value: DEFAULT_SOURCE,
-    mode: 'text/x-csrc',
-    theme: 'nord',
+    mode: 'ubel',
+    theme: 'ubel',
     lineNumbers: true,
     indentUnit: 4,
     tabSize: 4,
+    indentWithTabs: false,
+    extraKeys: {
+      'Ctrl-Enter': () => { if (!runBtn.disabled) run(); },
+      'Cmd-Enter':  () => { if (!runBtn.disabled) run(); },
+      Tab: (cm) => cm.replaceSelection('    ', 'end'),
+    },
   });
   document.getElementById('editor').remove();
 
   function escapeHtml(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Every diagnostic starts "error[CODE]". The docs have an entry for each
+  // code (Errors in the docs site); link it. /docs/latest/ always exists:
+  // it is the newest release, or the development docs until one ships.
+  const ERROR_PAGES = {
+    LEX: 'lex', PARSE: 'parse', NAME: 'name', TYPE: 'type', TIER: 'tier',
+    BORROW: 'ownership', MOVE: 'ownership', LIFETIME: 'ownership',
+  };
+  function linkifyDiagnostics(text) {
+    return escapeHtml(text).replace(/error\[([A-Z]+)-(\d{3})\]/g, (all, fam, num) => {
+      const page = ERROR_PAGES[fam];
+      if (!page) return all;
+      const code = fam + '-' + num;
+      return 'error[<a class="err-code" target="_blank" rel="noopener" href="/docs/latest/errors/' +
+        page + '.html#' + code.toLowerCase() + '">' + code + '</a>]';
+    });
   }
 
   function renderResult(result) {
@@ -175,7 +205,8 @@
 
     if (result.diagnostics_text && result.diagnostics_text.trim().length > 0) {
       html += '<p class="section-title">Diagnostics</p>';
-      html += '<pre class="diagnostics">' + escapeHtml(result.diagnostics_text) + '</pre>';
+      html += '<pre class="diagnostics">' + linkifyDiagnostics(result.diagnostics_text) + '</pre>';
+      html += '<p class="hint">Click an error code to read what it means and how to fix it.</p>';
     }
 
     if (result.stage === 'interpret' && result.ran_main) {

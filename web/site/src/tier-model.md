@@ -34,6 +34,7 @@ MID parses into an arena, calls a HIGH-tier closure with a borrow into
 the arena, the closure produces a GC-owned result, then the arena frees.
 The closure's borrow never outlives the arena.
 
+<!-- ubel-test: skip -->
 ```ubel
 @tier(mid)
 fn parse_json_with<F, R>(input: string, callback: F) R
@@ -60,6 +61,7 @@ For processing large datasets without materializing the whole result at
 once. MID drives the iteration; HIGH only ever sees GC-owned values, one
 at a time.
 
+<!-- ubel-test: skip -->
 ```ubel
 @tier(mid)
 fn transform_each<R>(items: &[Item], f: fn(&TransformedItem) R) List<R> {
@@ -79,6 +81,7 @@ fn transform_each<R>(items: &[Item], f: fn(&TransformedItem) R) List<R> {
 Syntactic sugar over the callback pattern for read-only access, following
 the same rules.
 
+<!-- ubel-test: skip -->
 ```ubel
 @tier(high)
 fn parse_config(path: string) Config {
@@ -93,6 +96,7 @@ fn parse_config(path: string) Config {
 
 ### Rejected at compile time
 
+<!-- ubel-test: skip -->
 ```ubel
 // storing an arena reference in a GC-managed struct
 @tier(high)
@@ -127,6 +131,94 @@ Not simply "LOW cannot call HIGH": every direction is a separate rule.
 | MID  | LOW | Yes |
 | LOW  | HIGH | No |
 | LOW  | MID | No |
+
+## See it enforced
+
+The call matrix is checked at every call. Here a LOW function calls a HIGH one
+(the default tier), which the matrix forbids:
+
+<!-- ubel-test: error TIER-005 -->
+```ubel
+fn helper() int {
+    return 1
+}
+
+@tier(low)
+fn tight() int {
+    return helper()
+}
+
+fn main() {
+}
+```
+
+```text
+>>> error[TIER-005]: `@tier(low)` code cannot call `@tier(high)` function `helper`
+```
+
+Arenas belong to MID tier. A `with arena` block in a HIGH function is
+rejected:
+
+<!-- ubel-test: error TIER-001 -->
+```ubel
+fn bad() {
+    with arena(1MB) {
+    }
+}
+
+fn main() {
+}
+```
+
+Both programs, and the working MID/LOW pair below, behave exactly as shown
+because the project's CI compiles them.
+
+<!-- ubel-test: run -->
+```ubel
+@tier(mid)
+fn sum_squares(n: int) int {
+    let mut total = 0
+    with arena(64KB) {
+        for i in 1..=n {
+            total += i * i
+        }
+    }
+    return total
+}
+
+@tier(low)
+fn read_it(x: &int) int {
+    return *x
+}
+
+fn main() {
+    println(sum_squares(10))     // HIGH calls MID: allowed
+    let n = 21
+    println(read_it(&n))         // HIGH calls LOW: allowed
+}
+```
+
+```text
+385
+21
+```
+
+## Errors you will meet
+
+Every rule on this page has its own diagnostic, documented with an example in
+[the tier error reference](./errors/tier.md) and
+[the ownership error reference](./errors/ownership.md). The most common:
+
+| Mistake | Code |
+|---------|------|
+| calling up the matrix (LOW calling HIGH or MID, MID calling HIGH) | [TIER-005](./errors/tier.md#tier-005) |
+| `with arena` outside a MID function | [TIER-001](./errors/tier.md#tier-001) |
+| an arena or pool value leaving its block | [TIER-004](./errors/tier.md#tier-004), [TIER-011](./errors/tier.md#tier-011) |
+| building a collection inside LOW | [TIER-009](./errors/tier.md#tier-009) |
+| `Unique.new` and friends outside LOW | [TIER-014](./errors/tier.md#tier-014) |
+| touching a `static` outside HIGH | [TIER-015](./errors/tier.md#tier-015) |
+| using a value after it was moved | [MOVE-001](./errors/ownership.md#move-001) |
+| using a place while it is mutably borrowed | [BORROW-001](./errors/ownership.md#borrow-001) |
 
 ## What is enforced today
 
@@ -174,7 +266,7 @@ One thing is still in progress rather than complete:
 every tier on the same reference-counted representation. `with arena`
 blocks are recognized and validated by the tier checker but do not yet
 allocate or free real memory in the interpreter; genuine bump-allocation
-arrives with the LLVM backend. The static rules above are enforced
+exists only in the preview [native backend](./tooling/native-backend.md). The static rules above are enforced
 regardless, since tier checking happens independently of execution, but
 running a MID-tier function today does not yet exercise real arena
 memory pressure or reclamation timing.

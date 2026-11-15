@@ -1,60 +1,82 @@
-# Ubel Stratum
+# Introduction
 
-*The right memory model for every function.*
+**Ubel Stratum** is a systems programming language built around one idea:
+*the right memory model for every function.*
 
-Ubel Stratum is a statically-typed systems and game-development language.
-Its defining feature is a tier system: every function declares which memory
-strategy it uses, and the compiler enforces the rules statically.
+Most languages make a single memory bet for the whole program: garbage
+collection everywhere, ownership everywhere, or manual management
+everywhere. Ubel lets each **function** choose its own, and the compiler
+checks that the choices never collide.
 
-| Tier | Annotation | Memory | Async | Use case |
-|------|-----------|--------|-------|----------|
-| HIGH | `@tier(high)` (default) | Garbage collected | Yes | Business logic, I/O |
-| MID  | `@tier(mid)`            | Arena allocated    | No  | Parsers, hot paths |
-| LOW  | `@tier(low)`            | Manual, borrow-checked | No | Systems, FFI, packets |
+| Tier | Annotation | Memory | Typical use |
+|------|-----------|--------|-------------|
+| HIGH | `@tier(high)` (the default) | Garbage collected | Business logic, I/O, anything where convenience matters |
+| MID  | `@tier(mid)` | Arena allocated | Parsers and hot paths that allocate a lot and free all at once |
+| LOW  | `@tier(low)` | Ownership and borrow checking, no collector | Systems code, packet handling |
 
-Functions without a `@tier` annotation default to HIGH. Tiers are opted
-into for performance, not opted out of for convenience.
+A function with no annotation is HIGH. You opt *down* for performance; you
+never have to opt *up* for convenience. [The Tier Model](./tier-model.md)
+explains how the three fit together and what the compiler enforces.
 
-## Why a tier system
+<!-- ubel-test: run -->
+```ubel
+// HIGH by default: no annotation needed
+fn main() {
+    println($"scratch total: {sum_squares(10)}")
+}
 
-Most languages make one memory bet for an entire program:
+// MID: allocates in an arena that is freed when the block ends
+@tier(mid)
+fn sum_squares(n: int) int {
+    let mut total = 0
+    with arena(64KB) {
+        for i in 1..=n {
+            total += i * i
+        }
+    }
+    return total
+}
+```
 
-| Language | Bet | Cost |
-|----------|-----|------|
-| Go, Java, C# | GC everywhere | Pauses, GC pressure, heap bloat |
-| Rust | Ownership everywhere | Steep learning curve, slow compiles |
-| C, C++ | Manual everywhere | Safety bugs, undefined behavior |
+## What exists today
 
-Ubel Stratum lets each function make its own bet: garbage collection where
-that is the easier choice, arenas where speed matters, manual ownership
-where correctness under tight constraints matters most. The compiler
-guarantees the bets never clash at runtime, and cross-tier calls follow an
-explicit set of rules covered in [The Tier Model](./tier-model.md).
+Ubel Stratum is early and under active development. This is what you can
+use right now:
 
-## Current status
+- **The language front end**: lexer, parser, name resolution, type
+  inference with generics and traits, tier enforcement, and a LOW-tier
+  borrow, move and lifetime checker.
+- **An interpreter** that runs every tier. It is the reference
+  implementation of the language's behaviour.
+- **The `ubel` command line** to [check and run](./tooling/cli.md) files, and
+  **`ubel-lsp`**, a [language server](./tooling/lsp.md) that shows compiler
+  diagnostics in your editor.
+- **A browser [playground](./tooling/playground.md)** that runs the real
+  compiler compiled to WebAssembly.
+- **A native backend, in preview**: a growing subset of the language
+  compiles to LLVM IR and then to an executable. See
+  [Native backend](./tooling/native-backend.md) for exactly what works.
 
-Ubel Stratum is early and under active development. The end goal is native
-machine code through an LLVM backend; today the language runs on a
-tree-walking interpreter, a deliberate stepping stone rather than the
-final architecture. Building the interpreter first proves out the
-language's semantics completely before the much heavier lift of LLVM
-integration begins.
+What does **not** exist yet: a standard library beyond the built-in
+collections and functions, a package manager, and an installable release.
+[Project Status](./project-status.md) tracks all of it, including the gaps.
 
-| Phase | Status | Covers |
-|-------|--------|--------|
-| 1 | Done | Core design, memory model, lexer, arena AST, parser |
-| 2 | Done | Semantic analysis: name resolution, type inference, tier enforcement |
-| 3 | Done | Tree-walking interpreter, the current execution model |
-| 4 | Started | LLVM backend, native binaries. So far a proof of concept: hand-written IR measures the three tiers, and a small emitter turns a subset of Ubel (int and bool functions, control flow, arena blocks) into LLVM IR that matches the interpreter (`docs/LLVM_POC.md`) |
-| 5 | Not started | Standard library, tooling, package manager |
+## How this documentation is organised
 
-Source files use the `.ubl` extension. There is no installable compiler
-or package manager yet; running Ubel Stratum today means building the
-interpreter from source, covered in [Getting Started](./getting-started.md).
+- **[Getting Started](./getting-started.md)** builds the tools and runs your
+  first program.
+- **The Guide** teaches the language one topic at a time. Every code
+  example is compiled by the project's CI against the real compiler, so an
+  example that no longer works fails the build instead of going stale.
+- **[The Tier Model](./tier-model.md)** is the part of Ubel that no other
+  language has. Read it once the basics are comfortable.
+- **[The error reference](./errors/index.md)** lists every diagnostic the
+  compiler can print, with a failing example, the exact output and the fix.
+  The playground links error codes straight to it.
+- **[Versions and releases](./versions.md)** explains the version picker at
+  the top of every page. No stable release has been published yet, so you are
+  reading the development docs, which track the `master` branch.
 
-The source, issue tracker, and full engineering documentation live at
-[github.com/MidManStudio/ubel_stratum](https://github.com/MidManStudio/ubel_stratum).
-A [browser playground](/playground/) runs the tokenizer, parser, semantic
-analyzer, and interpreter on arbitrary `.ubl` source without installing
-anything, and the [CI results](/results/) page tracks the fixture suite
-and benchmark history that back every change to the language.
+> Code blocks can be recoloured: use the palette button in the top bar (or
+> **Colours** in the playground) to change the syntax colours, pick a preset,
+> or share a palette. It is remembered in your browser.
