@@ -20,7 +20,7 @@ on:
       - "crates/core/**"
       - "crates/rd_parser/**"
       - "crates/cli/**"
-      - ".github/workflows/docs-examples.yml"
+      - ".github/workflows/doc-examples.yml"
   pull_request:
     paths:
       - "web/site/src/**"
