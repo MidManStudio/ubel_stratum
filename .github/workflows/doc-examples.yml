@@ -1,0 +1,57 @@
+name: Docs Examples
+
+# Compiles every annotated ```ubel example in the docs site with the real
+# `ubel` binary and fails when one no longer does what its page says: a
+# "this compiles" example that now has an error, or an "error TYPE-101"
+# example that now reports something else. See scripts/check_doc_examples.py
+# for the annotation format and docs/SITE_DOCS.md for how to write examples.
+#
+# Its own workflow, not a step in the site deploy, so a typo in a docs
+# example never blocks publishing the site. It runs on pushes and pull
+# requests that touch the docs or the compiler (a compiler change can break
+# an example without anyone editing the docs), and by hand.
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "web/site/src/**"
+      - "scripts/check_doc_examples.py"
+      - "crates/core/**"
+      - "crates/rd_parser/**"
+      - "crates/cli/**"
+      - ".github/workflows/docs-examples.yml"
+  pull_request:
+    paths:
+      - "web/site/src/**"
+      - "scripts/check_doc_examples.py"
+      - "crates/core/**"
+      - "crates/rd_parser/**"
+      - "crates/cli/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  examples:
+    name: Check documented examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ubel-docs-examples"
+
+      - name: Build the ubel CLI
+        run: cargo build -p ubel_stratum_cli
+
+      - name: Check the examples
+        run: python3 scripts/check_doc_examples.py --ubel target/debug/ubel
