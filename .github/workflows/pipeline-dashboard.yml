@@ -13,6 +13,15 @@ name: Deploy Site
 # Kept as its own workflow (not folded into ci-check.yml) because the
 # benchmark step is slow relative to a normal push check, and because this
 # produces a deployable artifact rather than a pass/fail gate.
+#
+# Versioned docs: the docs are built once per documentation version by
+# scripts/build_docs_versions.py, not once. /docs/next/ comes from this
+# checkout (master), /docs/vX.Y.Z/ from each git tag vX.Y.Z, /docs/latest/ is
+# the newest non-pre-release tag (or a copy of next until one exists), and
+# /docs/versions.json feeds the version picker. That is why the checkout
+# below fetches the whole history and every tag. To publish a version: tag
+# the commit (git tag v0.1.0 && git push origin v0.1.0) and run this
+# workflow; see docs/SITE_DOCS.md.
 
 on:
   push:
@@ -52,6 +61,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and all tags: the versioned docs build reads each
+          # release tag's web/site with `git archive`.
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -126,8 +139,11 @@ jobs:
           chmod +x /tmp/mdbook
           echo "/tmp" >> "$GITHUB_PATH"
 
-      - name: Build docs site
-        run: mdbook build web/site
+      - name: Build docs site (next, every release tag, latest)
+        # Writes dist/docs/{next,latest,vX.Y.Z}/, versions.json and the
+        # /docs/ redirect. With no release tag yet it builds next and a
+        # latest that is the same pages, and versions.json says latest: null.
+        run: python3 scripts/build_docs_versions.py --mdbook mdbook --out dist/docs
 
       # ── Playground (wasm) ─────────────────────────────────────────────
       - name: Build wasm playground crate
@@ -169,7 +185,6 @@ jobs:
       - name: Assemble dist/
         run: |
           mkdir -p dist/docs
-          cp -r web/site/book/* dist/docs/
           cp -r web/home/* dist/
           mkdir -p dist/shared
           cp -r web/shared/* dist/shared/
