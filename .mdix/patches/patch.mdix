@@ -1,13 +1,13 @@
 // Brought to u by MidManStudio
 //
-// AS0: the async and synchronization design record, and the corrections it forces in existing text.
-// The new document docs/ASYNC_SYNC_DESIGN.md comes in the tarball async-sync-design-replacements.tar.gz.
-// This template only edits existing files (5 anchored edits, each anchor occurs once):
-//   web/site/src/project-status.md   one active-work bullet and four known-gap bullets
-//   docs/MEMORY_MODEL.md, docs/PARSER_RULES.md   a pointer where the await rule is stated
-//   docs/MODULE_SYSTEM_IDEAS.md      a correction to its status paragraph (summon is not unbuilt)
+// MS0: the module system design record, and the pointers it forces in existing text.
+// The new document docs/MODULE_DESIGN.md comes in the tarball module-design-replacements.tar.gz.
+// This template only edits existing files (4 anchored edits, each anchor occurs once):
+//   docs/MODULE_SYSTEM_IDEAS.md     a pointer to the design record
+//   web/site/src/project-status.md  one active-work bullet and two known-gap bullets
+//   docs/TRAITS_DESIGN.md           the orphan rule row now points at where it is settled
 // No code is touched. Order does not matter: the two deliveries do not overlap.
-// Checked on a fresh clone of master 64fa62f with the real applier.
+// Checked on a fresh clone of master fe3865a with the real applier.
 
 @CONFIG(
   version    -> "1.0.0",
@@ -24,9 +24,8 @@
 
 @DATA(
   patch_files::
-    patch_replace_text("web/site/src/project-status.md", "- Still to decide: whether struct fields get default values. The literal", "- Async and synchronization are designed and not built (`docs/ASYNC_SYNC_DESIGN.md`, decided\n  2026-11-14): tasks run in parallel on a thread pool in every tier, `async` and `await` become\n  compiler-generated state machines, a compile-time rule decides what may be shared between\n  tasks, and the usual locks, atomics and channels ship. Next: the `using` cleanup, then the\n  async core\n- Still to decide: whether struct fields get default values. The literal")
-    patch_replace_text("web/site/src/project-status.md", "- `low`, `mid`, `high`, `with`, `using` and `Task` are reserved, so they", "- `async fn`, `await` and `Task<T>` type-check but cannot run: no program can build a `Task`,\n  an `async fn` call has its declared return type, and `await` does nothing at run time\n- `using` is parsed and type-checked but runs no cleanup at the end of its block\n- There are no threads, locks, atomics or channels, `SyncShared<T>` is single-threaded, and\n  `SyncShared.new` is LOW only\n- `summon` accepts any path and the interpreter ignores imports, so\n  `summon std.collections.List as L` followed by `L.new()` passes the check and stops with\n  `undefined name 'L'` when the program runs\n- `low`, `mid`, `high`, `with`, `using` and `Task` are reserved, so they")
-    patch_replace_text("docs/MEMORY_MODEL.md", "hard-gated to `@tier(high)` functions only, at the expression level.", "hard-gated to `@tier(high)` functions only, at the expression level. Decided\n2026-11-14 and not yet built: `await` and `async fn` open to every tier (`docs/ASYNC_SYNC_DESIGN.md`).")
-    patch_replace_text("docs/PARSER_RULES.md", "| Does `await` appear outside HIGH tier? | **Parser**: warn; **TierChecker**: hard error |", "| Does `await` appear outside HIGH tier? | **Parser**: warn; **TierChecker**: hard error (today; the rule is being opened to every tier, see `docs/ASYNC_SYNC_DESIGN.md`) |")
-    patch_replace_text("docs/MODULE_SYSTEM_IDEAS.md", "> Source: a separate conversation's brainstorm on Ubel's future module", "> **Correction, checked 2026-11-14 against the live build.** The status paragraph above is out of\n> date. The lexer, the parser (`from X summon [Y]`, see `docs/ubel.ebnf`), the AST and name\n> resolution already handle `summon`, and `package` is parsed. Resolution stops there: `summon`\n> accepts any path (`UnresolvedImport`, `NAME-003`, is defined and never reported), the\n> interpreter ignores imports, so `summon std.collections.List as L` followed by `L.new()` passes\n> the check and stops with `undefined name 'L'` when the program runs, and `pub` is recorded in\n> the symbol table and never read. The grammar that shipped is `from X summon [A, B]`, which\n> differs from the form this document writes.\n>\n> Source: a separate conversation's brainstorm on Ubel's future module")
+    patch_replace_text("docs/MODULE_SYSTEM_IDEAS.md", "> differs from the form this document writes.", "> differs from the form this document writes. The decisions of 2026-11-15 are in\n> `docs/MODULE_DESIGN.md`; this document stays as the list of parked ideas.")
+    patch_replace_text("web/site/src/project-status.md", "  async core", "  async core\n- Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a\n  module is a file named by its path, cycles between modules are allowed, everything is private\n  unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.\n  Next: single-file fixes for imports and initialization cycles, then multi-file checking")
+    patch_replace_text("web/site/src/project-status.md", "`undefined name 'L'` when the program runs", "`undefined name 'L'` when the program runs\n- `from m summon [a as b]` is accepted and imports both `a` and `b` as separate names\n- Constants or statics that depend on each other circularly pass the check and stop with\n  `undefined name` when the program runs")
+    patch_replace_text("docs/TRAITS_DESIGN.md", "the package that declares the trait or the type. |", "the package that declares the trait or the type. Settled 2026-11-15 in `docs/MODULE_DESIGN.md` (M2). |")
 )
