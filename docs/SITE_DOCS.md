@@ -54,8 +54,9 @@ structure visible; replace the `()` with a path when you write the page.
 | Folder | Holds |
 |--------|-------|
 | `guide/` | the language, one topic per page |
+| `memory/` | arenas and pools, ownership, references and lifetimes, edge structs |
 | `tooling/` | `ubel`, `ubel-lsp`, the playground, the native backend |
-| `reference/` | lookup material (built-ins, later the grammar) |
+| `reference/` | lookup material: built-ins, keywords and operators, the grammar |
 | `errors/` | the error reference, one page per family |
 | top level | introduction, getting started, tour, tier model, status, versions |
 
@@ -94,6 +95,20 @@ run the workflow by hand after one.
 Use a `text` block for compiler output, program output and shell sessions.
 Only `ubel` blocks are highlighted and tested.
 Prefer showing the *exact* output the compiler printed: run it and paste it.
+
+## The grammar page
+
+`reference/grammar.md` is **generated** from `docs/ubel.ebnf`: the text between
+its `grammar:begin` / `grammar:end` markers is the grammar file verbatim, and
+everything outside the markers is hand-written. After editing the grammar run
+
+```text
+python3 scripts/sync_grammar_page.py          # rewrite the page
+python3 scripts/sync_grammar_page.py --check  # exit 1 if it is out of date
+```
+
+`check_doc_examples.py` runs the same check, so the Docs Examples workflow
+fails when the grammar changes and the page does not follow.
 
 ## The error reference
 
@@ -168,6 +183,12 @@ tokenizer, and to the `.ubl-*` / `.cm-s-ubel .cm-ubl-*` rules in the theme CSS.
 
 The preview sample in the panel is a real Ubel program; if you change it, run
 it through `ubel check`.
+
+A palette that makes code unreadable must never trap a reader, so the script
+discards, on load, a saved palette whose plain-text colour is (nearly) the
+background colour, or a single token colour that is, and the stylesheets give
+every `--ubl-*` use a fallback value. The panel's Reset button is in its header
+for the same reason.
 
 ## Checklist for a docs change
 

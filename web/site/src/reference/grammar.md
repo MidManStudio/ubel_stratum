@@ -1,0 +1,635 @@
+# Grammar
+
+The formal grammar of Ubel Stratum, in EBNF. It is the project's reference for
+what is syntactically valid; the sections of the language it describes are
+taught, with examples, in [the Guide](../guide/values.md).
+
+## Reading it
+
+- `Name ::= ...` defines a rule. `"text"` is a literal token; `Name` is
+  another rule.
+- `A B` is a sequence, `A | B` an alternative, `A?` optional, `A*` zero or
+  more, `A+` one or more, and `( ... )` groups.
+- Text in `(* ... *)` is a comment. Many rules carry one explaining a
+  restriction the grammar alone cannot express.
+- Keywords are listed on [Keywords and operators](./keywords-and-operators.md),
+  which also gives the operator precedence the grammar leaves to the parser.
+
+The grammar describes syntax only. Whether a program that parses is also
+*valid* (types, tiers, ownership) is decided later, and reported as
+[a diagnostic](../errors/index.md). If the compiler accepts or rejects
+something this grammar says otherwise, that is a bug in one of the two, and
+worth reporting.
+
+The text below is copied from `docs/ubel.ebnf` in the repository, which is the
+source of truth.
+
+<!-- grammar:begin (generated from docs/ubel.ebnf by scripts/sync_grammar_page.py; do not edit by hand) -->
+
+```text
+(* Ubel Stratum Programming Language - EBNF Grammar v1.1.0 *)
+(* File Extension: .ubl *)
+(* Quantum-Ready Multi-Tier Systems Language *)
+(*                                                              *)
+(* DEFAULT TIER: HIGH (GC)                                      *)
+(* Functions without @tier annotation run in HIGH tier.         *)
+(* Annotate with @tier(mid) or @tier(low) to opt into          *)
+(* arena or manual memory management respectively.              *)
+
+(* ============================================================ *)
+(* PROGRAM STRUCTURE                                            *)
+(* ============================================================ *)
+
+Program       ::= PackageDecl? ImportList? ItemList?
+
+PackageDecl   ::= "package" QualifiedIdent
+
+(* ── Imports ── *)
+(* All imports use summon. Two forms:                           *)
+(*   summon std.collections.List                                *)
+(*   from std.collections summon [List, Dictionary]            *)
+(*   from std.collections summon List                          *)
+ImportList    ::= Import+
+
+Import        ::= "summon" QualifiedIdent ("as" Ident)?
+                | "from" QualifiedIdent "summon" ImportItems
+
+ImportItems   ::= "[" IdentList "]"
+                | Ident
+
+(* ── Top-level items ── *)
+ItemList      ::= Item+
+
+Item          ::= FunctionDecl
+                | StructDecl
+                | EnumDecl
+                | TraitDecl
+                | ImplBlock
+                | ExtendDecl
+                | ConstDecl
+                | StaticDecl
+                | TypeAlias
+
+(* ============================================================ *)
+(* DECLARATIONS                                                 *)
+(* ============================================================ *)
+
+(* ── Functions ──                                              *)
+(* No @tier annotation = HIGH tier (default)                   *)
+FunctionDecl  ::= TierAttr? Attributes? "pub"? "async"? "fn" Ident
+                  LifetimeParams? GenericParams? "(" ParamList? ")"
+                  ReturnSpec? Block
+
+ReturnSpec    ::= TypeExpr "!"?
+                | "Task" "<" TypeExpr ">" "!"?
+
+(* ── Tier Annotation ──                                        *)
+(* Constrains to exactly three valid values.                    *)
+TierAttr      ::= "@tier" "(" TierValue ")"
+TierValue     ::= "high" | "mid" | "low"
+
+(* ── Other attributes ── *)
+Attributes    ::= Attribute+
+Attribute     ::= "@" Ident ("(" AttributeArgList ")")?
+AttributeArgList ::= AttributeArg ("," AttributeArg)*
+AttributeArg  ::= Ident
+                | Literal
+                | Ident "=" Literal
+                | Ident "(" AttributeArgList ")"   (* nested: @cfg(not(debug)), @cfg(any(...)) *)
+
+(* An attribute list may apply to one following item, or to a whole
+   braced group of them — the block form applies every attribute in
+   the list to each item inside, with one exception: an item carrying
+   its own @tier keeps that tier rather than inheriting the block's.
+   See PARSER_RULES.md §5.7 for the exact merge rule. *)
+Item          ::= Attributes? Visibility? ItemBody
+                | Attributes "{" Item* "}"
+
+(* ── Parameters ── *)
+ParamList     ::= Param ("," Param)*
+Param         ::= "mut"? Ident TypeAnnotation? ("=" Expr)?
+                | "_" TypeAnnotation?
+                | "self"
+                | "mut" "self"
+                | "&" "self"
+                | "&" "mut" "self"
+
+(* "_" (Discard) has no name to bind and no default -- it exists only to
+   satisfy a callback/interface signature that requires an argument in
+   this position. Its declared type is still real: it's part of the
+   function's signature and checked at every call site like any other
+   parameter's, only the name is gone. Unlike "_" in pattern position
+   (see Pattern below), a discarded parameter can never be read back --
+   the expression grammar has no production for a bare "_" at all. *)
+
+(* ── Structs ── *)
+StructDecl    ::= "pub"? "edge"? "struct" Ident LifetimeParams? GenericParams? "{" StructBody "}"
+
+(* Struct members may be separated by optional "," ";" or just newline. *)
+StructBody    ::= StructMember (Separator? StructMember)* Separator?
+(* Separator is optional in all list contexts throughout the language.  *)
+(* A comma, semicolon, or plain newline/whitespace all delimit list items.  *)
+Separator     ::= "," | ";"
+
+StructMember  ::= FieldDecl
+                | MethodDecl
+                | PropertyDecl
+
+FieldDecl     ::= "pub"? Ident TypeAnnotation
+MethodDecl    ::= TierAttr? "pub"? "async"? "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec? Block
+
+PropertyDecl  ::= "pub"? Ident TypeAnnotation "{" PropertyGetter PropertySetter? "}"
+PropertyGetter ::= "get" Block
+PropertySetter ::= "set" Block
+
+(* ── Enums ── *)
+EnumDecl      ::= "pub"? "enum" Ident GenericParams? "{" EnumVariantList "}"
+EnumVariantList ::= EnumVariant ("," EnumVariant)* ","?
+EnumVariant   ::= Ident ("=" Expr)?
+                | Ident "(" TypeList ")"
+                | Ident "{" FieldDeclList "}"
+
+FieldDeclList ::= FieldDecl ("," FieldDecl)*
+
+(* ── Traits ── *)
+TraitDecl     ::= "pub"? "trait" Ident GenericParams? SuperTraits? ("{" TraitItem* "}")?
+SuperTraits   ::= ":" BoundList
+TraitItem     ::= MethodSignature
+                | AssociatedType
+                | DefaultMethod
+
+MethodSignature ::= Attributes? "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec?
+AssociatedType  ::= "type" Ident
+DefaultMethod   ::= Attributes? "fn" Ident GenericParams? "(" ParamList? ")" ReturnSpec? Block
+(* A `@tier(...)` on a method signature or default method is that method's tier;
+   a `@tier(...)` on the trait (Item attributes, or a block around it) is the
+   default for its methods. See docs/TRAITS_TIERS_SPEC.md. *)
+
+(* ── Impl ── *)
+ImplBlock     ::= "impl" GenericParams? (QualifiedIdent GenericArgs? "for")? TypeExpr "{" ImplItem* "}"
+ImplItem      ::= MethodDecl
+
+(* ── Extend ── *)
+(* Adds methods to existing types without modifying them.      *)
+ExtendDecl    ::= "extend" GenericParams? TypeExpr ("{" ExtendItem* "}")?
+ExtendItem    ::= MethodDecl
+
+(* ── Constants, Statics and Type Aliases ── *)
+ConstDecl     ::= "const" Ident TypeAnnotation? "=" Expr
+
+(* A mutable module-level global. The type annotation is REQUIRED, so
+   that no function body takes part in deciding it. A static lives in
+   the HIGH tier: only `@tier(high)` code may read or write it
+   (TIER-015), no `@tier(mid|low)` may be written on the item itself
+   (PARSE-004), and a `const` initializer may not read one (NAME-008).
+   `pub` is recorded and takes effect once `summon` lands. The
+   initializer runs once, before `main`, and may refer to constants and
+   statics declared later in the file. *)
+StaticDecl    ::= "static" Ident ":" TypeExpr "=" Expr
+TypeAlias     ::= "type" Ident GenericParams? "=" TypeExpr
+
+(* ============================================================ *)
+(* TYPES                                                        *)
+(* ============================================================ *)
+
+TypeAnnotation ::= ":" TypeExpr
+
+TypeExpr      ::= PrimitiveType
+                | CollectionType
+                | GenericType
+                | FunctionType
+                | TupleType
+                | ArrayType
+                | SliceType
+                | FallibleType
+                | TaskType
+                | ReferenceType
+                | OptionalType
+                | Ident
+
+(* ── Primitive types ── *)
+PrimitiveType ::= "int" | "uint" | "long" | "ulong" | "short" | "ushort"
+                | "byte" | "ubyte" | "float" | "double" | "bool"
+                | "char" | "string" | "void"
+                | "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64"
+                | "f32" | "f64"
+                | "isize" | "usize"
+
+(* ── Built-in collection types ──                              *)
+(* These are the canonical names. Vec, HashMap etc are not     *)
+(* Ubel vocabulary.                                             *)
+CollectionType ::= "List" ("<" TypeExpr ">")?
+                 | "Dictionary" ("<" TypeExpr "," TypeExpr ">")?
+                 | "Set" ("<" TypeExpr ">")?
+                 | "Queue" ("<" TypeExpr ">")?
+                 | "Stack" ("<" TypeExpr ">")?
+
+(* ── Composite and reference types ── *)
+GenericType   ::= Ident "<" TypeList ">"
+TypeList      ::= TypeExpr ("," TypeExpr)*
+
+TupleType     ::= "(" TypeExpr "," TypeExpr ("," TypeExpr)* ")"
+
+ArrayType     ::= "[" Integer "]" TypeExpr
+SliceType     ::= "[]" TypeExpr
+
+FallibleType  ::= TypeExpr "!"
+TaskType      ::= "Task" ("<" TypeExpr ">")?
+ReferenceType ::= "&" "mut"? LifetimeLabel? TypeExpr
+OptionalType  ::= TypeExpr "?"
+
+FunctionType  ::= "fn" "(" TypeList? ")" ReturnSpec?
+
+(* ── Generics ── *)
+GenericParams ::= "<" GenericParam ("," GenericParam)* ">"
+GenericParam  ::= Ident (":" BoundList)?
+BoundList     ::= TraitBound ("+" TraitBound)*
+TraitBound    ::= Ident GenericArgs?
+GenericArgs   ::= "<" TypeExpr ("," TypeExpr)* ">"
+
+(* ── Lifetimes ──                                              *)
+(* Named using [lifetime L] syntax, NOT Rust's 'a style.       *)
+LifetimeParams ::= "[" LifetimeParam ("," LifetimeParam)* "]"
+LifetimeParam  ::= "lifetime" Ident ("where" LifetimeConstraint)?
+LifetimeConstraint ::= Ident "outlives" Ident
+LifetimeLabel  ::= Ident  (* refers to a declared lifetime *)
+
+(* ============================================================ *)
+(* STATEMENTS                                                   *)
+(* ============================================================ *)
+
+Block         ::= "{" Statement* "}"
+
+Statement     ::= LetStmt
+                | AssignStmt
+                | ReturnStmt
+                | FailStmt
+                | IfStmt
+                | MatchStmt
+                | ForStmt
+                | WhileStmt
+                | LoopStmt
+                | BreakStmt
+                | ContinueStmt
+                | WithStmt
+                | UsingStmt
+                | ExtractStmt
+                | DeferStmt
+                | TryBlock
+                | UnsafeBlock
+                | ExprStmt
+
+(* ── Variable binding ── *)
+LetStmt       ::= "let" "mut"? BindingTarget TypeAnnotation? "=" Expr
+AssignStmt    ::= Expr AssignOp Expr
+                | BindingTarget ":=" Expr   (* shorthand let *)
+
+AssignOp      ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
+                | "&=" | "|=" | "^=" | "<<=" | ">>="
+
+(* ── Return and fail ── *)
+ReturnStmt    ::= "return" Expr?
+FailStmt      ::= "fail" Expr    (* raises an error, like throw *)
+
+(* ── Control flow ── *)
+IfStmt        ::= "if" Expr Block ("elif" Expr Block)* ("else" Block)?
+MatchStmt     ::= "match" Expr "{" MatchArm+ "}"
+MatchArm      ::= Pattern ("where" Expr)? "=>" (Expr | Block) ","?
+
+ForStmt       ::= "for" BindingTarget "in" Expr Block
+WhileStmt     ::= "while" Expr Block
+LoopStmt      ::= "loop" Block
+BreakStmt     ::= "break" Expr?
+ContinueStmt  ::= "continue"
+
+(* ── Memory management ──                                      *)
+(* with = scoped arena/allocator block (MID/LOW tier)          *)
+(* using = RAII resource cleanup (any tier)                     *)
+WithStmt      ::= "with" AllocatorExpr Block
+AllocatorExpr ::= "arena" "(" SizeExpr ")"
+                | "pool" "<" TypeExpr ">" "(" SizeExpr ")"
+                | "gc"
+                | "heap"
+
+SizeExpr      ::= Expr
+                | Integer SizeUnit
+SizeUnit      ::= "B" | "KB" | "MB" | "GB"
+
+UsingStmt     ::= "using" UsingBinding ("," UsingBinding)* Block
+UsingBinding  ::= "let" "mut"? Ident "=" Expr
+
+(* ── Destructuring ──                                          *)
+(* extract pulls values out of tuples, arrays, structs, objects *)
+ExtractStmt   ::= "extract" DestructurePattern "=" Expr
+
+DestructurePattern ::= TupleDestructure
+                     | ArrayDestructure
+                     | StructDestructure
+
+TupleDestructure  ::= "(" DestructureElem ("," DestructureElem)* ")"
+ArrayDestructure  ::= "[" DestructureElem ("," DestructureElem)* ("," "..." Ident?)? "]"
+StructDestructure ::= "{" FieldDestructure ("," FieldDestructure)* "}"
+
+DestructureElem   ::= Ident | "_" | DestructurePattern
+FieldDestructure  ::= Ident ("=" DestructurePattern)?
+
+BindingTarget ::= Ident | DestructurePattern
+
+(* ── Other statements ── *)
+DeferStmt     ::= "defer" Expr
+TryBlock      ::= "try" Block ("catch" "(" Ident ")" Block)?
+UnsafeBlock   ::= "unsafe" Block
+ExprStmt      ::= Expr
+
+(* ============================================================ *)
+(* EXPRESSIONS                                                  *)
+(* ============================================================ *)
+
+Expr          ::= PipeExpr
+
+(* ── Pipe operator ──                                          *)
+(* data |> fn |> fn? chains calls left to right                *)
+PipeExpr      ::= AssignExpr ("|>" AssignExpr)*
+
+AssignExpr    ::= OrExpr (AssignOp OrExpr)?
+
+OrExpr        ::= AndExpr (("or" | "||") AndExpr)*
+AndExpr       ::= NotExpr (("and" | "&&") NotExpr)*
+NotExpr       ::= ("not" | "!") NotExpr | CompareExpr
+CompareExpr   ::= RangeExpr (CompareOp RangeExpr)?
+CompareOp     ::= "==" | "!=" | "<" | ">" | "<=" | ">="
+
+RangeExpr     ::= AddExpr (".." AddExpr)?   (* inclusive end uses ..= *)
+                | AddExpr ("..=" AddExpr)?
+
+AddExpr       ::= MultExpr (("+" | "-") MultExpr)*
+MultExpr      ::= UnaryExpr (("*" | "/" | "%") UnaryExpr)*
+
+UnaryExpr     ::= ("-" | "+" | "~") UnaryExpr
+                | "await" UnaryExpr
+                | PostfixExpr
+
+PostfixExpr   ::= PrimaryExpr Postfix*
+
+Postfix       ::= "(" ArgList? ")"                (* call         *)
+                | "[" Expr "]"                    (* index        *)
+                | "." Ident                       (* field access *)
+                | "." Ident "(" ArgList? ")"      (* method call  *)
+                | "?"                             (* propagate error *)
+                | "?."                            (* optional chain *)
+                | "?." Ident "(" ArgList? ")"
+
+ArgList       ::= Arg ("," Arg)*
+Arg           ::= Expr | Ident "=" Expr   (* named arg *)
+
+(* ── Primary expressions ── *)
+PrimaryExpr   ::= Literal
+                | Ident
+                | "self"
+                | "null"
+                | LambdaExpr
+                | IfExpr
+                | MatchExpr
+                | BlockExpr
+                | TupleExpr
+                | ArrayExpr
+                | DictExpr
+                | AnonObjectExpr
+                | StructLitExpr
+                | LinqExpr
+                | "(" Expr ")"
+
+(* ── Lambdas ── *)
+(* A lambda has no return type: the result type is inferred from the body.   *)
+(* `fn(x: int) string { ... }` is rejected with PARSE-004 on the annotation. *)
+LambdaExpr    ::= "fn" "(" ParamList? ")" Block
+                | "fn" "(" ParamList? ")" Expr
+                | "fn" Ident Expr    (* single-param shorthand *)
+
+(* ── Collection literals ── *)
+TupleExpr     ::= "(" Expr "," Expr ("," Expr)* ")"
+ArrayExpr     ::= "[" ExprList? "]"
+DictExpr      ::= "{" DictEntry ("," DictEntry)* ","? "}"
+DictEntry     ::= Expr "=" Expr     (* key = value *)
+
+(* ── Anonymous object literal ──                               *)
+(* let user = { name = "Alice", age = 30 }                     *)
+(* Fields use = not :, consistent with struct init.             *)
+AnonObjectExpr ::= "{" ObjectField ("," ObjectField)* ","? "}"
+ObjectField    ::= Ident "=" Expr
+
+StructLitExpr  ::= QualifiedIdent "{" FieldInitList? "}"
+FieldInitList  ::= FieldInit ("," FieldInit)* ","?
+FieldInit      ::= Ident "=" Expr
+
+(* ── Inline control expressions ── *)
+IfExpr        ::= "if" Expr Block ("elif" Expr Block)* ("else" Block)?
+MatchExpr     ::= "match" Expr "{" MatchArm+ "}"
+BlockExpr     ::= Block
+
+(* ── LINQ query syntax (HIGH tier only) ──                     *)
+LinqExpr      ::= "from" Ident "in" Expr
+                  LinqClause*
+                  "select" Expr
+
+LinqClause    ::= "where" Expr
+                | "orderby" Expr ("ascending" | "descending")?
+                | "groupby" Expr
+                | "let" Ident "=" Expr
+
+(* ── or-else shorthand in expressions ──                        *)
+(* validate(user) or continue                                   *)
+(* option or defaultValue                                       *)
+OrElseExpr    ::= Expr "or" (Expr | "continue" | "break" | "return")
+
+(* ============================================================ *)
+(* PATTERNS                                                     *)
+(* ============================================================ *)
+
+Pattern       ::= WildcardPat
+                | LiteralPat
+                | IdentPat
+                | TuplePat
+                | ArrayPat
+                | StructPat
+                | EnumPat
+                | RangePat
+                | OrPat
+                | ExtractPat
+
+WildcardPat   ::= "_"
+LiteralPat    ::= Literal
+IdentPat      ::= Ident
+
+TuplePat      ::= "(" Pattern ("," Pattern)+ ")"
+ArrayPat      ::= "[" Pattern ("," Pattern)* ("," "..." Ident?)? "]"
+
+StructPat     ::= QualifiedIdent "{" FieldPatList? "}"
+FieldPatList  ::= FieldPat ("," FieldPat)*
+FieldPat      ::= Ident ("=" Pattern)?
+
+EnumPat       ::= QualifiedIdent ("(" PatternList ")" | "{" FieldPatList "}")?
+PatternList   ::= Pattern ("," Pattern)*
+
+RangePat      ::= Literal ".." Literal
+                | Literal "..=" Literal
+
+OrPat         ::= Pattern "|" Pattern
+
+(* extract keyword usable inside match patterns                 *)
+ExtractPat    ::= "extract" "{" FieldPatList "}"
+
+(* ============================================================ *)
+(* BUILT-IN FUNCTIONS                                           *)
+(* ============================================================ *)
+(* These are always available without summon.                   *)
+(* They are not in the grammar as special syntax because        *)
+(* they parse as regular ident calls — listed here for spec     *)
+(* clarity only.                                                *)
+(*                                                              *)
+(* println(value...)   - print line to stdout                   *)
+(* print(value...)     - print without newline                  *)
+(* log(value...)       - structured log output                  *)
+(* panic(message)      - unrecoverable error                    *)
+(* assert(cond, msg?)  - debug assertion                        *)
+(* typeof(expr)        - type name as string                    *)
+(* sizeof(type)        - size in bytes                          *)
+(*                                                              *)
+(* Advanced formatting lives in std.fmt:                        *)
+(*   std.fmt.pad(value, width)                                  *)
+(*   std.fmt.hex(value)                                         *)
+(*   std.fmt.fixed(value, decimals)                             *)
+
+(* ============================================================ *)
+(* LITERALS                                                     *)
+(* ============================================================ *)
+
+Literal       ::= IntLit
+                | FloatLit
+                | DoubleLit
+                | StringLit
+                | InterpolatedString
+                | VerbatimString
+                | InterpolatedVerbatimString
+                | CharLit
+                | BoolLit
+                | "null"
+
+IntLit        ::= DecimalLit | HexLit | BinaryLit
+DecimalLit    ::= Digit (Digit | "_")* IntSuffix?
+HexLit        ::= "0x" HexDigit (HexDigit | "_")* IntSuffix?
+BinaryLit     ::= "0b" BinDigit (BinDigit | "_")* IntSuffix?
+
+(* Rust-named widths only -- there's no C#-style suffix family (byte/
+   short/long/etc. never take a literal suffix; cast with `as` instead).
+   Digit text is parsed as an unsigned 64-bit magnitude regardless of
+   suffix, so any of these -- suffixed or not -- can hold up to
+   `18446744073709551615` (u64::MAX); the suffix (explicit here, or an
+   implicit `u64` the lexer applies on your behalf to an unsuffixed
+   literal whose value exceeds `i64::MAX`, since there is no other way
+   such a value could ever be written) is what's checked at compile
+   time against its own type's actual range -- a value that doesn't fit
+   the suffix it's given (`300u8`) is a compile error (`TYPE-120`), not
+   a silent wraparound. A suffixed literal directly under a unary `-`
+   (`-128i8`) is special-cased to allow that type's full signed range,
+   including its most-negative value, matching how Rust's own compiler
+   treats a negated literal.
+
+   An UNSUFFIXED literal has no fixed type in the grammar. Sema types it
+   from where it is used (`let x: u8 = 5`, `f(3)` for an `i16`
+   parameter, `n + 1` for a `u32` `n`, a `match` pattern against a
+   `u8`) and applies the same `TYPE-120` range check to the type the
+   context picked. With nothing to constrain it, it is a plain `int`.
+   An integer literal never becomes a float implicitly. *)
+IntSuffix     ::= "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64"
+                | "isize" | "usize"
+
+FloatLit      ::= DecimalLit "." (Digit | "_")* ("e" | "E") ("+" | "-")? DecimalLit ("f" | "F")
+                | DecimalLit "." (Digit | "_")* ("f" | "F")
+                | DecimalLit ("f" | "F")
+
+DoubleLit     ::= DecimalLit "." (Digit | "_")*
+                | DecimalLit ("e" | "E") ("+" | "-")? DecimalLit
+
+(* Simple string: "hello\nworld"                                *)
+StringLit     ::= '"' StringChar* '"'
+StringChar    ::= AnyCharExcept('"' | '\') | EscapeSeq
+EscapeSeq     ::= '\' ('"' | '\' | 'n' | 't' | 'r' | '0')
+
+(* Interpolated string: $"Hello {name}!"                        *)
+InterpolatedString ::= '$' '"' InterpChar* '"'
+InterpChar    ::= AnyCharExcept('"' | '\' | '{') | EscapeSeq
+                | '\' '{' | '\' '}'    (* escaped braces       *)
+                | '{' Expr '}'          (* interpolation hole   *)
+
+(* Verbatim string: @"C:\path\to\file"                          *)
+(* Backslashes are literal. Escape a quote by doubling it: ""  *)
+VerbatimString ::= '@' '"' VerbatimChar* '"'
+VerbatimChar  ::= AnyCharExcept('"') | '""'
+
+(* Interpolated verbatim: $@"C:\Users\{name}"                   *)
+InterpolatedVerbatimString ::= '$' '@' '"' InterpVerbatimChar* '"'
+InterpVerbatimChar ::= AnyCharExcept('"' | '{') | '""' | '{' Expr '}'
+
+CharLit       ::= "'" (AnyCharExcept("'" | '\') | EscapeSeq) "'"
+BoolLit       ::= "true" | "false"
+
+(* ============================================================ *)
+(* IDENTIFIERS AND PRIMITIVES                                   *)
+(* ============================================================ *)
+
+Ident         ::= (Letter | "_") (Letter | Digit | "_")*
+QualifiedIdent ::= Ident ("." Ident)*
+
+ExprList      ::= Expr ("," Expr)*
+IdentList     ::= Ident ("," Ident)*
+
+Letter        ::= [a-zA-Z]
+Digit         ::= [0-9]
+HexDigit      ::= [0-9a-fA-F]
+BinDigit      ::= "0" | "1"
+Integer       ::= Digit+
+
+(* ============================================================ *)
+(* COMMENTS                                                     *)
+(* ============================================================ *)
+
+LineComment   ::= "//" AnyCharExcept(LineEnd)* LineEnd
+BlockComment  ::= "/*" (BlockComment | AnyCharExcept("*/"))* "*/"
+                  (* nested block comments are supported *)
+DocComment    ::= "/**" AnyCharExcept("*/")* "*/"
+                | "/*!" AnyCharExcept("*/")* "*/"
+LineEnd       ::= "\n" | "\r\n"
+
+(* ============================================================ *)
+(* TIER SEMANTICS SUMMARY                                       *)
+(* ============================================================ *)
+(*                                                              *)
+(* HIGH (default) - Garbage collected                           *)
+(*   async/await allowed                                        *)
+(*   LINQ syntax allowed                                        *)
+(*   List, Dictionary, etc are GC-managed                       *)
+(*   No manual memory management                               *)
+(*                                                              *)
+(* MID - Arena allocated                                        *)
+(*   "with arena(size) { }" required for allocation             *)
+(*   Zero-copy inter-tier via callbacks, iterators, views       *)
+(*   No async/await                                             *)
+(*   No LINQ query syntax (use method chains)                   *)
+(*                                                              *)
+(* LOW - Manual ownership                                       *)
+(*   Rust-style borrow checker enforced                         *)
+(*   "edge struct" for manual heap nodes                        *)
+(*   Lifetime annotations required for references               *)
+(*   No async/await, no GC, no arena                           *)
+(*                                                              *)
+(* Tier boundaries:                                             *)
+(*   HIGH can call MID via callback/iterator/view pattern       *)
+(*   HIGH can call LOW directly (return values are copied/moved)*)
+(*   MID cannot call HIGH (would escape arena lifetime)         *)
+(*   LOW cannot call HIGH or MID (no GC/arena available)        *)
+```
+
+<!-- grammar:end -->

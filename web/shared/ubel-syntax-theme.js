@@ -127,9 +127,33 @@
       if (current[t.id] && current[t.id] !== defaults[t.id]) style.setProperty(t.css, current[t.id]);
       else style.removeProperty(t.css);
     });
+    if (ui && !ui.panel.hidden) refreshPanel();   // keep an open panel in step with the page
   }
 
   function effective(id) { return current[id] || defaults[id]; }
+
+  // Colours that make code unreadable are never what a reader wants, and a
+  // saved palette that does so would trap them on every page until they found
+  // the reset button. So on load: if plain text is (nearly) the background
+  // colour, drop the whole saved palette; if one token is, drop just that
+  // override. The reader's other choices survive. (Below MIN_CONTRAST they
+  // are still allowed, with a warning in the panel: that is their call.)
+  var INVISIBLE = 1.5;
+  function healSavedPalette() {
+    var changed = false;
+    if (contrast(effective('text'), effective('bg')) < INVISIBLE) {
+      current = {}; changed = true;
+    } else {
+      TOKENS.forEach(function (t) {
+        if (t.id === 'bg' || t.id === 'text' || !current[t.id]) return;
+        if (contrast(current[t.id], effective('bg')) < INVISIBLE) { delete current[t.id]; changed = true; }
+      });
+    }
+    if (changed) {
+      try { console.warn('Ubel docs: discarded a saved syntax palette whose colours were unreadable.'); } catch (e) { /* no console */ }
+      applyToPage(); save();
+    }
+  }
 
   // ── WCAG contrast, to warn about unreadable choices ─────────────────
   function luminance(hex) {
@@ -179,6 +203,9 @@
     '.ubel-syn-panel.ubel-syn-panel-float{top:auto;bottom:4rem}',
     '.ubel-syn-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem}',
     '.ubel-syn-head strong{font-family:var(--font-display,Georgia,serif);font-size:1rem}',
+    '.ubel-syn-head-actions{display:flex;align-items:center;gap:.4rem}',
+    '.ubel-syn-reset{cursor:pointer;background:var(--panel-alt,#2A2520);color:var(--text,#EDE6DA);border:1px solid var(--border,#3A342C);border-radius:5px;padding:.35rem .65rem;font:inherit;font-size:.78rem}',
+    '.ubel-syn-reset:hover{border-color:var(--tok,#C9A46A)}',
     '.ubel-syn-x{background:none;border:0;color:inherit;font-size:1.3rem;line-height:1;cursor:pointer;padding:.2rem .5rem}',
     '.ubel-syn-panel select,.ubel-syn-panel input[type=text],.ubel-syn-panel textarea{width:100%;box-sizing:border-box;background:var(--panel-alt,#2A2520);color:var(--text,#EDE6DA);border:1px solid var(--border,#3A342C);border-radius:5px;padding:.45rem .5rem;font:inherit}',
     '.ubel-syn-rows{display:grid;grid-template-columns:auto 1fr auto;gap:.45rem .6rem;align-items:center;margin:.7rem 0}',
@@ -194,6 +221,8 @@
     '.ubel-syn-panel details{margin-top:.7rem}',
     '.ubel-syn-panel textarea{height:5.5rem;font-family:var(--font-mono,monospace);font-size:.75rem;margin:.4rem 0}',
     '.ubel-syn-note{color:var(--text-muted,#9C9284);font-size:.75rem;margin:.5rem 0 0}',
+    '.ubel-syn-alert{margin:.5rem 0;padding:.5rem .6rem;border:1px solid #e0a030;border-radius:5px;color:#e0a030;font-size:.78rem}',
+    '.ubel-syn-alert[hidden]{display:none}',
     '@media (max-width:640px){.ubel-syn-panel{top:auto;bottom:0;right:0;left:0;width:auto;max-height:80vh;border-radius:12px 12px 0 0}}'
   ].join('\n');
 
@@ -239,6 +268,7 @@
         ui.rows[t.id].warn.textContent = ratio < 3 ? 'low contrast' : '';
       }
     });
+    ui.alert.hidden = contrast(effective('text'), effective('bg')) >= 3;
     ui.preset.value = detectPreset();
     if (window.UbelSyntax) ui.previewCode.innerHTML = window.UbelSyntax.highlight(SAMPLE);
     else ui.previewCode.textContent = SAMPLE;
@@ -249,11 +279,12 @@
     var panel = el('div', { 'class': 'ubel-syn-panel', role: 'dialog', 'aria-label': 'Syntax colours', hidden: '' });
     panel.innerHTML =
       '<div class="ubel-syn-head"><strong>Syntax colours</strong>' +
-      '<button type="button" class="ubel-syn-x" aria-label="Close">&times;</button></div>' +
+      '<span class="ubel-syn-head-actions"><button type="button" class="ubel-syn-reset">Reset to default</button>' +
+      '<button type="button" class="ubel-syn-x" aria-label="Close">&times;</button></span></div>' +
       '<label>Preset <select class="ubel-syn-preset"></select></label>' +
       '<div class="ubel-syn-rows"></div>' +
+      '<p class="ubel-syn-alert" hidden>Code will be hard to read: plain text and the background are too close. Pick a preset or press Reset.</p>' +
       '<div class="ubel-syn-preview"><pre><code class="language-ubel" data-ubel-highlighted="1"></code></pre></div>' +
-      '<div class="ubel-syn-actions"><button type="button" class="ubel-syn-reset">Reset to default</button></div>' +
       '<details><summary>Share or import a palette</summary>' +
       '<textarea class="ubel-syn-io" spellcheck="false" aria-label="Palette as JSON"></textarea>' +
       '<div class="ubel-syn-actions"><button type="button" class="ubel-syn-copy">Copy</button>' +
@@ -316,7 +347,7 @@
       setTimeout(function () { ev.target.textContent = 'Apply pasted JSON'; }, 1800);
     });
 
-    return { panel: panel, rows: rows, preset: presetSel, previewCode: panel.querySelector('code'), io: io };
+    return { panel: panel, rows: rows, preset: presetSel, previewCode: panel.querySelector('code'), io: io, alert: panel.querySelector('.ubel-syn-alert') };
   }
 
   function setOpen(open) {
@@ -344,7 +375,7 @@
       container.appendChild(btn);
     }
     document.body.appendChild(built.panel);
-    ui = { btn: btn, panel: built.panel, rows: built.rows, preset: built.preset, previewCode: built.previewCode, io: built.io };
+    ui = { btn: btn, panel: built.panel, rows: built.rows, preset: built.preset, previewCode: built.previewCode, io: built.io, alert: built.alert };
 
     btn.addEventListener('click', function () { setOpen(ui.panel.hidden); });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !ui.panel.hidden) { setOpen(false); btn.focus(); } });
@@ -367,6 +398,7 @@
   readDefaults();
   current = load();
   applyToPage();
+  healSavedPalette();
 
   window.addEventListener('storage', function (e) {
     if (e.key !== STORAGE_KEY) return;

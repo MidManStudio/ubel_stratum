@@ -18,16 +18,16 @@
 - [Collections](./guide/collections.md)
 - [Generics and traits](./guide/generics-traits.md)
 - [Optionals and failure](./guide/errors-and-optionals.md)
-- [Modules and imports]()
-- [Async]()
+- [Modules and imports](./guide/modules.md)
+- [Async](./guide/async.md)
 
 # Memory and tiers
 
 - [The Tier Model](./tier-model.md)
-- [Arenas and pools]()
-- [Ownership: Unique, Shared, SyncShared]()
-- [References, borrowing and lifetimes]()
-- [Edge structs and cross-tier patterns]()
+- [Arenas and pools](./memory/arenas-and-pools.md)
+- [Ownership: Unique, Shared, SyncShared](./memory/ownership.md)
+- [References, borrowing and lifetimes](./memory/references-and-lifetimes.md)
+- [Edge structs and cross-tier patterns](./memory/edge-structs.md)
 
 # Tooling
 
@@ -38,8 +38,8 @@
 # Reference
 
 - [Built-in functions](./reference/builtins.md)
-- [Grammar]()
-- [Keywords and operators]()
+- [Grammar](./reference/grammar.md)
+- [Keywords and operators](./reference/keywords-and-operators.md)
 - [Errors and diagnostics](./errors/index.md)
   - [Lexical errors (LEX)](./errors/lex.md)
   - [Parse errors (PARSE)](./errors/parse.md)

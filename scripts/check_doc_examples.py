@@ -18,6 +18,9 @@ rendered page:
 A ```ubel block with no annotation is reported as "untested". Pass --strict
 to make that a failure once a chapter is fully annotated.
 
+It also checks that the generated grammar page (reference/grammar.md) is in
+sync with docs/ubel.ebnf, see scripts/sync_grammar_page.py.
+
 Usage:
     cargo build -p ubel_stratum_cli
     python3 scripts/check_doc_examples.py                # default paths
@@ -135,6 +138,17 @@ def main():
                 else:
                     failed += 1
                     failures.append((where, msg))
+
+    # The grammar page is generated from docs/ubel.ebnf; fail if it has drifted.
+    grammar_page = os.path.join(args.root, "reference", "grammar.md")
+    ebnf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "ubel.ebnf")
+    if os.path.exists(grammar_page) and os.path.exists(ebnf):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import sync_grammar_page
+        if sync_grammar_page.sync(grammar_page, ebnf, check=True):
+            print("grammar page: in sync with docs/ubel.ebnf")
+        else:
+            failures.append((grammar_page, "out of date with docs/ubel.ebnf; run scripts/sync_grammar_page.py"))
 
     for where, msg in failures:
         print("FAIL %s: %s" % (where, msg))

@@ -58,6 +58,15 @@ code, pre, .hljs {
    reader-customisable --ubl-bg / --ubl-text (see /shared/ubel-theme.css and
    /shared/ubel-syntax-theme.js), so they are styled there, not here. */
 
+/* The same two properties, repeated here on purpose: this file always loads
+   with the page, while /shared/ubel-theme.css arrives through an @import that
+   a content blocker or a failed request can drop. With the fallbacks, Ubel
+   code is readable either way. */
+pre > code.language-ubel {
+    background: var(--ubl-bg, #211D19);
+    color: var(--ubl-text, #EDE6DA);
+}
+
 /* Compiler output quoted in the docs (```text blocks: diagnostics, CLI
    output) stays plain monospace on the panel colour. */
 pre > code.language-text,

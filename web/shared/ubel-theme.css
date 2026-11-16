@@ -47,41 +47,43 @@
   --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* Rendered code (docs site, anything run through UbelSyntax.highlight). */
-.ubl-keyword { color: var(--ubl-keyword); }
-.ubl-type    { color: var(--ubl-type); }
-.ubl-tier    { color: var(--ubl-tier); font-weight: 600; }
-.ubl-string  { color: var(--ubl-string); }
-.ubl-number  { color: var(--ubl-number); }
-.ubl-comment { color: var(--ubl-comment); font-style: italic; }
-.ubl-attr    { color: var(--ubl-attr); }
-.ubl-fn      { color: var(--ubl-fn); }
-.ubl-const   { color: var(--ubl-const); }
+/* Rendered code (docs site, anything run through UbelSyntax.highlight).
+   Every use of a --ubl-* variable carries the default as a fallback, so a
+   missing or unloaded variable can never leave code blank or transparent. */
+.ubl-keyword { color: var(--ubl-keyword, #81a1c1); }
+.ubl-type    { color: var(--ubl-type, #8fbcbb); }
+.ubl-tier    { color: var(--ubl-tier, #bf616a); font-weight: 600; }
+.ubl-string  { color: var(--ubl-string, #ebcb8b); }
+.ubl-number  { color: var(--ubl-number, #C9A46A); }
+.ubl-comment { color: var(--ubl-comment, #6b7a99); font-style: italic; }
+.ubl-attr    { color: var(--ubl-attr, #b48ead); }
+.ubl-fn      { color: var(--ubl-fn, #88c0d0); }
+.ubl-const   { color: var(--ubl-const, #d08770); }
 
 pre > code.language-ubel {
-  background: var(--ubl-bg);
-  color: var(--ubl-text);
+  background: var(--ubl-bg, #211D19);
+  color: var(--ubl-text, #EDE6DA);
 }
 
 /* CodeMirror 5, mode "ubel" (the playground editor). The mode returns
    "ubl-keyword" and friends, which CodeMirror turns into cm-ubl-keyword.
    Theme name is "ubel": new CodeMirror({ mode: 'ubel', theme: 'ubel' }). */
 .cm-s-ubel.CodeMirror {
-  background: var(--ubl-bg);
-  color: var(--ubl-text);
+  background: var(--ubl-bg, #211D19);
+  color: var(--ubl-text, #EDE6DA);
 }
-.cm-s-ubel .CodeMirror-gutters { background: var(--ubl-bg); border-right: 1px solid var(--border); }
+.cm-s-ubel .CodeMirror-gutters { background: var(--ubl-bg, #211D19); border-right: 1px solid var(--border); }
 .cm-s-ubel .CodeMirror-linenumber { color: var(--text-muted); }
-.cm-s-ubel .CodeMirror-cursor { border-left: 2px solid var(--ubl-text); }
+.cm-s-ubel .CodeMirror-cursor { border-left: 2px solid var(--ubl-text, #EDE6DA); }
 .cm-s-ubel .CodeMirror-selected { background: rgba(128, 128, 128, 0.28); }
 .cm-s-ubel .CodeMirror-activeline-background { background: rgba(128, 128, 128, 0.10); }
-.cm-s-ubel .CodeMirror-matchingbracket { color: inherit !important; outline: 1px solid var(--ubl-keyword); }
-.cm-s-ubel .cm-ubl-keyword { color: var(--ubl-keyword); }
-.cm-s-ubel .cm-ubl-type    { color: var(--ubl-type); }
-.cm-s-ubel .cm-ubl-tier    { color: var(--ubl-tier); font-weight: 600; }
-.cm-s-ubel .cm-ubl-string  { color: var(--ubl-string); }
-.cm-s-ubel .cm-ubl-number  { color: var(--ubl-number); }
-.cm-s-ubel .cm-ubl-comment { color: var(--ubl-comment); font-style: italic; }
-.cm-s-ubel .cm-ubl-attr    { color: var(--ubl-attr); }
-.cm-s-ubel .cm-ubl-fn      { color: var(--ubl-fn); }
-.cm-s-ubel .cm-ubl-const   { color: var(--ubl-const); }
+.cm-s-ubel .CodeMirror-matchingbracket { color: inherit !important; outline: 1px solid var(--ubl-keyword, #81a1c1); }
+.cm-s-ubel .cm-ubl-keyword { color: var(--ubl-keyword, #81a1c1); }
+.cm-s-ubel .cm-ubl-type    { color: var(--ubl-type, #8fbcbb); }
+.cm-s-ubel .cm-ubl-tier    { color: var(--ubl-tier, #bf616a); font-weight: 600; }
+.cm-s-ubel .cm-ubl-string  { color: var(--ubl-string, #ebcb8b); }
+.cm-s-ubel .cm-ubl-number  { color: var(--ubl-number, #C9A46A); }
+.cm-s-ubel .cm-ubl-comment { color: var(--ubl-comment, #6b7a99); font-style: italic; }
+.cm-s-ubel .cm-ubl-attr    { color: var(--ubl-attr, #b48ead); }
+.cm-s-ubel .cm-ubl-fn      { color: var(--ubl-fn, #88c0d0); }
+.cm-s-ubel .cm-ubl-const   { color: var(--ubl-const, #d08770); }
