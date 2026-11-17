@@ -68,6 +68,13 @@ pub struct SemaContext {
     /// of the flat table where an inherent method wins.
     pub trait_call_sites: HashMap<Span, String>,
 
+    /// A builtin renamed by an import (`summon std.collections.List as L`):
+    /// the local name to the builtin's own name (`"L"` to `"List"`). Name
+    /// resolution fills it from the validated imports. type_infer reads it
+    /// where a name written in a type (`L<int>`) has to become the builtin
+    /// type, because a type position records no resolution of its own.
+    pub builtin_aliases: HashMap<String, String>,
+
     /// The tier of a method of an `impl Trait for Type` that writes no tier
     /// of its own (nor does its `impl`, nor a tier block around it): it takes
     /// the tier the trait declares, which the parser cannot know. Keyed by the

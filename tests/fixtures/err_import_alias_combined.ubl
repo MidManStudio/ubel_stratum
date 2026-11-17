@@ -1,0 +1,33 @@
+// tests/fixtures/err_import_alias_combined.ubl
+// A rename IS the builtin, so the checks on the builtin apply through it. A
+// type written through the new name is checked as that type: a mismatch, and
+// the wrong number of type arguments. The tier rules reach it too: an
+// ownership wrapper constructed through its new name in a HIGH function is the
+// same error as through its own name. Beside them, a program that is otherwise
+// fine: a struct with a renamed list field, and a trait implemented for it.
+// Expected: sema FAIL (TYPE-101 once, TYPE-108 once, TIER-014 once).
+
+from std.collections summon List as Items
+summon std.memory.Unique as U
+
+trait Size {
+    fn size(self) int
+}
+
+struct Bag {
+    items: Items<int>,
+}
+
+impl Size for Bag {
+    fn size(self) int { return self.items.len() }
+}
+
+fn main() void {
+    let mut items: Items<int> = Items.new()
+    items.push(1)
+    let bag = Bag { items = items }
+    assert(bag.size() == 1, "a rename in a field")
+    let n: Items<int> = 5
+    let wide: Items<int, int> = Items.new()
+    let boxed = U.new(5)
+}

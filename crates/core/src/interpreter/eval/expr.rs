@@ -1154,7 +1154,8 @@ fn eval_call_with_receiver<'ast>(
         // before `is_builtin_namespace` for that reason, not folded
         // into `constructors.rs`/`resolve_namespace_member` like
         // `List.new()` etc.
-        if *type_name == "Pool" && method_name == "new" {
+        let canon_name = interp.canonical_type(type_name);
+        if canon_name == "Pool" && method_name == "new" {
             let cap = interp.pool_capacity_stack.last().copied().ok_or_else(|| {
                 Signal::Panic(
                     "Pool.new() requires an enclosing with pool<T>(count) block".into(),
@@ -1182,8 +1183,8 @@ fn eval_call_with_receiver<'ast>(
                 });
             }
         }
-        if crate::builtins::is_builtin_namespace(type_name) {
-            let func = crate::builtins::resolve_namespace_member(type_name, method_name)
+        if crate::builtins::is_builtin_namespace(canon) {
+            let func = crate::builtins::resolve_namespace_member(canon, method_name)
                 .ok_or_else(|| Signal::Panic(format!(
                     "'{}' has no member '{}'", type_name, method_name
                 )))?;

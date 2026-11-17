@@ -1147,6 +1147,62 @@ impl<'a> InferCtx<'a> {
         });
     }
 
+    /// The builtin namespace a receiver name stands for. After
+    /// `summon std.collections.List as L`, the `L` in `L.new()` resolves
+    /// (name resolution records it so) to the builtin `List`, and every
+    /// check below is keyed on the builtin's own name. A name that is not
+    /// a renamed builtin comes back unchanged.
+    fn builtin_ns_name<'n>(&self, ident_span: Span, text: &'n str) -> &'n str {
+        if let Some(def) = self.ctx.resolutions.get(ident_span) {
+            let d = self.ctx.symbols.lookup(def);
+            if matches!(d.kind, DefKind::Builtin) && d.name != text {
+                if let Some(ns) = crate::builtins::BUILTIN_NAMESPACES.iter().copied()
+                    .find(|n| *n == d.name.as_str())
+                {
+                    return ns;
+                }
+            }
+        }
+        text
+    }
+
+    /// A builtin collection type written under an import's new name
+    /// (`L<int>` after `summon std.collections.List as L`). Built the same
+    /// way the parser's own `List<int>` is, so the two are one type. A bare
+    /// `L` means any element type, as a bare `List` does.
+    fn aliased_collection_type(&mut self, real: &str, args: &[TypeId], span: Span) -> Option<TypeId> {
+        let expected = match real {
+            "List" | "Set" | "Queue" | "Stack" | "InlineList" => 1,
+            "Dictionary" => 2,
+            _ => return None,
+        };
+        if !args.is_empty() && args.len() != expected {
+            self.errors.add_type_error(TypeError::GenericArgCountMismatch {
+                type_name: real.to_string(),
+                expected,
+                found: args.len(),
+                span,
+            });
+            return Some(self.unknown());
+        }
+        let a: Vec<TypeId> = if args.is_empty() {
+            (0..expected).map(|_| self.fresh_var()).collect()
+        } else {
+            args.to_vec()
+        };
+        Some(match real {
+            "List"       => self.ctx.types.intern(SemaType::List(a[0])),
+            "Set"        => self.ctx.types.intern(SemaType::Set(a[0])),
+            "Queue"      => self.ctx.types.insert(SemaType::Queue(a[0])),
+            "Stack"      => self.ctx.types.insert(SemaType::Stack(a[0])),
+            "InlineList" => self.ctx.types.insert(SemaType::InlineList(a[0])),
+            _ => {
+                self.require_dict_key(a[0], span);
+                self.ctx.types.insert(SemaType::Dictionary(a[0], a[1]))
+            }
+        })
+    }
+
     /// Type produced by `<Namespace>.new()` for the builtin collection
     /// constructors (`crates/core/src/builtins/constructors.rs`). `None`
     /// for anything not in that list — including builtin namespaces with
@@ -1401,6 +1457,18 @@ impl<'a> InferCtx<'a> {
                 let arg_ids: Vec<TypeId> = args.iter()
                     .map(|a| self.ast_type_to_sema(a))
                     .collect();
+                // A builtin renamed by an import (`summon std.collections.List
+                // as L`): `L<int>` is `List<int>`, and `U<T>` after renaming
+                // `Unique` is `Unique<T>`.
+                let alias_real: Option<String> = if path.len() == 1 {
+                    self.ctx.builtin_aliases.get(root).cloned()
+                } else { None };
+                if let Some(real) = alias_real.as_deref() {
+                    if let Some(t) = self.aliased_collection_type(real, &arg_ids, ty.span) {
+                        return t;
+                    }
+                }
+                let root: &str = alias_real.as_deref().unwrap_or(root);
                 // Ownership-model wrappers (MEMORY_MODEL.md §9,
                 // DATASTRUCTURES.md "Decisions locked in") — real compiler
                 // builtins, not user-declared structs, so they're checked
@@ -5194,6 +5262,7 @@ impl<'a> InferCtx<'a> {
                 if let ExprKind::Field { target, field } = callee.kind {
                     if field == "new" {
                         if let ExprKind::Ident(ns) = target.kind {
+                            let ns = self.builtin_ns_name(target.span, ns);
                             // §11 FIX (MEMORY_MODEL.md) — `Pool.new()` is
                             // deliberately NOT in `builtin_constructor_type`:
                             // unlike `List.new()` etc. it has no generic

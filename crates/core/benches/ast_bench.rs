@@ -590,6 +590,7 @@ fn bench_full_small_program(c: &mut Criterion) {
             // const MAX: int = 100
             items.push(Item::Const(ConstDecl {
                 attributes: &[],
+                visibility: Visibility::Private,
                 name: arena.alloc_str("MAX"),
                 ty: Some(int_ty),
                 value: int_lit(&arena, 100),

@@ -1,0 +1,16 @@
+// tests/fixtures/ok_pub_const_type_isolated.ubl
+// `pub` on a `const` and on a `type` is part of the grammar and is recorded
+// with the item. Nothing enforces it inside one file, so this program has to
+// check and run exactly as it would without the `pub`s.
+// Expected: sema OK, interpret OK.
+
+pub const MAX: int = 10
+const MIN: int = 1
+pub type Score = int
+type Rank = int
+
+fn main() void {
+    let s: Score = MAX
+    let r: Rank = MIN
+    assert(s + r == 11, "pub items read like private ones inside their own file")
+}

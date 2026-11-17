@@ -1,0 +1,26 @@
+// tests/fixtures/ok_import_std_isolated.ubl
+// Every form of `summon std...` that names something the compiler provides:
+// a full path to a type, to a function, to the Math namespace; and the
+// `from` form with one name and with a list, from each std module. Importing
+// a builtin is optional, so the same names also work without any import.
+// Expected: sema OK, interpret OK.
+
+summon std.collections.List
+summon std.io.println
+summon std.math.Math
+from std.collections summon [Dictionary, Queue, Stack, InlineList, Set]
+from std.memory summon [Pool, Unique, Shared, SyncShared]
+from std.io summon [print, log]
+from std.debug summon [assert, panic, typeof]
+from std.math summon sqrt
+from std.math summon [abs, min, max, floor, ceil, range]
+from std.convert summon [to_string, to_int, to_float, to_double]
+
+fn main() void {
+    let mut xs = List.new()
+    xs.push(sqrt(9))
+    assert(xs.len() == 1, "List through summon")
+    assert(Math.sqrt(16) == 4.0, "Math through summon")
+    assert(max(2, 3) == 3, "a function from a from-list")
+    println(to_string(xs.len()))
+}

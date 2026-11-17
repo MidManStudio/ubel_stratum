@@ -93,8 +93,20 @@ fn initializers_may_refer_to_later_constants_and_statics() {
 }
 
 #[test]
-fn a_cycle_between_statics_is_reported_at_startup() {
+fn a_cycle_between_statics_is_reported_by_the_check() {
+    // Was a start-up panic until MS1 (docs/MODULE_DESIGN.md, 2.5): now `NAME-009`.
     let src = "static P: int = Q\nstatic Q: int = P\nfn main() void { println(P) }\n";
+    assert_eq!(codes(src), (Stage::Sema, vec!["NAME-009"]));
+}
+
+#[test]
+fn a_cycle_the_check_does_not_follow_is_still_reported_at_startup() {
+    // A method called with dot syntax is not followed by the check, so this cycle
+    // (P calls `read`, which reads Q, which is P) reaches the interpreter, which
+    // stops at startup instead of looping.
+    let src = "struct Cell { v: int }\nextend Cell { fn read(self) int { return Q } }\n\
+               fn make() Cell { return Cell { v = 0 } }\n\
+               static P: int = make().read()\nstatic Q: int = P\nfn main() void { println(P) }\n";
     let err = run(src).unwrap_err();
     assert!(err.contains("initializing static `P`"), "got: {err}");
 }

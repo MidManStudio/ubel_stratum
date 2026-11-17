@@ -1,0 +1,24 @@
+// tests/fixtures/err_init_cycle_isolated.ubl
+// Constants and statics are evaluated before `main`; one that depends on
+// itself, directly or through others, has no value to start from. Each
+// separate cycle is one report: two constants that read each other, a
+// constant that reads itself, two statics, and a cycle that goes through
+// functions called in the initializers.
+// Expected: sema FAIL (InitializationCycle NAME-009 four times).
+
+const A = B + 1
+const B = A + 1
+
+const Z = Z * 2
+
+static P: int = Q + 1
+static Q: int = P + 1
+
+const X = f()
+fn f() int { return Y }
+const Y = g()
+fn g() int { return X }
+
+fn main() void {
+    println(A)
+}

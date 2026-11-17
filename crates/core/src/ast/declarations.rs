@@ -245,6 +245,9 @@ pub struct ExtendDecl<'ast> {
 pub struct ConstDecl<'ast> {
     /// `@cfg(platform = "windows")` and similar compile-time guards.
     pub attributes: &'ast [Attribute<'ast>],
+    /// `pub const` is `Public`. Recorded as written; nothing enforces it
+    /// until modules span several files (docs/MODULE_DESIGN.md, MS2).
+    pub visibility: Visibility,
     pub name:       &'ast str,
     pub ty:         Option<&'ast Type<'ast>>,
     pub value:      &'ast Expr<'ast>,
@@ -276,6 +279,9 @@ pub struct StaticDecl<'ast> {
 pub struct TypeAlias<'ast> {
     /// `@doc(...)` and other pre-type-alias attributes.
     pub attributes:     &'ast [Attribute<'ast>],
+    /// `pub type` is `Public`. Recorded as written; nothing enforces it
+    /// until modules span several files (docs/MODULE_DESIGN.md, MS2).
+    pub visibility:     Visibility,
     pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
     pub ty:             &'ast Type<'ast>,

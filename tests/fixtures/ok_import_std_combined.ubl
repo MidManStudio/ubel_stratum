@@ -1,0 +1,55 @@
+// tests/fixtures/ok_import_std_combined.ubl
+// Std imports beside the rest of the language: a generic struct, an enum
+// with a payload, a trait with an impl, a const and a static, a `match`, and
+// a closure. The imports are optional and change nothing about how the
+// builtins behave.
+// Expected: sema OK, interpret OK.
+
+from std.collections summon [List, Dictionary]
+from std.io summon println
+from std.math summon [max, min]
+summon std.convert.to_string
+
+enum Shape {
+    Square(int),
+    Rect(int, int),
+}
+
+trait Area {
+    fn area(self) int
+}
+
+impl Area for Shape {
+    fn area(self) int {
+        match self {
+            Shape.Square(s)  => { return s * s }
+            Shape.Rect(w, h) => { return w * h }
+        }
+    }
+}
+
+struct Holder<T> {
+    items: List<T>,
+}
+
+const LIMIT: int = 50
+static CALLS: int = 0
+
+fn clamp(v: int) int {
+    CALLS += 1
+    return min(max(v, 0), LIMIT)
+}
+
+fn main() void {
+    let mut h: Holder<int> = Holder { items = List.new() }
+    h.items.push(clamp(Shape.Square(3).area()))
+    h.items.push(clamp(Shape.Rect(10, 10).area()))
+    let mut seen: Dictionary<string, int> = Dictionary.new()
+    seen.set("first", h.items.first())
+    let double = fn(x: int) x * 2
+    assert(h.items.len() == 2, "two clamped areas")
+    assert(h.items.last() == 50, "the second is clamped to LIMIT")
+    assert(double(seen.get("first")) == 18, "a closure over an imported dictionary")
+    assert(CALLS == 2, "a static written by a function")
+    println(to_string(CALLS))
+}

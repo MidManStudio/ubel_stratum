@@ -25,7 +25,7 @@ use crate::error_management::errors::{OPERATOR_TRAITS, operator_method_of, opera
 use crate::ast::literals::IntSuffix;
 use crate::ast::declarations::{FunctionDecl, MethodDecl, ParamKind, StructMember};
 use crate::ast::expressions::Expr;
-use crate::ast::root::{Item, Program};
+use crate::ast::root::{ImportKind, ImportItems, Item, Program};
 use crate::ast::statements::Block;
 use crate::ast::types::{Type, TypeKind};
 use crate::builtins::BuiltinFn;
@@ -427,7 +427,46 @@ impl<'ast> Interpreter<'ast> {
 
     // ── Program entry point ───────────────────────────────────────
 
+    /// A builtin renamed by an import (`summon std.io.println as say`,
+    /// `summon std.collections.List as L`): the new name reaches the builtin.
+    /// A function builtin is bound in the environment under the new name; a
+    /// namespace (`List`, `Math`) goes through `type_aliases`, which the
+    /// static-call path already follows. Sema has accepted only paths in the
+    /// std table by the time this runs.
+    fn register_import_aliases(&mut self, program: &'ast Program<'ast>) {
+        use crate::builtins::std_modules::{resolve_std_item, resolve_std_member};
+        let mut renames: Vec<(&'ast str, &'static str)> = Vec::new();
+        for import in program.imports.iter() {
+            match &import.kind {
+                ImportKind::Summon { path, alias: Some(local) } => {
+                    if let Some(real) = resolve_std_member(path) { renames.push((local, real)); }
+                }
+                ImportKind::FromSummon { module_path, items } => {
+                    let list: &[crate::ast::root::ImportItem<'ast>] = match items {
+                        ImportItems::Single(item) => std::slice::from_ref(item),
+                        ImportItems::List(list)   => list,
+                    };
+                    for item in list {
+                        if let (Some(local), Some(real)) = (item.alias, resolve_std_item(module_path, item.name)) {
+                            renames.push((local, real));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (local, real) in renames {
+            if local == real { continue; }
+            if crate::builtins::is_builtin_namespace(real) {
+                self.type_aliases.insert(local.to_string(), real.to_string());
+            } else if let Some(v) = self.env.get(real).cloned() {
+                self.env.define(local, v);
+            }
+        }
+    }
+
     pub fn run_program(&mut self, program: &'ast Program<'ast>) -> Result<(), String> {
+        self.register_import_aliases(program);
         // Pre-declare pass: register everything before running any body so
         // forward references and mutual recursion work.
         let mut top_level_fns: Vec<FunctionId> = Vec::new();

@@ -1,0 +1,11 @@
+// tests/fixtures/err_import_alias_parse_isolated.ubl
+// `as` must be followed by a name, in every import form. Each missing name is
+// reported where it is missing, and the import is not silently accepted
+// without its rename.
+// Expected: parse FAIL (PARSE-001 three times, each "identifier after 'as'").
+
+from std.collections summon [List as ]
+from std.io summon println as
+summon std.math.sqrt as
+
+fn main() void { }

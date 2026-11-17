@@ -25,7 +25,9 @@
 #![allow(dead_code)]
 
 use crate::ast::common::{Visibility, Span};
-use crate::ast::root::{Program, Item, ImportKind, ImportItems};
+use std::collections::{HashMap, HashSet};
+use crate::ast::root::{Program, Item, ImportKind, ImportItems, ImportItem};
+use crate::builtins::std_modules::{resolve_std_item, resolve_std_member, std_module_members};
 use crate::ast::declarations::{
     FunctionDecl, StructDecl, StructMember, EnumDecl,
     TraitDecl, TraitItem, ImplBlock, ExtendDecl,
@@ -63,11 +65,25 @@ struct Resolver<'a> {
     /// Whether the expression being resolved is a `const` initializer. A
     /// `static` read there is `NAME-008`.
     in_const_initializer: bool,
+    /// An import that renames a builtin (`summon std.collections.List as L`):
+    /// the import's own `DefId` to the builtin's. A use of `L` is recorded as
+    /// a use of the builtin, so every later pass sees the builtin itself.
+    alias_targets: HashMap<DefId, DefId>,
+    /// The constant, static or function whose body is being resolved. Every
+    /// use of another constant, static or function inside it is an edge of
+    /// the initialization graph (see `report_initialization_cycles`).
+    init_owner: Option<DefId>,
+    /// `(user, used, where)`: the edges of that graph.
+    init_edges: Vec<(DefId, DefId, Span)>,
 }
 
 impl<'a> Resolver<'a> {
     fn new(ctx: &'a mut SemaContext, errors: &'a mut ErrorManager) -> Self {
-        let mut r = Resolver { ctx, errors, scopes: ScopeStack::new(), in_method: false, current_fn: None, in_const_initializer: false };
+        let mut r = Resolver {
+            ctx, errors, scopes: ScopeStack::new(), in_method: false, current_fn: None,
+            in_const_initializer: false, alias_targets: HashMap::new(),
+            init_owner: None, init_edges: Vec::new(),
+        };
         // Push the module (top-level) scope.
         r.scopes.push();
         r.declare_builtins();
@@ -111,6 +127,9 @@ impl<'a> Resolver<'a> {
         for item in program.items {
             self.resolve_item(item);
         }
+
+        // 4. Constants and statics that depend on themselves.
+        self.report_initialization_cycles();
     }
 
     // ── Import registration ───────────────────────────────────────
@@ -118,34 +137,88 @@ impl<'a> Resolver<'a> {
     fn register_import<'ast>(&mut self, import: &crate::ast::root::Import<'ast>) {
         match &import.kind {
             ImportKind::Summon { path, alias } => {
-                // The local name is either the alias or the last path segment.
-                let local_name = alias
-                    .unwrap_or_else(|| path.last().copied().unwrap_or(""))
-                    .to_string();
+                let target = resolve_std_member(path);
+                if target.is_none() {
+                    self.errors.add_name_error(NameError::UnresolvedImport {
+                        path: path.join("."),
+                        span: import.span,
+                    });
+                }
+                let real  = path.last().copied().unwrap_or("");
+                let local = alias.unwrap_or(real);
                 let canonical: Vec<String> = path.iter().map(|s| s.to_string()).collect();
-                self.declare(
-                    local_name,
-                    DefKind::Import { canonical_path: canonical },
-                    import.span,
-                    Visibility::Public,
-                );
+                self.declare_import(local, real, canonical, target, import.span);
             }
             ImportKind::FromSummon { module_path, items } => {
-                let module: Vec<String> = module_path.iter().map(|s| s.to_string()).collect();
-                let names: Vec<&str> = match items {
-                    ImportItems::Single(n) => vec![n],
-                    ImportItems::List(ns)  => ns.to_vec(),
-                };
-                for name in names {
-                    let mut canonical = module.clone();
-                    canonical.push(name.to_string());
-                    self.declare(
-                        name.to_string(),
-                        DefKind::Import { canonical_path: canonical },
-                        import.span,
-                        Visibility::Public,
-                    );
+                let members = std_module_members(module_path);
+                if members.is_none() {
+                    // One report for the module path, not one per name.
+                    self.errors.add_name_error(NameError::UnresolvedImport {
+                        path: module_path.join("."),
+                        span: import.span,
+                    });
                 }
+                let names: &[ImportItem<'ast>] = match items {
+                    ImportItems::Single(item) => std::slice::from_ref(item),
+                    ImportItems::List(list)   => list,
+                };
+                for item in names {
+                    let target = resolve_std_item(module_path, item.name);
+                    if members.is_some() && target.is_none() {
+                        self.errors.add_name_error(NameError::UnresolvedImport {
+                            path: format!("{}.{}", module_path.join("."), item.name),
+                            span: item.span,
+                        });
+                    }
+                    let mut canonical: Vec<String> = module_path.iter().map(|s| s.to_string()).collect();
+                    canonical.push(item.name.to_string());
+                    self.declare_import(item.local_name(), item.name, canonical, target, import.span);
+                }
+            }
+        }
+    }
+
+    /// Declare the local name of one import. A path that did not resolve is
+    /// declared anyway (and reported by the caller), so a later use of the
+    /// name does not add an `undefined name` error on top of the one that
+    /// already says what is wrong. `target` is the builtin the path names,
+    /// when it names one.
+    fn declare_import(
+        &mut self,
+        local:     &str,
+        real:      &str,
+        canonical: Vec<String>,
+        target:    Option<&'static str>,
+        span:      Span,
+    ) {
+        let renamed = local != real;
+        // A rename may not take the name of a different builtin: the builtin
+        // stays in scope under its own name, so the import could not mean
+        // what it says. Reported as a duplicate, like any other name clash.
+        if renamed && target.is_some() {
+            if let Some(existing) = self.scopes.resolve(local) {
+                if matches!(self.ctx.symbols.lookup(existing).kind, DefKind::Builtin) {
+                    self.errors.add_name_error(NameError::DuplicateDefinition {
+                        name:          local.to_string(),
+                        first_defined: self.ctx.symbols.lookup(existing).defined_at,
+                        redefined_at:  span,
+                    });
+                    return;
+                }
+            }
+        }
+        let id = self.declare(
+            local.to_string(),
+            DefKind::Import { canonical_path: canonical },
+            span,
+            Visibility::Public,
+        );
+        let Some(builtin) = target else { return; };
+        if !renamed { return; }
+        self.ctx.builtin_aliases.insert(local.to_string(), builtin.to_string());
+        if let Some(builtin_id) = self.scopes.resolve(builtin) {
+            if matches!(self.ctx.symbols.lookup(builtin_id).kind, DefKind::Builtin) {
+                self.alias_targets.insert(id, builtin_id);
             }
         }
     }
@@ -175,13 +248,13 @@ impl<'a> Resolver<'a> {
                 self.declare_top_level(t.name.to_string(), DefKind::Trait, t.span, t.visibility);
             }
             Item::Const(c) => {
-                self.declare_top_level(c.name.to_string(), DefKind::Const, c.span, Visibility::Private);
+                self.declare_top_level(c.name.to_string(), DefKind::Const, c.span, c.visibility);
             }
             Item::Static(s) => {
                 self.declare_top_level(s.name.to_string(), DefKind::Static, s.span, s.visibility);
             }
             Item::TypeAlias(a) => {
-                self.declare_top_level(a.name.to_string(), DefKind::TypeAlias, a.span, Visibility::Private);
+                self.declare_top_level(a.name.to_string(), DefKind::TypeAlias, a.span, a.visibility);
             }
             // Impl and Extend don't introduce a name into scope.
             Item::Impl(_) | Item::Extend(_) => {}
@@ -223,6 +296,7 @@ impl<'a> Resolver<'a> {
         self.scopes.push();
         let prev_fn     = self.current_fn.replace(fn_id);
         let prev_method = self.in_method;
+        let prev_owner  = self.init_owner.replace(fn_id);
 
         // Declare generic / lifetime params.
         for gp in f.generic_params {
@@ -236,6 +310,7 @@ impl<'a> Resolver<'a> {
         // Walk body.
         self.resolve_block(&f.body);
 
+        self.init_owner = prev_owner;
         self.in_method  = prev_method;
         self.current_fn = prev_fn;
         self.scopes.pop();
@@ -370,12 +445,16 @@ impl<'a> Resolver<'a> {
         // mutable global. `in_const_initializer` lets the `Ident` arm of
         // `resolve_expr` report that (`NAME-008`).
         let prev = std::mem::replace(&mut self.in_const_initializer, true);
+        let prev_owner = std::mem::replace(&mut self.init_owner, self.scopes.resolve(c.name));
         self.resolve_expr(c.value);
+        self.init_owner = prev_owner;
         self.in_const_initializer = prev;
     }
 
     fn resolve_static<'ast>(&mut self, s: &StaticDecl<'ast>) {
+        let prev_owner = std::mem::replace(&mut self.init_owner, self.scopes.resolve(s.name));
         self.resolve_expr(s.value);
+        self.init_owner = prev_owner;
     }
 
     fn resolve_type_alias<'ast>(&mut self, _a: &TypeAlias<'ast>) {
@@ -830,7 +909,16 @@ fn resolve_qual_path(&mut self, path: &[&str], span: Span) {
 /// Resolve a single name and record it.
 fn resolve_name(&mut self, name: &str, span: Span) {
     if let Some(id) = self.scopes.resolve(name) {
+        // A builtin renamed by an import resolves to the builtin itself.
+        let id = self.alias_targets.get(&id).copied().unwrap_or(id);
         self.ctx.resolutions.record(span, id);
+        if let Some(owner) = self.init_owner {
+            if matches!(self.ctx.symbols.lookup(id).kind,
+                DefKind::Const | DefKind::Static | DefKind::Function { .. })
+            {
+                self.init_edges.push((owner, id, span));
+            }
+        }
         if self.in_const_initializer
             && matches!(self.ctx.symbols.lookup(id).kind, DefKind::Static)
         {
@@ -845,6 +933,78 @@ fn resolve_name(&mut self, name: &str, span: Span) {
             name:         name.to_string(),
             span,
             did_you_mean: suggestion,
+        });
+    }
+}
+
+// ── Initialization cycles ─────────────────────────────────────
+
+/// Constants and statics are evaluated once, before `main`. The graph has
+/// one node per constant, static and top-level function. An edge goes from
+/// an item to every constant, static or function its body (or initializer)
+/// names. A constant or static that can reach itself is on a cycle, and no
+/// order of evaluation gives every initializer its inputs.
+///
+/// The function edges make the check conservative: a function that names
+/// the constant only on a branch that never runs during initialization is
+/// still an edge. Not followed: a method called with dot syntax, a call
+/// through a function value held in a variable, a call through a trait
+/// object. A cycle through one of those is still reported when the program
+/// starts. Recursion among functions alone is not a cycle.
+fn report_initialization_cycles(&mut self) {
+    if self.init_edges.is_empty() { return; }
+
+    let mut forward:  HashMap<DefId, Vec<DefId>> = HashMap::new();
+    let mut backward: HashMap<DefId, Vec<DefId>> = HashMap::new();
+    for &(from, to, _) in &self.init_edges {
+        forward.entry(from).or_default().push(to);
+        backward.entry(to).or_default().push(from);
+    }
+
+    // Constants and statics in source order, so the report order is stable.
+    let mut roots: Vec<DefId> = forward.keys().copied()
+        .chain(backward.keys().copied())
+        .filter(|id| matches!(self.ctx.symbols.lookup(*id).kind, DefKind::Const | DefKind::Static))
+        .collect::<HashSet<_>>().into_iter().collect();
+    roots.sort_by_key(|id| self.ctx.symbols.lookup(*id).defined_at.start);
+
+    fn reach(start: DefId, graph: &HashMap<DefId, Vec<DefId>>) -> HashSet<DefId> {
+        let mut seen: HashSet<DefId> = HashSet::new();
+        let mut stack: Vec<DefId> = graph.get(&start).cloned().unwrap_or_default();
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) { continue; }
+            if let Some(next) = graph.get(&n) { stack.extend(next.iter().copied()); }
+        }
+        seen
+    }
+
+    let mut reported: HashSet<DefId> = HashSet::new();
+    for root in roots {
+        if reported.contains(&root) { continue; }
+        let ahead = reach(root, &forward);
+        if !ahead.contains(&root) { continue; }   // not on a cycle
+        let behind = reach(root, &backward);
+        let mut members: Vec<DefId> = ahead.intersection(&behind).copied().collect();
+        members.push(root);
+        members.sort_by_key(|id| self.ctx.symbols.lookup(*id).defined_at.start);
+        members.dedup();
+
+        let initializers: Vec<DefId> = members.iter().copied()
+            .filter(|id| matches!(self.ctx.symbols.lookup(*id).kind, DefKind::Const | DefKind::Static))
+            .collect();
+        for id in &initializers { reported.insert(*id); }
+
+        let names: Vec<String> = members.iter()
+            .map(|id| self.ctx.symbols.lookup(*id).name.clone()).collect();
+        let first = initializers[0];
+        let others: Vec<(Span, String)> = initializers.iter().skip(1).map(|id| {
+            let d = self.ctx.symbols.lookup(*id);
+            (d.defined_at, d.name.clone())
+        }).collect();
+        self.errors.add_name_error(NameError::InitializationCycle {
+            items:  names,
+            span:   self.ctx.symbols.lookup(first).defined_at,
+            others,
         });
     }
 }

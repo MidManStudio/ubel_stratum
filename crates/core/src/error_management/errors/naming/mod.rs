@@ -62,6 +62,20 @@ pub enum NameError {
         name: String,
         span: Span,
     },
+
+    /// A `const` or `static` initializer depends on itself: directly, on
+    /// another initializer that depends back on it, or through functions its
+    /// initializer calls. Initializers run once before `main`, so there is no
+    /// order in which every one of them has its inputs.
+    InitializationCycle {
+        /// The items on the cycle (constants, statics and the functions
+        /// between them), in source order.
+        items: Vec<String>,
+        /// The first constant or static on the cycle in source order.
+        span:  Span,
+        /// The other constants and statics on the cycle, with their names.
+        others: Vec<(Span, String)>,
+    },
 }
 
 impl NameError {
@@ -75,6 +89,7 @@ impl NameError {
             NameError::UnresolvedTypeParam    { span, .. } => *span,
             NameError::AssignToConst          { span, .. } => *span,
             NameError::StaticInConst          { span, .. } => *span,
+            NameError::InitializationCycle    { span, .. } => *span,
         }
     }
 
@@ -106,6 +121,14 @@ impl NameError {
 
             NameError::StaticInConst { name, .. } =>
                 format!("a constant cannot read the static `{}`", name),
+
+            NameError::InitializationCycle { items, .. } if items.len() == 1 =>
+                format!("`{}` depends on itself while it is being initialized", items[0]),
+
+            NameError::InitializationCycle { items, .. } => {
+                let names: Vec<String> = items.iter().map(|n| format!("`{}`", n)).collect();
+                format!("initialization cycle among {}", names.join(", "))
+            }
         }
     }
 
@@ -122,6 +145,9 @@ impl NameError {
 
             NameError::StaticInConst { .. } =>
                 Some("make the other item a `const` too, or initialize this value from a `static`".to_string()),
+
+            NameError::InitializationCycle { .. } =>
+                Some("break the cycle: initialize one of the items from a literal, or compute it inside a function that runs after startup".to_string()),
 
             _ => None,
         }
@@ -148,6 +174,7 @@ impl crate::error_management::render::Diagnosable for NameError {
             NameError::UnresolvedTypeParam { .. }    => "NAME-006",
             NameError::AssignToConst { .. }          => "NAME-007",
             NameError::StaticInConst { .. }          => "NAME-008",
+            NameError::InitializationCycle { .. }    => "NAME-009",
         }
     }
     fn span(&self) -> Span { self.span() }
@@ -156,8 +183,13 @@ impl crate::error_management::render::Diagnosable for NameError {
 
     fn secondary_spans(&self) -> Vec<(Span, String)> {
         match self {
+            // A builtin has no place in the source, so there is nothing to point at.
+            NameError::DuplicateDefinition { first_defined, .. } if first_defined.line == 0 =>
+                Vec::new(),
             NameError::DuplicateDefinition { first_defined, .. } =>
                 vec![(*first_defined, "first defined here".to_string())],
+            NameError::InitializationCycle { others, .. } =>
+                others.iter().map(|(s, n)| (*s, format!("`{}` is on the cycle", n))).collect(),
             _ => Vec::new(),
         }
     }

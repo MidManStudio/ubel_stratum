@@ -1,0 +1,22 @@
+// tests/fixtures/err_import_std_isolated.ubl
+// A `summon` path that names nothing is reported where it is written, once
+// per path. A name the module does not have, a name from the wrong module, a
+// module that does not exist, a module path with no name, and a path that is
+// not under `std` (there is no multi-file loading yet, so it cannot resolve).
+// A bad `from` module is one report however many names follow it. The names
+// are still declared, so using them adds no `undefined name` error.
+// Expected: sema FAIL (UnresolvedImport NAME-003 nine times).
+
+summon std.collections.Frobnicate
+summon std.collections.println
+summon std.nope.List
+summon std.collections
+summon engine.physics.Body
+from std.collections summon [List, Missing, Dictionary, Gone]
+from std.nope summon [A, B, C]
+from game.util summon Helper
+
+fn main() void {
+    let h = Helper.make()
+    let b = Body.new()
+}

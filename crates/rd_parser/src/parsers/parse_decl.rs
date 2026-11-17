@@ -24,7 +24,7 @@ use ubel_stratum::{
             Param, ParamKind, PropertyDecl, ReturnType, StaticDecl, StructDecl,
             StructMember, TraitDecl, TraitItem, TypeAlias,
         },
-        root::{Item, Import, ImportItems, ImportKind, PackageDecl},
+        root::{Item, Import, ImportItem, ImportItems, ImportKind, PackageDecl},
         types::Type,
     },
     error_management::errors::ParseContext,
@@ -107,14 +107,14 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.parse_extend_decl(attrs).map(Item::Extend),
             TokenType::Const => {
                 self.reject_own_tier_on_const(attrs);
-                self.parse_const_decl(attrs).map(Item::Const)
+                self.parse_const_decl(attrs, vis).map(Item::Const)
             }
             TokenType::Static => {
                 self.require_high_tier_on_static(attrs, tier_opt);
                 self.parse_static_decl(attrs, vis).map(Item::Static)
             }
             TokenType::TypeKw =>
-                self.parse_type_alias(attrs).map(Item::TypeAlias),
+                self.parse_type_alias(attrs, vis).map(Item::TypeAlias),
             _ => {
                 self.expected(&[
                     "'fn'", "'struct'", "'enum'", "'trait'",
@@ -1019,6 +1019,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     pub(crate) fn parse_const_decl(
         &mut self,
         attrs: &'ast [Attribute<'ast>],
+        vis:   Visibility,
     ) -> Option<ConstDecl<'ast>> {
         let prev = self.enter(ParseContext::ConstDecl);
         let lo   = self.span();
@@ -1038,7 +1039,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.eat_sep();
         self.leave(prev);
 
-        Some(ConstDecl { attributes: attrs, name, ty, value, span })
+        Some(ConstDecl { attributes: attrs, visibility: vis, name, ty, value, span })
     }
 
     // ── Static declaration ────────────────────────────────────────────────────
@@ -1143,6 +1144,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     pub(crate) fn parse_type_alias(
         &mut self,
         attrs: &'ast [Attribute<'ast>],
+        vis:   Visibility,
     ) -> Option<TypeAlias<'ast>> {
         let prev = self.enter(ParseContext::TypeAliasDecl);
         let lo   = self.span();
@@ -1162,7 +1164,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.eat_sep();
         self.leave(prev);
 
-        Some(TypeAlias { attributes: attrs, name, generic_params, ty, span })
+        Some(TypeAlias { attributes: attrs, visibility: vis, name, generic_params, ty, span })
     }
 
     // ── Package + import (used by parse_program.rs) ───────────────────────────
@@ -1184,9 +1186,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             TokenType::Summon => {
                 self.cursor.advance();
                 let (path, _) = self.parse_qualified_path()?;
-                let alias = if self.cursor.eat(&TokenType::As) {
-                    self.eat_ident().map(|(n, _)| n)
-                } else { None };
+                let alias = self.parse_import_alias();
                 ImportKind::Summon { path, alias }
             }
             // `from path.to summon [A, B]` or `from path.to summon A`
@@ -1199,18 +1199,22 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                     return None;
                 }
                 let items = if self.cursor.eat(&TokenType::LeftBracket) {
-                    let mut names: Vec<&'ast str> = Vec::with_capacity(cap::IMPORT_LIST);
+                    let mut names: Vec<ImportItem<'ast>> = Vec::with_capacity(cap::IMPORT_LIST);
                     while !self.cursor.is_at(&TokenType::RightBracket) && !self.cursor.is_eof() {
                         let pos_before = self.cursor.position();
-                        if let Some((n, _)) = self.eat_ident() { names.push(n); }
+                        if let Some((n, sp)) = self.eat_ident() {
+                            let item = self.finish_import_item(n, sp);
+                            names.push(item);
+                        }
                         self.eat_sep();
                         self.guard_progress(pos_before);
                     }
                     self.cursor.eat(&TokenType::RightBracket);
                     ImportItems::List(self.arena.alloc_slice_clone(&names))
                 } else {
-                    let (name, _) = self.expect_ident()?;
-                    ImportItems::Single(name)
+                    let (n, sp) = self.expect_ident()?;
+                    let item = self.finish_import_item(n, sp);
+                    ImportItems::Single(item)
                 };
                 ImportKind::FromSummon { module_path, items }
             }
@@ -1225,6 +1229,23 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.eat_sep();
         self.leave(prev);
         Some(Import { kind, span })
+    }
+
+    /// The rest of an import entry after its name: the optional `as Local`.
+    fn finish_import_item(&mut self, name: &'ast str, name_span: Span) -> ImportItem<'ast> {
+        let alias = self.parse_import_alias();
+        ImportItem { name, alias, span: name_span }
+    }
+
+    /// The optional `as Local` after an imported name. A missing local name
+    /// is reported, not skipped: dropping it would import the name
+    /// un-renamed and hide the mistake.
+    fn parse_import_alias(&mut self) -> Option<&'ast str> {
+        if !self.cursor.eat(&TokenType::As) { return None; }
+        match self.eat_ident() {
+            Some((alias, _)) => Some(alias),
+            None => { self.expected(&["identifier after 'as'"]); None }
+        }
     }
 
     // ── Qualified path helper ─────────────────────────────────────────────────

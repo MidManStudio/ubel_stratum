@@ -1,0 +1,36 @@
+// tests/fixtures/err_init_cycle_combined.ubl
+// A static that reads itself through the function that initializes it, in a
+// program that also has a std import, a renamed builtin, a trait with an
+// impl and constants that do depend on each other without a loop. The one
+// cycle is the only report.
+// Expected: sema FAIL (InitializationCycle NAME-009 once).
+
+from std.collections summon List as Items
+from std.io summon println
+
+trait Count {
+    fn count(self) int
+}
+
+struct Log {
+    lines: Items<string>,
+}
+
+impl Count for Log {
+    fn count(self) int { return self.lines.len() }
+}
+
+const BASE: int = 10
+const NEXT_BASE: int = BASE * 2
+
+static COUNTER: int = next()
+
+fn next() int {
+    COUNTER += NEXT_BASE
+    return COUNTER
+}
+
+fn main() void {
+    let l = Log { lines = Items.new() }
+    println(l.count())
+}

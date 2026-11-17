@@ -1,0 +1,46 @@
+// tests/fixtures/ok_init_order_isolated.ubl
+// Constants and statics may depend on one another and on functions in any
+// source order, as long as the dependencies do not loop. A use that comes
+// before the definition, a chain of three, a function in between, recursion
+// among functions, a static built from constants, and a local that has the
+// name of a constant are all fine.
+// Expected: sema OK, interpret OK.
+
+const C = B + 1
+const B = double(A)
+const A = 21
+
+static TOTAL: int = C + fact(3)
+
+fn double(x: int) int { return x * 2 }
+
+fn fact(n: int) int {
+    if n <= 1 { return 1 }
+    return n * fact(n - 1)
+}
+
+fn even(n: int) bool {
+    if n == 0 { return true }
+    return odd(n - 1)
+}
+
+fn odd(n: int) bool {
+    if n == 0 { return false }
+    return even(n - 1)
+}
+
+const PARITY = even(4)
+
+fn shadow() int {
+    let A = 3
+    return A
+}
+
+const SHADOWED = shadow()
+
+fn main() void {
+    assert(C == 43, "a chain of three, defined out of order")
+    assert(TOTAL == 49, "a static from a constant and a function")
+    assert(PARITY, "recursion among functions is not a cycle")
+    assert(SHADOWED == 3, "a local named like a constant is not a use of it")
+}

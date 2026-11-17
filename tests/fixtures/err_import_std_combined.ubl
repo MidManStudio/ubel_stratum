@@ -1,0 +1,38 @@
+// tests/fixtures/err_import_std_combined.ubl
+// One bad import in a program that is otherwise sound: a generic struct, an
+// enum, a trait with an impl, a const and a renamed builtin. The bad path is
+// the only report; nothing the rest of the program does is affected by it.
+// Expected: sema FAIL (UnresolvedImport NAME-003 once).
+
+from std.collections summon [List as Items]
+from game.physics summon Vec2
+
+enum Kind {
+    Small,
+    Large(int),
+}
+
+trait Weigh {
+    fn weigh(self) int
+}
+
+impl Weigh for Kind {
+    fn weigh(self) int {
+        match self {
+            Kind.Small    => { return 1 }
+            Kind.Large(n) => { return n }
+        }
+    }
+}
+
+struct Crate<T> {
+    items: Items<T>,
+}
+
+const LIMIT: int = 10
+
+fn main() void {
+    let mut c: Crate<Kind> = Crate { items = Items.new() }
+    c.items.push(Kind.Large(LIMIT))
+    assert(c.items.first().weigh() == 10, "the rest of the program is fine")
+}

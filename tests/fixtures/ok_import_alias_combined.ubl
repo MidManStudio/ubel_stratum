@@ -1,0 +1,62 @@
+// tests/fixtures/ok_import_alias_combined.ubl
+// Renamed builtins beside what they have to live with: a struct field and a
+// function result typed through the new name, a generic function over a
+// renamed collection, a trait implemented for a struct that holds one, a
+// closure that captures one, a `type` alias to a renamed collection, a
+// `static` of a renamed type, and `pub` items.
+// Expected: sema OK, interpret OK.
+
+from std.collections summon [List as Items, Dictionary as Table]
+from std.io summon println as say
+
+pub type Scores = Items<int>
+
+trait Total {
+    fn total(self) int
+}
+
+struct Board {
+    scores: Scores,
+    names:  Table<string, int>,
+}
+
+impl Total for Board {
+    fn total(self) int {
+        let mut sum = 0
+        for s in self.scores {
+            sum += s
+        }
+        return sum
+    }
+}
+
+pub const START: int = 10
+
+static SEEN: Items<int> = Items.new()
+
+fn make() Board {
+    let mut scores: Scores = Items.new()
+    scores.push(START)
+    scores.push(START + 5)
+    let mut names: Table<string, int> = Table.new()
+    names.set("first", 1)
+    return Board { scores = scores, names = names }
+}
+
+fn first_of<T>(list: Items<T>) T {
+    return list.first()
+}
+
+fn main() void {
+    let b = make()
+    assert(b.total() == 25, "a trait method over a field typed through a rename")
+    assert(b.names.get("first") == 1, "a renamed dictionary field")
+    assert(first_of(b.scores) == 10, "a generic function over a renamed list")
+
+    SEEN.push(b.total())
+    assert(SEEN.len() == 1, "a static of a renamed type")
+
+    let count = fn() b.scores.len()
+    assert(count() == 2, "a closure over a renamed list")
+    say("ok")
+}

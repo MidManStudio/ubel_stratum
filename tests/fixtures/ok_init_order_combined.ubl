@@ -1,0 +1,38 @@
+// tests/fixtures/ok_init_order_combined.ubl
+// Initialization order with the rest of the language around it: constants
+// that feed a static, a struct built in an initializer by a function that takes
+// the constant as an argument, an enum used in a constant, and a method that
+// reads a constant when it runs after startup. None of this forms a cycle.
+// Expected: sema OK, interpret OK.
+
+enum Level {
+    Low,
+    High,
+}
+
+struct Config {
+    size:  int,
+    level: Level,
+}
+
+extend Config {
+    fn scaled(self) int { return self.size * FACTOR }
+}
+
+const FACTOR: int = SIZE / 10
+const SIZE: int = 40
+
+fn build(size: int) Config {
+    return Config { size = size, level = Level.High }
+}
+
+const DEFAULT = build(SIZE)
+
+static LAST: int = DEFAULT.size * FACTOR
+
+fn main() void {
+    assert(FACTOR == 4, "a constant defined after its use")
+    assert(DEFAULT.size == 40, "a struct from a function over a constant")
+    assert(LAST == 160, "a static from a constant and a struct field")
+    assert(DEFAULT.scaled() == 160, "a method that reads a constant once the program runs")
+}

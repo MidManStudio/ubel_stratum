@@ -58,13 +58,28 @@ pub enum ImportKind<'ast> {
     },
 }
 
+/// One name in a `from ... summon` statement, with its optional rename.
+#[derive(Debug, Clone, Copy)]
+pub struct ImportItem<'ast> {
+    /// The name as the module spells it: `List` in `List as L`.
+    pub name:  &'ast str,
+    /// The local name from `as`: `L` in `List as L`.
+    pub alias: Option<&'ast str>,
+    pub span:  Span,
+}
+
+impl<'ast> ImportItem<'ast> {
+    /// The name the importing file uses: the alias when there is one.
+    pub fn local_name(&self) -> &'ast str { self.alias.unwrap_or(self.name) }
+}
+
 /// What is being imported in a `from ... summon` statement.
 #[derive(Debug, Clone, Copy)]
 pub enum ImportItems<'ast> {
-    /// `summon List`
-    Single(&'ast str),
-    /// `summon [List, Dictionary, Set]`
-    List(&'ast [&'ast str]),
+    /// `summon List`, `summon List as L`
+    Single(ImportItem<'ast>),
+    /// `summon [List, Dictionary as D, Set]`
+    List(&'ast [ImportItem<'ast>]),
 }
 
 // ── Top-level item ────────────────────────────────────────────────

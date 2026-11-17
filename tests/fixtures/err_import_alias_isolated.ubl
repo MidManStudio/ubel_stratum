@@ -1,0 +1,19 @@
+// tests/fixtures/err_import_alias_isolated.ubl
+// What a rename can get wrong in names. A rename may not take the name of
+// another builtin (`Dictionary`), of another import (`Q` twice), or of an item
+// in the file (`helper`). A builtin has no place in the source, so the first of
+// these has no "first defined here" note. The renames that are fine are not
+// reported.
+// Expected: sema FAIL (DuplicateDefinition NAME-002 three times).
+
+summon std.collections.List as Dictionary
+summon std.collections.Queue as Q
+summon std.collections.Stack as Q
+summon std.collections.Set as helper
+summon std.collections.List as L
+
+fn helper() void { }
+
+fn main() void {
+    let xs: L<int> = L.new()
+}

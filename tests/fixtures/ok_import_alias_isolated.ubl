@@ -1,0 +1,39 @@
+// tests/fixtures/ok_import_alias_isolated.ubl
+// `as` renames an import, in a `summon` and inside a `from ... summon` list. A
+// renamed builtin behaves as the builtin: a collection through its new name
+// in a type and in a constructor call, a function under its new name, and the
+// `Math` namespace under a new name. The original names keep working beside
+// their renames. `[List as L]` imports one name, `L`, not `List` and `L`.
+// Expected: sema OK, interpret OK.
+
+from std.collections summon [List as L, Dictionary as D, Queue]
+from std.io summon [println as say, print]
+summon std.math.sqrt as root
+summon std.math.abs as magnitude
+summon std.math.Math as M
+summon std.collections.Stack as S
+
+fn main() void {
+    let mut xs: L<int> = L.new()
+    xs.push(4)
+    xs.push(5)
+    let mut d: D<string, int> = D.new()
+    d.set("a", 7)
+    let mut q: Queue<int> = Queue.new()
+    q.enqueue(9)
+    let mut st: S<int> = S.new()
+    st.push(1)
+
+    assert(xs.len() == 2, "a list built through L")
+    assert(d.get("a") == 7, "a dictionary built through D")
+    assert(q.len() == 1, "a name imported without a rename")
+    assert(st.len() == 1, "a rename from a summon")
+    assert(root(16) == 4.0, "a function builtin under a new name")
+    assert(magnitude(-3) == 3, "a second function builtin under a new name")
+    assert(M.sqrt(25) == 5.0, "the Math namespace under a new name")
+
+    let plain = List.new()
+    assert(plain.len() == 0, "the original name still works")
+    say("renamed")
+    print("done\n")
+}

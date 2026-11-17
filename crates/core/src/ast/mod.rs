@@ -74,4 +74,4 @@ pub use declarations::{
     TraitItem, TypeAlias,
 };
 
-pub use root::{Import, ImportItems, ImportKind, Item, PackageDecl, Program};
+pub use root::{Import, ImportItem, ImportItems, ImportKind, Item, PackageDecl, Program};

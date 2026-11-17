@@ -19,6 +19,7 @@ pub mod global;
 pub mod instance;
 pub mod validate;
 pub mod constructors;
+pub mod std_modules;
 
 use crate::interpreter::value::{EvalResult, Value};
 
