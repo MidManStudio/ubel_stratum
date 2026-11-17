@@ -1,0 +1,6 @@
+// Not supported: a bool cast to a float. (The interpreter panics with "cannot cast bool to float".)
+// expect-refusal: this conversion to a float
+fn main() void {
+    let b = true
+    println(b as double)
+}

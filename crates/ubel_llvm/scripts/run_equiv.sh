@@ -33,6 +33,9 @@ CLANG="${CLANG:-clang}"
 CARGO="${CARGO:-cargo}"
 out="${OUT_DIR:-${TMPDIR:-/tmp}/ubel_llvm_equiv}"
 read -r -a extra <<< "${EXTRA_FLAGS:-}"
+# On 32-bit x86 clang defaults to the x87 FPU, which computes in extended precision and can differ from the
+# interpreter's IEEE double in the last digit; ask for SSE2 there, which is what every other target does.
+case " ${EXTRA_FLAGS:-} " in *" -m32 "*) extra+=(-msse2 -mfpmath=sse) ;; esac
 mkdir -p "$out"
 
 command -v "$CLANG" >/dev/null 2>&1 || { echo "error: compiler '$CLANG' not found" >&2; exit 1; }
@@ -93,7 +96,7 @@ run_timeout() {
 build_native() {
   local ll="$1" exe="$2"; shift 2
   "$CLANG" "$@" "${extra[@]}" -Wno-override-module -I "$here/runtime" \
-    "$ll" "$here/runtime/ubel_rt.c" "$here/runtime/ubel_main.c" -o "$exe" 2>"$exe.build.log"
+    "$ll" "$here/runtime/ubel_rt.c" "$here/runtime/ubel_main.c" -o "$exe" -lm 2>"$exe.build.log"
 }
 
 pass=0; fail=0; skipped_san=0
@@ -319,6 +322,19 @@ echo
 echo "ubel-llvm build:"
 build_check "$here/examples/31_enum_unit.ubl"
 if [ -f "$target" ]; then build_check "$target"; fi
+
+# ---- float printing against Rust's own `{}` ---------------------------------------------------
+# scripts/float_diff.sh formats about 1.6 million doubles and floats with runtime/ubel_float.h and compares each with
+# what the Rust toolchain prints (harness/float_diff_check.c is the checker; it follows EXTRA_FLAGS, so -m32 too).
+if [ -f "$here/scripts/float_diff.sh" ]; then
+  echo
+  echo "float printing:"
+  if CLANG="$CLANG" bash "$here/scripts/float_diff.sh" >"$out/float_diff.log" 2>&1; then
+    ok "float_diff" "$(tail -n 1 "$out/float_diff.log")"
+  else
+    bad "float_diff" "$(tail -n 3 "$out/float_diff.log" | tr '\n' ' ')"
+  fi
+fi
 
 # ---- collector runtime tests (C) -------------------------------------------------------------
 # harness/rt_gc_test.c covers large objects, the size classes above 512 bytes and the array

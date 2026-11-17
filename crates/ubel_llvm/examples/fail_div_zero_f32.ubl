@@ -1,0 +1,7 @@
+// The same for float, with negative zero as the divisor: -0.0 == 0.0, so it is caught too.
+fn main() void {
+    let z = -0.0f
+    println("before", z)
+    let r = 3.0f / z
+    println("not reached", r)
+}

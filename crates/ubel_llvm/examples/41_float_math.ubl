@@ -1,0 +1,79 @@
+// sqrt, floor, ceil, abs, min and max on double, float and int. min and max pick by `<=` and `>=` (a NaN or a
+// signed zero behaves exactly like the interpreter's), which is why they are a compare and a select. The
+// interpreter is the oracle.
+
+fn show_d(x: double) void {
+    println("double", x, sqrt(x), floor(x), ceil(x), abs(x))
+}
+
+fn show_f(x: float) void {
+    println("float", x, sqrt(x), floor(x), ceil(x), abs(x))
+}
+
+fn pair_d(a: double, b: double) void {
+    println("pair", a, b, min(a, b), max(a, b), min(b, a), max(b, a))
+}
+
+fn pair_f(a: float, b: float) void {
+    println("pair", a, b, min(a, b), max(a, b), min(b, a), max(b, a))
+}
+
+fn main() void {
+    let inf = 1e308 * 10.0
+    let nan = inf - inf
+    show_d(0.0)
+    show_d(-0.0)
+    show_d(1.0)
+    show_d(2.0)
+    show_d(2.5)
+    show_d(-2.5)
+    show_d(0.5)
+    show_d(-0.5)
+    show_d(1e15 + 0.5)
+    show_d(4503599627370496.5)
+    show_d(9007199254740993.0)
+    show_d(1e300)
+    show_d(5e-324)
+    show_d(-5e-324)
+    show_d(inf)
+    show_d(-inf)
+    show_d(nan)
+    show_d(144.0)
+    show_d(0.1)
+    let finf = 1e38f * 10.0f
+    let fnan = finf - finf
+    show_f(0.0f)
+    show_f(-0.0f)
+    show_f(2.0f)
+    show_f(2.5f)
+    show_f(-2.5f)
+    show_f(0.1f)
+    show_f(8388608.5f)
+    show_f(16777216.0f)
+    show_f(3.4028235e38f)
+    show_f(1e-45f)
+    show_f(finf)
+    show_f(-finf)
+    show_f(fnan)
+    pair_d(1.0, 2.0)
+    pair_d(-1.0, 2.0)
+    pair_d(0.0, -0.0)
+    pair_d(-0.0, 0.0)
+    pair_d(nan, 1.0)
+    pair_d(1.0, nan)
+    pair_d(nan, nan)
+    pair_d(inf, -inf)
+    pair_d(5e-324, 0.0)
+    pair_f(1.5f, 2.5f)
+    pair_f(0.0f, -0.0f)
+    pair_f(-0.0f, 0.0f)
+    pair_f(fnan, 1.0f)
+    pair_f(1.0f, fnan)
+    pair_f(finf, 1.0f)
+    println(sqrt(16), sqrt(2), floor(7), ceil(7), abs(-7), abs(7), min(3, 4), max(3, 4), min(4, 3), max(-4, -3))
+    println(abs(-9223372036854775807), min(-5, 5), max(-5, 5), min(7, 7), max(7, 7))
+    println(sqrt(-4), floor(-7), ceil(-7), floor(-9223372036854775807), sqrt(0))
+    let x = 3.7
+    println(sqrt(x * x), floor(x) + ceil(x), abs(floor(-x)), min(x, floor(x)), max(x, ceil(x)))
+    println(sqrt(floor(10.9)), ceil(abs(-0.2)), max(min(1.5, 2.5), 0.5))
+}

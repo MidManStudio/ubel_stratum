@@ -1,0 +1,6 @@
+// Not supported: `min` or `max` of two different types (the interpreter promotes the pair and returns one of the
+// original values, so the result type is not the type of either argument alone).
+// expect-refusal: two different types
+fn main() void {
+    println(min(1, 2.5))
+}

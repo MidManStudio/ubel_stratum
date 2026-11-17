@@ -1,0 +1,12 @@
+// Not supported yet: `match` on a floating-point value. (Float literals are not allowed as patterns at all, so
+// only a binding or `_` can follow; the emitter still refuses the scrutinee, as it does for `int` and `bool`.)
+// expect-refusal: match
+fn kind(x: double) int {
+    match x {
+        v => return 1,
+    }
+}
+
+fn main() void {
+    println(kind(1.5))
+}

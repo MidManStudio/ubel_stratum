@@ -1,0 +1,13 @@
+// A double divided by zero stops the program, as in the interpreter (it does not produce infinity). Everything
+// printed before the failure must match, and both must exit with status 1.
+fn div(a: double, b: double) double {
+    return a / b
+}
+
+fn main() void {
+    println(div(1.5, 0.5), div(-1.0, 4.0))
+    let z = 0.0
+    println("before")
+    println(div(1.0, z))
+    println("not reached")
+}

@@ -3,7 +3,33 @@
 Provisional, and **not yet run on a real phone**: everything below was reasoned from the code and checked on an
 emulator, not in Termux. The first person to try it should expect to fix a detail or two and write it down here.
 
-## What you need
+## The quick way: a prebuilt `ubel` from CI (recommended)
+
+Building the whole workspace on a phone is slow and needs 3 to 4 GB of memory, and on Android 12 and newer it can be killed
+halfway: Android limits background child processes, and Termux users report `[Process completed (signal 9)]` in the middle of
+a long `cargo build` (the usual remedies are in Termux's own documentation and community guides; none was tried here). So the
+better way is to let GitHub build `ubel` for your phone's CPU:
+
+1. On GitHub, in the repository: Actions, **Ubel for Android (Termux, 64-bit and 32-bit ARM)**, Run workflow (the file is
+   `.github/workflows/ubel-android.yml`). It takes a few minutes and makes two artifacts.
+2. Which one? In Termux run `uname -m`. `aarch64` is a 64-bit userspace: download **ubel-android-aarch64**. `armv8l` or `armv7l`
+   is a 32-bit userspace, even on a 64-bit CPU (some budget Samsung phones ship that way, and one Termux troubleshooting guide
+   lists the Galaxy A13 5G among them, so check your own phone and do not assume): download **ubel-android-armv7**.
+3. Unzip it in Termux (`pkg install unzip`; run `termux-setup-storage` first if the zip is in Downloads), then:
+
+```sh
+chmod +x ubel
+bash termux_try.sh                 # says what the phone is, tries `ubel run`, and `ubel build` when clang is there
+pkg install clang                  # `ubel build` needs it; `ubel run` (the interpreter) needs nothing
+./ubel build hello.ubl -o hello && ./hello
+```
+
+Paste the whole output of `termux_try.sh` back: it is the first real evidence of how this behaves on a phone. The binaries are
+built for Android 7.0 (API 24) and run on every newer Android. The same workflow also builds the supported examples for both
+targets with the NDK's clang, linked statically, and runs them under QEMU on the runner (bionic, not glibc), comparing them
+with the interpreter. That is not the same as running on a phone, and **neither job has run on a real runner yet**.
+
+## What you need (to build on the phone yourself)
 
 - Termux from F-Droid (the Play Store build is old and no longer updated).
 - A C compiler that understands textual LLVM IR: Termux's `clang`. The backend needs clang **15 or newer** and `ubel-llvm
@@ -94,7 +120,9 @@ The same programs were also built with clang 15.0.7, 18.1.3, 19.1.1 and 20.1.2 o
 under each, so the IR is not tied to one LLVM version. Termux's clang is probably newer than 20; that is the one gap.
 
 That covers data layout, alignment, the collector's register capture (`__builtin_unwind_init`) and the arena allocator
-on ARM. It does not cover Android's libc (bionic), Termux's clang version, memory limits, or real hardware.
+on ARM, measured before floats existed (M2b added examples 38 to 43; they were not run on ARM). The "Ubel for Android"
+workflow is meant to cover Android's libc (bionic) in the same way, with the NDK, but has not run yet. Nothing here covers
+Termux's clang version, memory limits, or real hardware.
 
 ## Known risks, most likely first
 

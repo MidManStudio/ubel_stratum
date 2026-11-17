@@ -27,8 +27,9 @@ use crate::CompileError;
 
 /// The C runtime, embedded. All four files are written next to the generated IR, because
 /// `ubel_rt.c` and `ubel_main.c` include the two headers.
-const RUNTIME_FILES: [(&str, &str); 4] = [
+const RUNTIME_FILES: [(&str, &str); 5] = [
     ("ubel_rt.h", include_str!("../runtime/ubel_rt.h")),
+    ("ubel_float.h", include_str!("../runtime/ubel_float.h")),
     ("ubel_unicode.h", include_str!(concat!(env!("OUT_DIR"), "/ubel_unicode.h"))),
     ("ubel_rt.c", include_str!("../runtime/ubel_rt.c")),
     ("ubel_main.c", include_str!("../runtime/ubel_main.c")),
@@ -469,6 +470,8 @@ pub fn build_ir(ir: &str, opts: &BuildOptions) -> Result<BuildOutput, BuildError
     args.push(tmp.path.join("ubel_main.c").into());
     args.push("-o".into());
     args.push(opts.output.clone().into());
+    // After the sources that need it: `frem` and some of the math intrinsics are calls into the math library.
+    args.push("-lm".into());
 
     let mut command = display_arg(compiler.path.as_os_str());
     for a in &args {

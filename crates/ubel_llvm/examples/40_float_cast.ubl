@@ -1,0 +1,79 @@
+// Casts with a float on either side, with Rust's `as` rules (the interpreter uses them): an integer becomes the
+// nearest float, a float becomes an integer by SATURATING (too large gives the maximum, too small the minimum,
+// NaN gives 0), and double <-> float rounds or widens. The interpreter is the oracle.
+
+fn to_ints(d: double) void {
+    println("double", d, d as int, d as i8, d as i16, d as i32, d as u8, d as u16, d as u32, d as u64)
+}
+
+fn to_ints_f(f: float) void {
+    println("float", f, f as int, f as i8, f as i16, f as i32, f as u8, f as u16, f as u32, f as u64)
+}
+
+fn main() void {
+    let inf = 1e308 * 10.0
+    let nan = inf - inf
+    to_ints(0.0)
+    to_ints(-0.0)
+    to_ints(1.9)
+    to_ints(-1.9)
+    to_ints(127.5)
+    to_ints(128.5)
+    to_ints(255.9)
+    to_ints(256.0)
+    to_ints(-128.9)
+    to_ints(-129.0)
+    to_ints(32767.9)
+    to_ints(65535.5)
+    to_ints(65536.0)
+    to_ints(2147483647.5)
+    to_ints(2147483648.0)
+    to_ints(4294967295.5)
+    to_ints(4294967296.0)
+    to_ints(-2147483649.0)
+    to_ints(9223372036854775807.0)
+    to_ints(1e19)
+    to_ints(1.8446744073709552e19)
+    to_ints(1e30)
+    to_ints(-1e30)
+    to_ints(inf)
+    to_ints(-inf)
+    to_ints(nan)
+    to_ints(5e-324)
+    let finf = 1e38f * 10.0f
+    let fnan = finf - finf
+    to_ints_f(0.5f)
+    to_ints_f(-0.5f)
+    to_ints_f(300.7f)
+    to_ints_f(-300.7f)
+    to_ints_f(16777216.0f)
+    to_ints_f(2147483520.0f)
+    to_ints_f(3.0e9f)
+    to_ints_f(1.0e20f)
+    to_ints_f(finf)
+    to_ints_f(-finf)
+    to_ints_f(fnan)
+
+    // integers to floats: round to nearest even, signed and unsigned sources
+    let big: int = 9007199254740993
+    let neg: int = -9007199254740993
+    println(big as double, neg as double, big as float, neg as float)
+    let u: u64 = 18446744073709551615u64
+    println(u as double, u as float, (u / 2) as double, (u - 1000) as float)
+    let m: int = -9223372036854775807 - 1
+    println(m as double, m as float, 0 as double, 1 as float, (-1) as double)
+    let b: u8 = 255u8
+    let s: i8 = -128i8
+    let w: u16 = 65535u16
+    let i: i32 = -2147483647 - 1
+    let k: u32 = 4294967295u32
+    println(b as double, s as double, w as float, i as double, k as float, k as double, i as float)
+    println(16777217 as float, 16777216 as float, 16777219 as float, 33554435 as float)
+
+    // between float and double
+    println(0.1f as double, 0.1 as float, 16777217.0 as float, 1e39 as float, -1e39 as float, 1e-46 as float, 1e-45 as float)
+    println(3.4028235e38f as double, 1.401298464324817e-45 as double, 123456.789 as float, 0.1f as double as float)
+    println((0.1f as double) == 0.1, (0.1 as float) == 0.1f)
+    let nn = nan as float
+    println(nn, nn as double, (inf as float), (-inf as float), (finf as double))
+}

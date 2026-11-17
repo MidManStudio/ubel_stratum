@@ -1,0 +1,71 @@
+// The printing of double and float: Rust's `{}` (shortest digits that read back, no exponent) over every power
+// of two and many powers of ten, and the special values. A sweep like this is the integrated check; the corpus
+// test scripts/float_diff.sh compares the formatter itself with Rust over millions of values.
+
+fn main() void {
+    // every power of two, upwards until it overflows to infinity, and downwards through the subnormals to zero
+    let mut p = 1.0
+    for i in 0 .. 1030 {
+        println(p)
+        p = p * 2.0
+    }
+    let mut q = 1.0
+    for i in 0 .. 1080 {
+        println(q)
+        q = q / 2.0
+    }
+    // powers of ten, up (exact until about 1e22) and down (never exact)
+    let mut t = 1.0
+    for i in 0 .. 312 {
+        println(t)
+        t = t * 10.0
+    }
+    let mut u = 1.0
+    for i in 0 .. 330 {
+        println(u)
+        u = u / 10.0
+    }
+    // the same for float
+    let mut fp = 1.0f
+    for i in 0 .. 130 {
+        println(fp)
+        fp = fp * 2.0f
+    }
+    let mut fq = 1.0f
+    for i in 0 .. 160 {
+        println(fq)
+        fq = fq / 2.0f
+    }
+    let mut ft = 1.0f
+    for i in 0 .. 42 {
+        println(ft)
+        ft = ft * 10.0f
+    }
+    let mut fu = 1.0f
+    for i in 0 .. 50 {
+        println(fu)
+        fu = fu / 10.0f
+    }
+    // special values: infinities from overflow, NaN from inf - inf, negative zero
+    let inf = 1e308 * 10.0
+    let ninf = -inf
+    let nan = inf - inf
+    println(inf, ninf, nan, -nan, 0.0, -0.0, nan == nan, nan != nan, nan < 1.0, nan > 1.0)
+    println(nan <= 1.0, nan >= 1.0, nan <= nan, nan >= nan, 1.0 <= nan, 1.0 >= nan, inf >= inf, inf <= inf, ninf < inf)
+    let finf = 1e38f * 10.0f
+    let fnan = finf - finf
+    println(finf, -finf, fnan, -fnan, 0.0f, -0.0f, fnan == fnan, fnan != fnan)
+    println(fnan < fnan, fnan > fnan, fnan <= fnan, fnan >= fnan, finf >= finf, finf <= finf, -finf < finf)
+    // sums that land on awkward digits
+    let mut s = 0.0
+    for i in 0 .. 100 {
+        s += 0.1
+        println(s)
+    }
+    let mut fs = 0.0f
+    for i in 0 .. 100 {
+        fs += 0.1f
+        println(fs)
+    }
+    println($"[{inf}] [{nan}] [{-0.0}] [{1e21}] [{1e-7}] [{0.5f}] [{16777216.0f}]")
+}

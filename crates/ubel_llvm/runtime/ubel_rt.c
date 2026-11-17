@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include "ubel_unicode.h"
+#include "ubel_float.h"
 
 #ifndef MAP_ANONYMOUS
 #define MAP_ANONYMOUS MAP_ANON
@@ -44,6 +45,9 @@ uint64_t ubel_now_ns(void) {
 void ubel_print_i64(int64_t v)            { fprintf(stdout, "%lld", (long long)v); }
 void ubel_print_u64(uint64_t v)           { fprintf(stdout, "%llu", (unsigned long long)v); }
 void ubel_print_bool(int32_t b)           { fputs(b ? "true" : "false", stdout); }
+/* Floating point prints like Rust's `{}` (shortest digits that read back, no exponent): see ubel_float.h. */
+void ubel_print_f64(double v)             { char b[UBEL_FLT_BUF]; fwrite(b, 1, (size_t)ubel_f64_format(b, v), stdout); }
+void ubel_print_f32(float v)              { char b[UBEL_FLT_BUF]; fwrite(b, 1, (size_t)ubel_f32_format(b, v), stdout); }
 void ubel_print_str(const char *s, int64_t len) { fwrite(s, 1, (size_t)len, stdout); }
 void ubel_print_nl(void)                  { fputc('\n', stdout); }
 
@@ -409,6 +413,13 @@ int64_t ubel_u64_len(uint64_t u) {
 void ubel_u64_write(char *dst, uint64_t u) {
     for (int64_t i = ubel_u64_len(u) - 1; i >= 0; i--) { dst[i] = (char)('0' + (int)(u % 10)); u /= 10; }
 }
+
+/* The same pairs for `double` and `float`: the length, then exactly that many characters at dst (the number is
+ * formatted twice, once for each; it is cheap next to the allocation in between). */
+int64_t ubel_f64_len(double v)            { char b[UBEL_FLT_BUF]; return ubel_f64_format(b, v); }
+void ubel_f64_write(char *dst, double v)  { char b[UBEL_FLT_BUF]; memcpy(dst, b, (size_t)ubel_f64_format(b, v)); }
+int64_t ubel_f32_len(float v)             { char b[UBEL_FLT_BUF]; return ubel_f32_format(b, v); }
+void ubel_f32_write(char *dst, float v)   { char b[UBEL_FLT_BUF]; memcpy(dst, b, (size_t)ubel_f32_format(b, v)); }
 
 void ubel_put(char *dst, const char *src, int64_t n) { memcpy(dst, src, (size_t)n); }
 

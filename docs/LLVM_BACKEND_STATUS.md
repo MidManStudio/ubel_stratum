@@ -20,8 +20,8 @@ table in `LLVM_ROADMAP.md` stops at slice 4 and should be replaced by a pointer 
   The `ubel` command line has `check`, `run`, `build` and `debug-tokens`, and the LLVM crate is a member of the main
   workspace.
 - **The subset is small next to the language.** Measured on current master: the target program
-  (`examples/arena_demo/ast_builder.ubl`) compiles; the self-hosted tokenizer does not; **4 of the 168 `ok_`
-  fixtures compile** (they are sema snippets, so this measures which features the language tests use, not how many
+  (`examples/arena_demo/ast_builder.ubl`) compiles; the self-hosted tokenizer does not; **29 of the 187 `ok_`
+  fixtures compile** (4 of 168 before M2a, 28 before M2b) (they are sema snippets, so this measures which features the language tests use, not how many
   programs would compile, but the direction is not in doubt). The interpreter runs the language; the backend
   runs a corner of it.
 - **The corner is the part that was hardest to design, not the part that is largest.** The three memory tiers
@@ -65,7 +65,7 @@ The emitter's own list of refusals is the authority (87 distinct messages in `em
 
 | Group | Refused today |
 |---|---|
-| **Types** | `double`/`float` (no float literals or types), `short`/`ushort` casts, `char`, tuples, generic types and structs and enums (so `Pool<T>` and `Handle<T>` too), `&mut`, references to anything but a struct, qualified type names, fallible types |
+| **Types** | `short`/`ushort` casts, `char`, tuples, generic types and structs and enums (so `Pool<T>` and `Handle<T>` too), `&mut`, references to anything but a struct, qualified type names, fallible types |
 | **Collections** | `List<T>`, `Dictionary`, `Queue`, `InlineList`, `Unique<T>`, `Shared<T>`, indexing, `push`, `len` on a list, `for` over anything but an integer range |
 | **Declarations** | traits, `impl` and `extend` blocks, struct methods and properties, attributes (`@derive`), `static` items and other declaration kinds, generic functions, `async`/`await`; imports do not exist because the language has no modules yet |
 | **Calls** | your own functions, `println`/`print`, `assert` and `panic` (a string message only); no other builtins (`len`, `push`, math, ...), no named arguments, no calling a value that is not a local |
@@ -75,21 +75,21 @@ The emitter's own list of refusals is the authority (87 distinct messages in `em
 | **Memory** | allocation in LOW (decision open), building a string or a struct in MID outside `with arena` (decision open), `with gc`/`heap`/`pool`, `Pool<T>`/`Handle<T>` |
 | **Closures** | captures of mutable variables, closures that capture more than 30 variables, a closure inside a closure inside an arena |
 
-How much does each group matter? The first refusal of each `ok_` fixture, measured with the binary after M2a
-(`tests/fixtures/ok_*.ubl`, 176 files; **28 of them compile now**, they were 4 of 168 before M2a; a program refused for one
+How much does each group matter? The first refusal of each `ok_` fixture, measured with the binary after M2b on 2026-11-16
+(`tests/fixtures/ok_*.ubl`, 187 files; **29 of them compile now**, 28 before M2b and 4 of 168 before M2a; a program refused for one
 reason is usually refused for several, so these count what a program would hit first, and the ranking is more reliable than
-the numbers). The 148 that are still refused:
+the numbers). The 158 that are still refused (recounted for this table on all 187 files, so the rows differ a little from the ones counted after M2a; the same count with the emitter from before M2b gives 28 compiling and 39 type refusals, so a fixture that first failed on a `double` now fails on its next feature, mostly traits):
 
 | First refusal | Fixtures | What would unlock it |
 |---|---|---|
-| a value or annotation of an unsupported type (`List<T>` 12, `InlineList`, `Dictionary`, `Unique` 3 each, `Queue`, `Shared`, `&mut`, `Callback`, `char`, `double`, and 12 annotations of other types) | 38 | collections (M3), `float`/`double` (M2b) |
-| trait, `impl` and `extend` declarations | 28 | traits (the traits chat) |
-| generic structs, types and functions | 26 | monomorphization (decision) |
+| a value or annotation of an unsupported type (`List<T>`, `InlineList`, `Dictionary`, `Unique`, `Queue`, `Shared`, `&mut`, `Callback`, `char`, and other annotations) | 35 | collections (M3) |
+| trait, `impl` and `extend` declarations | 34 | traits (the traits chat) |
+| generic structs, types and functions | 27 | monomorphization (decision) |
 | attributes on structs (`@derive`) | 21 | derives, which wait on traits |
-| references that are not to a struct, struct-style variants, `static`, constants, struct methods, other blocks, format specifiers | 35 | several small slices |
+| references that are not to a struct, struct-style variants, `static`, constants, struct methods, other blocks, format specifiers | 41 | several small slices |
 
 The self-hosted tokenizer (137 lines, the project's own next target in `self-hosted/docs/SELF_HOSTED.md`) is refused
-at its `double` field (M2b; its `Str` type is accepted since M2a, example 37), and would then need `List<int>`, `List<Token>`, `List.new()`, `push`, indexing and
+at its `List<int>` parameter (line 31; its `double` field is accepted since M2b and its `Str` type since M2a, example 37), and needs `List<int>`, `List<Token>`, `List.new()`, `push`, indexing and
 `len`. That is a short, concrete list.
 
 ## 3. From source to an executable, today and as it should be
@@ -133,7 +133,7 @@ than that or dependent on language work that is not done. These are estimates fr
 |---|---|---|---|---|---|
 | M0 | Subset and target program | done | | done | `ast_builder` equals the interpreter in the suite |
 | M1 | `ubel build` and packaging (done: M1a `ubel-llvm build`, M1b `ubel build` and the workspace join) | the thing a user can try | nothing in the language | S to M | `ubel build examples/x.ubl -o x && ./x` on Linux, and CI does it through the real CLI |
-| M2 | Numeric tower and `assert` (M2a done: sized integers, `assert`, `panic`; M2b open: `float` and `double`) | floats and sized integers are in the tokenizer and everywhere else | overflow behaviour is decided for the sized integers (wrap, as the interpreter does); plain `int` in the interpreter saturates through `f64`, a core bug (`LLVM_POC.md`, known differences) | M | the fixtures that first fail on `u8`, `u64`, `double`, `assert` compile and match the interpreter |
+| M2 | Numeric tower and `assert` (M2a done: sized integers, `assert`, `panic`; M2b done: `float` and `double`, printed exactly like Rust's `{}`, with `sqrt floor ceil abs min max`) | floats and sized integers are in the tokenizer and everywhere else | overflow behaviour is decided for the sized integers (wrap, as the interpreter does); plain `int` in the interpreter saturates through `f64`, a core bug (`LLVM_POC.md`, known differences) | M | the fixtures that first fail on `u8`, `u64`, `double`, `assert` compile and match the interpreter |
 | M3 | Collections v1: `List<T>`, indexing, `push`, `len`, `for` over a list, bounds checks | most of the 42 | the generics decision (below) for `List<T>` | L | the self-hosted tokenizer compiles and equals the interpreter on its inputs |
 | M4 | Generics (monomorphization) and traits (static dispatch), `@derive` | 24 + 25 + 21 first refusals | the traits chat; decision on monomorphization versus uniform representation | XL | the generic and trait fixtures compile; `Dictionary`, `Unique`, `Shared` follow |
 | M5 | Modules, imports and a minimal standard library (arguments, stdin and files, exit code) | real programs, the self-hosted parser | language work: modules do not exist yet | L, language-dependent | a multi-file program builds; the self-hosted parser compiles |
@@ -203,8 +203,9 @@ Two cautions that stay true after the rename:
 1. Done on 2026-11-10: the folder is `crates/ubel_llvm` (section 7).
 2. Done: the pointer in `LLVM_ROADMAP.md` and the Phase 4 row of `web/site/src/project-status.md`.
 3. Done on 2026-11-13: M1b, `ubel build` in the CLI and the workspace join (section 3, point 5).
-4. M2b: `float` and `double`, including printing them exactly like the interpreter does (Rust's shortest round-trip `{}`), tested
-   differentially against Rust itself. M2a (sized integers, `assert`, `panic`) is done.
+4. Done on 2026-11-16: M2b, `float` and `double`, including printing them exactly like the interpreter does (Rust's shortest
+   round-trip `{}`, a port of Rust's own Dragon), tested differentially against Rust itself (`scripts/float_diff.sh`). M2a (sized
+   integers, `assert`, `panic`) is done.
 5. Make the generics decision (section 4) before starting collections, with the self-hosted tokenizer as the test.
 
 ## 9. How this was measured, and what was not

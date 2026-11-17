@@ -472,7 +472,7 @@ over every operator at every width:
   the emitter does not copy it. Write `i16` or `u16`.
 
 Printing and interpolation widen to 64 bits (sign- or zero-extended); `u64` has its own unsigned helpers
-(`ubel_print_u64`, `ubel_u64_len`, `ubel_u64_write`). Not yet: `float` and `double` (M2b), the sized integers as a `for`
+(`ubel_print_u64`, `ubel_u64_len`, `ubel_u64_write`). Not yet: the sized integers as a `for`
 range or in a `match` (both are refused with a located message), and `as` to or from `char` or `string`.
 
 `assert(cond)`, `assert(cond, "message")`, `panic()` and `panic("message")` call `ubel_panic`: flush standard output,
@@ -480,6 +480,47 @@ print the message to standard error, exit with status 1. Every argument is evalu
 interpreter does (checked with a message that prints), and a message must be a string; other values are refused, because
 the interpreter prints any value. The suite compares standard output and the exit status, not standard error, so the
 wording of a panic message is not checked.
+
+**Floating point (M2b, provisional).** `double` (`f64`) and `float` (`f32`) work wherever `int` does: locals, parameters,
+results, struct fields, enum payloads, closure captures, arenas and the collector (a float is not a pointer, so a double
+whose bits look like an address keeps nothing alive). A literal such as `1.5` is a `double`, and `1.5f` is a `float`: the
+lexer rounds it to f32 and the interpreter holds that same f32, which the emitter reads (`1e999` is infinity). Sema allows
+no mixing of `int`, `float` and `double` in arithmetic (`x * 2` with a `double` `x` is a type error), so the emitter never
+promotes. Supported: `+ - * / %`, unary minus, the six comparisons, `as`, printing and interpolation, and the builtins
+`sqrt floor ceil abs min max`. The rules, each checked against the interpreter by examples 38 to 43:
+
+- Arithmetic is plain IEEE (`fadd fsub fmul fdiv frem`). The interpreter computes a `float` operation in f64 and rounds
+  the result to f32; that is the same value as an f32 instruction gives (f64 has more than twice the 24 bits, so the double
+  rounding cannot change `+ - * /` or `%`), so the emitter uses f32 instructions.
+- A zero divisor, `-0.0` too, stops the program (exit status 1) like the interpreter: `1.0 / 0.0` is a panic there, not
+  infinity. A NaN divisor does not. Infinities and NaN still arise: `1e308 * 10.0`, `inf - inf`, `sqrt(-1.0)`.
+- `==` is false for NaN and `!=` true (`fcmp oeq` and `une`), the ordering comparisons are false when either side is NaN,
+  and `-0.0 == 0.0`.
+- `as`: an integer becomes the nearest float (`sitofp`, or `uitofp` from an unsigned type); a float becomes an integer by
+  *saturating*, as Rust's `as` does (too large is the maximum, too small the minimum, NaN is 0): `llvm.fptosi.sat` and
+  `llvm.fptoui.sat`; `double` and `float` convert by rounding or widening. `bool` to float (the interpreter panics) and
+  anything to or from `char` or `string` are refused.
+- **Printing is Rust's `{}`**: the shortest digits that read back as the same number, never an exponent (`1e21` is
+  `1000000000000000000000`, `1e-7` is `0.0000001`), `1.0` is `1`, `-0.0` is `-0`, and `NaN`, `inf`, `-inf` (a NaN has no
+  sign). `runtime/ubel_float.h` is a port of the algorithm Rust itself uses (Dragon, `flt2dec::strategy::dragon::
+  format_shortest`, with its decoder, estimator, `round_up` and a fixed-size bignum), not a `printf` and `strtod`
+  shortcut: the shortest correctly *rounded* string is not always the shortest string inside the rounding interval, which
+  is asymmetric at a power of two. `scripts/float_diff.sh` compares it with `format!("{}")` of the Rust toolchain over
+  1.6 million values (every power of two and of ten and their neighbours, integers, short decimals, specials, random bit
+  patterns): no difference, also in a run of 17 million and under ASan and UBSan, and the same corpus comes out of Rust
+  1.75 and 1.85. Hand mutants of the port were caught, except one in the carry of `round_up` for a run of trailing nines,
+  which no test reaches (8 million round-ups, none with trailing nines; Rust's own source calls that case very hard to
+  satisfy). Format specifiers (`{x:.2}`) are still refused.
+- `sqrt`, `floor` and `ceil` of a `double` or `float` give the same type, of an `int` a `double` (the interpreter
+  converts); `abs` of a float is a float (`llvm.fabs`), of an `int` an `int` (it wraps at `MIN`); `min(a, b)` is `a` when
+  `a <= b`, else `b`, and `max(a, b)` is `a` when `a >= b`, else `b`, which is the interpreter's rule, so a NaN argument
+  and the two zeros behave the same. That is why they are a compare and a select and not `llvm.minnum`, which the core's
+  builtin table suggests and whose NaN and zero results differ. The sized integers, and two arguments of different types
+  (the interpreter promotes and returns one of the originals), are refused.
+- The clang command line ends with `-lm` (`frem` and some intrinsics are calls into the math library). On 32-bit x86 clang
+  uses the x87 FPU unless told otherwise, which computes in extended precision and can differ in the last digit:
+  `run_equiv.sh` adds `-msse2 -mfpmath=sse` for `-m32`; the driver does not add it by itself, so pass it after `--` when
+  building for 32-bit x86. ARM and x86-64 use IEEE single and double directly.
 
 **Structs (slice 2).** Plain structs whose fields are `int`, `bool` or another struct:
 literals, field reads, field assignment (plain and compound, nested too), and passing and
@@ -875,6 +916,11 @@ use. The sized integers do not have the problem (their interpreter path, `sized_
 which is why examples 33 to 35 use them for the edge cases. A fix would add an `(Int, Int)` arm with `wrapping_*`
 operations in front of `promote_numeric`; it is the owner's file, so this is a suggestion and not a patch.
 
+**`min` and `max` of large `int`s in the interpreter (found in M2b).** The builtins compare through `f64`, like the rest of
+the interpreter's `int` arithmetic: `min(9007199254740993, 9007199254740992)` is `9007199254740993` and `max(9007199254740992,
+9007199254740993)` is `9007199254740992`, both wrong. Native compares exactly (`icmp`), so those two lines differ; below
+2^53 they agree. Same owner-side cause as the table above.
+
 Division by zero stops both with exit status 1, but the messages differ, and so do the messages of `assert` and `panic`
 (the suite does not compare standard error). Shifts and `MIN / -1` are defined natively the way the interpreter defines
 them for the sized integers (see "Integers and `assert`").
@@ -970,6 +1016,19 @@ Found while building the struct slice, same status (found, not fixed):
   is signed, and `ubyte` is `u8`.
 - `Str`, with a capital, is another spelling of `string` for sema and the interpreter; the self-hosted tokenizer writes
   its string fields that way. The emitter accepts it since M2a (example 37).
+- `else if` is a parse error here (`unexpected if ... expected '{', 'then'`); an `if` inside an `else` block parses. Float
+  literals are not allowed as patterns (also a parse error), so a `match` on a `double` can only have `_` or a name arm, and
+  the emitter refuses it anyway (`match` on anything but an enum or a string).
+- Sema allows no implicit conversion between `int`, `float` and `double`: `let c: float = 1.5` and `x * 2` for a `double`
+  `x` are type errors (a `float` literal needs the `f` suffix).
+- The builtins `sqrt floor ceil abs min max` have a `Numeric` result that unifies with any numeric annotation, so
+  `let x: int = sqrt(16)` passes sema, and the interpreter then holds a `double` in a variable declared `int` (it prints
+  `4`; `x + 1` is `5`). The emitter follows the value's type (an annotation is ignored, see above), so that program prints
+  the same natively; `x + 1` or `twice(x)` with an `int` parameter is refused as "the operands of this operator have
+  different types". A tighter result type in sema would remove the case.
+- A `float` literal is lexed as an f64 and then narrowed to f32 (`FloatLit` in the lexer), which is two roundings; the
+  interpreter and the emitter use the same f32, so they agree. Whether that always equals Rust's direct decimal to f32
+  parse was not checked.
 - Plain `int` arithmetic in the interpreter goes through `f64`: see "Known differences from the interpreter".
 
 ### Toolchain notes
@@ -1161,6 +1220,20 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-16 (chat 8): **M2b, `float` and `double`.** Types, literals, `+ - * / %`, negation, comparisons, `as` both ways,
+  printing and interpolation, and `sqrt floor ceil abs min max`, as described under "Floating point". The printer is a port of
+  Rust's Dragon in `runtime/ubel_float.h`; `scripts/float_diff.sh` (with `float_diff_gen.rs` and `harness/float_diff_check.c`)
+  compares it with Rust's `{}`: 1,628,276 values, 0 differences (17,028,276 in a larger run, and under ASan and UBSan; Rust
+  1.75 and 1.85 write the same corpus). New: examples 38 to 43, `fail_div_zero_f64`, `fail_div_zero_f32`, `fail_rem_zero_f64`,
+  five `u_float_*` refusals, two integration tests (one links `%` and `floor`, so it needs `-lm`), `-lm` in the driver and the
+  suite, `-msse2 -mfpmath=sse` for `-m32`, and `ubel_float.h` embedded by the driver. Verified on a fresh clone of master with
+  Rust 1.85 and clang 18: `run_equiv.sh` 101 passed, 0 failed at 64-bit (was 86; the new ones go through -O0, -O2 and ASan
+  and UBSan); the cargo tests pass; 19 hand mutants of the emitter caught (17 of the first 18; the survivor was `>=` mutated
+  to `>`, because no example compared equal operands, so examples 38, 39 and 42 got those cases and a `<=` mutant was added).
+  Effect on coverage: 29 of 187 `ok_` fixtures compile (28 before; the type refusals fell from 39 to 35), and the
+  self-hosted tokenizer's first refusal moves from its `double` field to its `List<int>` parameter. Findings: see "Findings
+  about the front end" and "Known differences". Not verified: Termux or any real phone, `-m32` x87 behaviour beyond the
+  suite, a Rust older than 1.85 for the whole workspace.
 - 2026-11-15: First real CI run of the `Ubel build` workflow (run 1, the x86_64 and aarch64 runners, master `d439222`):
   80 of 81 checks passed on both and `29_string_unicode` failed, the Unicode drift above: the committed tables were
   15.0.0 and the runner's Rust is newer. Cause on my side: the tarball I delivered (ubuildci-8) held only

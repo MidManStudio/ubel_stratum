@@ -183,6 +183,10 @@ enum Ty {
     Fn(usize),
     /// A fixed-width integer other than `int` (see `IntTy`).
     Int(IntTy),
+    /// `double` / `f64`: an IEEE 754 binary64, LLVM `double` (M2b).
+    F64,
+    /// `float` / `f32`: an IEEE 754 binary32, LLVM `float` (M2b).
+    F32,
 }
 
 /// The shape of a function type: parameter types and result.
@@ -200,6 +204,8 @@ impl Ty {
             Ty::Void => "void",
             Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) => "ptr",
             Ty::Int(k) => k.ir(),
+            Ty::F64 => "double",
+            Ty::F32 => "float",
         }
     }
 
@@ -212,10 +218,21 @@ impl Ty {
         }
     }
 
+    fn is_float(self) -> bool {
+        matches!(self, Ty::F64 | Ty::F32)
+    }
+
     /// Values that are pointers to objects, and so need a collector mask bit.
     fn is_ptr(self) -> bool {
         matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_))
     }
+}
+
+/// An LLVM floating-point constant for `v`: the hexadecimal form of the double's bits, which LLVM accepts for a
+/// `double`, and for a `float` when the double is exactly a float (every f32 widens exactly). It also spells
+/// infinity, which a literal like `1e999` is.
+fn float_const(v: f64) -> String {
+    format!("0x{:016X}", v.to_bits())
 }
 
 #[derive(Clone)]
@@ -285,7 +302,6 @@ struct Local {
 
 /// A value a closure copies from the frame it is written in when it is created.
 struct Capture {
-    name: String,
     ty: Ty,
     /// The stack slot of the variable in the enclosing function.
     outer_slot: String,
@@ -386,6 +402,8 @@ struct Emitter<'a> {
     uses_str: bool,
     /// Some `with arena` block was made scannable, so the runtime function that creates one is declared.
     uses_scan: bool,
+    /// LLVM intrinsics used (whole `declare` lines), declared once after the runtime's functions.
+    decls: BTreeSet<String>,
     /// Arenas (by SSA name) that hold, or may hold, a pointer into the GC heap: a `with arena` block whose
     /// objects have pointer fields. They are created scannable, so the collector treats what was written
     /// in them as roots instead of freeing a GC object whose only reference is an arena object's field.
@@ -490,6 +508,7 @@ impl<'a> Emitter<'a> {
             uses_bump: false,
             uses_str: false,
             uses_scan: false,
+            decls: BTreeSet::new(),
             arena_scan: BTreeSet::new(),
             fn_tys: RefCell::new(Vec::new()),
             lam_n: 0,
@@ -529,6 +548,8 @@ impl<'a> Emitter<'a> {
         out.push_str("declare void @ubel_arena_destroy(ptr)\n");
         out.push_str("declare void @ubel_print_i64(i64)\n");
         out.push_str("declare void @ubel_print_u64(i64)\n");
+        out.push_str("declare void @ubel_print_f64(double)\n");
+        out.push_str("declare void @ubel_print_f32(float)\n");
         out.push_str("declare void @ubel_panic(ptr, i64)\n");
         out.push_str("declare void @ubel_print_bool(i32)\n");
         out.push_str("declare void @ubel_print_str(ptr, i64)\n");
@@ -557,9 +578,20 @@ impl<'a> Emitter<'a> {
             out.push_str("declare void @ubel_i64_write(ptr, i64)\n");
             out.push_str("declare i64  @ubel_u64_len(i64)\n");
             out.push_str("declare void @ubel_u64_write(ptr, i64)\n");
+            out.push_str("declare i64  @ubel_f64_len(double)\n");
+            out.push_str("declare void @ubel_f64_write(ptr, double)\n");
+            out.push_str("declare i64  @ubel_f32_len(float)\n");
+            out.push_str("declare void @ubel_f32_write(ptr, float)\n");
             out.push_str("declare void @ubel_put(ptr, ptr, i64)\n");
         }
         if self.uses_gc || self.uses_bump || self.uses_str {
+            out.push('\n');
+        }
+        if !self.decls.is_empty() {
+            for d in &self.decls {
+                out.push_str(d);
+                out.push('\n');
+            }
             out.push('\n');
         }
         if !self.strings.is_empty() {
@@ -828,6 +860,8 @@ impl<'a> Emitter<'a> {
             TypeKind::Short | TypeKind::Ushort => {
                 unsupported(t.span, "`short` and `ushort` (sema widens them; write `i16` or `u16`)")
             }
+            TypeKind::Float | TypeKind::F32 => Ok(Ty::F32),
+            TypeKind::Double | TypeKind::F64 => Ok(Ty::F64),
             TypeKind::Bool => Ok(Ty::I1),
             TypeKind::Void => Ok(Ty::Void),
             TypeKind::Str => Ok(Ty::Str),
@@ -869,7 +903,7 @@ impl<'a> Emitter<'a> {
                         // `Str` is another spelling of `string` (sema and the interpreter accept it; the
                         // self-hosted tokenizer writes its string fields that way).
                         (None, None) if *name == "Str" => Ok(Ty::Str),
-                        (None, None) => unsupported(t.span, format!("the type `{name}` (only integers, bool, string, void, plain structs and enums so far)")),
+                        (None, None) => unsupported(t.span, format!("the type `{name}` (only integers, floats, bool, string, void, plain structs and enums so far)")),
                     },
                     _ => unsupported(t.span, "qualified type names"),
                 }
@@ -1043,6 +1077,10 @@ impl<'a> Emitter<'a> {
                     | SemaType::U32
                     | SemaType::U64
                     | SemaType::Usize
+                    | SemaType::Float
+                    | SemaType::F32
+                    | SemaType::Double
+                    | SemaType::F64
                     | SemaType::Bool
                     | SemaType::Void
                     | SemaType::Str
@@ -1062,7 +1100,7 @@ impl<'a> Emitter<'a> {
                     }
                     _ => {
                         let shown = self.ctx.types.get(start).display(&self.ctx.types, &self.ctx.symbols);
-                        return unsupported(e.span, format!("values of type `{shown}` (only integers, bool, string, void, plain structs and enums so far)"));
+                        return unsupported(e.span, format!("values of type `{shown}` (only integers, floats, bool, string, void, plain structs and enums so far)"));
                     }
                 }
             }
@@ -1583,7 +1621,10 @@ impl<'a> Emitter<'a> {
             ExprKind::Lit(Literal::Str(s)) | ExprKind::Lit(Literal::VerbatimStr(s)) => Ok(self.static_str(s)),
             ExprKind::Lit(Literal::InterpolatedStr(parts))
             | ExprKind::Lit(Literal::InterpolatedVerbatimStr(parts)) => self.interp_string(e, parts),
-            ExprKind::Lit(_) => unsupported(e.span, "this literal as a value (only int, bool and string literals so far)"),
+            ExprKind::Lit(Literal::Double(d)) => Ok(Val { v: float_const(d), ty: Ty::F64 }),
+            // The lexer already rounded a `float` literal to f32; the interpreter holds that same f32.
+            ExprKind::Lit(Literal::Float(f)) => Ok(Val { v: float_const(f as f64), ty: Ty::F32 }),
+            ExprKind::Lit(_) => unsupported(e.span, "this literal as a value (only int, float, bool and string literals so far)"),
             ExprKind::Ident(name) => {
                 let local = match self.lookup(name) {
                     Some(l) => l,
@@ -1605,6 +1646,10 @@ impl<'a> Emitter<'a> {
                 let v = self.expr(operand)?;
                 let t = self.fresh();
                 match op {
+                    UnaryOp::Neg if v.ty.is_float() => {
+                        self.inst(&format!("{t} = fneg {} {}", v.ty.ir(), v.v));
+                        Ok(Val { v: t, ty: v.ty })
+                    }
                     UnaryOp::Neg => match v.ty.int_info() {
                         // Wrapping negation, like the interpreter (`-MIN` is `MIN`).
                         Some((_, true)) => {
@@ -2276,11 +2321,168 @@ impl<'a> Emitter<'a> {
         Ok(Val { v: out, ty: Ty::I1 })
     }
 
+    /// `+ - * / %` and the comparisons on `double` and `float` (M2b, docs/LLVM_POC.md "Floating point"). Both
+    /// operands have the same type (sema allows no mixing). The interpreter computes in f64 and rounds a `float`
+    /// result to f32, which is the correctly rounded f32 result for these operations (f64 has more than twice the
+    /// bits), so plain f32 instructions agree. A zero divisor, `-0.0` too, stops the program like the interpreter
+    /// (`1.0 / 0.0` is a panic there, not infinity); a NaN divisor does not. `==` is false for NaN and `!=` true
+    /// (IEEE), `<` and the like are false when either side is NaN.
+    fn float_binop(&mut self, op: BinOp, l: &Val, r: &Val, span: Span) -> R<Val> {
+        let ty = l.ty;
+        let ir = ty.ir();
+        let t = self.fresh();
+        match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                let name = match op {
+                    BinOp::Add => "fadd",
+                    BinOp::Sub => "fsub",
+                    _ => "fmul",
+                };
+                self.inst(&format!("{t} = {name} {ir} {}, {}", l.v, r.v));
+                Ok(Val { v: t, ty })
+            }
+            BinOp::Div | BinOp::Rem => {
+                let zero = self.fresh();
+                self.inst(&format!("{zero} = fcmp oeq {ir} {}, 0.0", r.v));
+                let bad = self.label("divz");
+                let ok = self.label("divok");
+                self.term(&format!("br i1 {zero}, label %{bad}, label %{ok}"));
+                self.begin(&bad);
+                self.inst("call void @ubel_trap_div_zero()");
+                self.term("unreachable");
+                self.begin(&ok);
+                let name = if op == BinOp::Div { "fdiv" } else { "frem" };
+                self.inst(&format!("{t} = {name} {ir} {}, {}", l.v, r.v));
+                Ok(Val { v: t, ty })
+            }
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                let pred = match op {
+                    BinOp::Eq => "oeq",
+                    BinOp::Ne => "une",
+                    BinOp::Lt => "olt",
+                    BinOp::Le => "ole",
+                    BinOp::Gt => "ogt",
+                    _ => "oge",
+                };
+                self.inst(&format!("{t} = fcmp {pred} {ir} {}, {}", l.v, r.v));
+                Ok(Val { v: t, ty: Ty::I1 })
+            }
+            _ => unsupported(span, "this operator on floating-point values (only `+ - * / %` and the comparisons)"),
+        }
+    }
+
+    /// Conversions with a float on either side, with Rust's `as` rules (which the interpreter uses): an integer
+    /// becomes the nearest float (`sitofp` for a signed source, `uitofp` for an unsigned one), `double` and
+    /// `float` convert by rounding or widening, and a float becomes an integer by SATURATING (too large gives the
+    /// type's maximum, too small its minimum, NaN gives 0), which is `llvm.fptosi.sat` and `llvm.fptoui.sat`.
+    /// Bool and string conversions are not supported (the interpreter panics for bool to float).
+    fn float_cast(&mut self, v: &Val, to: Ty, span: Span) -> R<Val> {
+        let t = self.fresh();
+        match (v.ty.is_float(), to.is_float()) {
+            (true, true) => {
+                let op = if to == Ty::F64 { "fpext" } else { "fptrunc" };
+                self.inst(&format!("{t} = {op} {} {} to {}", v.ty.ir(), v.v, to.ir()));
+            }
+            (false, true) => {
+                let Some((_, signed)) = v.ty.int_info() else {
+                    return unsupported(span, "this conversion to a float (only integers convert)");
+                };
+                let op = if signed { "sitofp" } else { "uitofp" };
+                self.inst(&format!("{t} = {op} {} {} to {}", v.ty.ir(), v.v, to.ir()));
+            }
+            (true, false) => {
+                let Some((_, signed)) = to.int_info() else {
+                    return unsupported(span, "this conversion from a float (only to integers)");
+                };
+                let src = if v.ty == Ty::F64 { "f64" } else { "f32" };
+                let name = format!("llvm.fpto{}i.sat.{}.{src}", if signed { "s" } else { "u" }, to.ir());
+                self.declare_intrinsic(format!("declare {} @{name}({})", to.ir(), v.ty.ir()));
+                self.inst(&format!("{t} = call {} @{name}({} {})", to.ir(), v.ty.ir(), v.v));
+            }
+            (false, false) => unreachable!("float_cast is only called with a float on one side"),
+        }
+        Ok(Val { v: t, ty: to })
+    }
+
+    /// Records an LLVM declaration (an intrinsic) to be written once with the other declarations.
+    fn declare_intrinsic(&mut self, line: String) {
+        self.decls.insert(line);
+    }
+
+    /// `sqrt`, `floor`, `ceil`, `abs`, `min` and `max` (M2b), for `double`, `float` and `int` arguments of one
+    /// type, with the interpreter's results: `sqrt`, `floor` and `ceil` of an `int` are a `double`, `abs` and
+    /// `min`/`max` of `int`s are `int`s. `min(a, b)` is `a` when `a <= b`, else `b`, and `max` is `a` when
+    /// `a >= b`, else `b`, so a NaN argument and the two zeros behave exactly as in the interpreter (which is why
+    /// this is a compare and a select and not `llvm.minnum`, whose NaN and zero rules differ). The sized
+    /// integers and mixed argument types are refused (the interpreter panics or promotes for those).
+    fn math_call(&mut self, e: &Expr, name: &str, args: &[Arg]) -> R<Val> {
+        let vals = self.panic_args(args)?;
+        let want = if matches!(name, "min" | "max") { 2 } else { 1 };
+        if vals.len() != want {
+            return Err(CompileError::at(e.span, format!("`{name}` takes {want} argument(s), found {}", vals.len())));
+        }
+        for (v, sp) in &vals {
+            self.need_value(v, *sp)?;
+        }
+        let (a, a_span) = (vals[0].0.clone(), vals[0].1);
+        if !matches!(a.ty, Ty::F64 | Ty::F32 | Ty::I64) {
+            return unsupported(a_span, format!("`{name}` of this type (only `int`, `float` and `double` so far)"));
+        }
+        if want == 2 {
+            let (b, b_span) = (&vals[1].0, vals[1].1);
+            if b.ty != a.ty {
+                return unsupported(b_span, format!("`{name}` of two different types (both must be `int`, `float` or `double`)"));
+            }
+            let ir = a.ty.ir();
+            let c = self.fresh();
+            let pred = match (a.ty.is_float(), name) {
+                (true, "min") => "fcmp ole",
+                (true, _) => "fcmp oge",
+                (false, "min") => "icmp sle",
+                (false, _) => "icmp sge",
+            };
+            self.inst(&format!("{c} = {pred} {ir} {}, {}", a.v, b.v));
+            let t = self.fresh();
+            self.inst(&format!("{t} = select i1 {c}, {ir} {}, {ir} {}", a.v, b.v));
+            return Ok(Val { v: t, ty: a.ty });
+        }
+        // one argument
+        if name == "abs" {
+            let t = self.fresh();
+            if a.ty == Ty::I64 {
+                // `abs(MIN)` is `MIN` (wrapping), like the interpreter's release build.
+                self.declare_intrinsic("declare i64 @llvm.abs.i64(i64, i1 immarg)".to_string());
+                self.inst(&format!("{t} = call i64 @llvm.abs.i64(i64 {}, i1 false)", a.v));
+            } else {
+                let (ir, sfx) = if a.ty == Ty::F64 { ("double", "f64") } else { ("float", "f32") };
+                self.declare_intrinsic(format!("declare {ir} @llvm.fabs.{sfx}({ir})"));
+                self.inst(&format!("{t} = call {ir} @llvm.fabs.{sfx}({ir} {})", a.v));
+            }
+            return Ok(Val { v: t, ty: a.ty });
+        }
+        // sqrt, floor, ceil
+        let x = if a.ty == Ty::I64 {
+            let w = self.fresh();
+            self.inst(&format!("{w} = sitofp i64 {} to double", a.v));
+            Val { v: w, ty: Ty::F64 }
+        } else {
+            a
+        };
+        let (ir, sfx) = if x.ty == Ty::F64 { ("double", "f64") } else { ("float", "f32") };
+        self.declare_intrinsic(format!("declare {ir} @llvm.{name}.{sfx}({ir})"));
+        let t = self.fresh();
+        self.inst(&format!("{t} = call {ir} @llvm.{name}.{sfx}({ir} {})", x.v));
+        Ok(Val { v: t, ty: x.ty })
+    }
+
     /// `value as type` between integers, and from bool to an integer, with Rust's `as` rules: a narrower
     /// target truncates, a wider one extends by the SOURCE's signedness, the same width reinterprets.
     fn cast(&mut self, v: &Val, to: Ty, span: Span) -> R<Val> {
         if v.ty == to {
             return Ok(v.clone());
+        }
+        if v.ty.is_float() || to.is_float() {
+            return self.float_cast(v, to, span);
         }
         let Some((to_bits, _)) = to.int_info() else {
             return unsupported(span, "this conversion (only to an integer type so far)");
@@ -2361,6 +2563,9 @@ impl<'a> Emitter<'a> {
         }
         if l.ty.is_ptr() {
             return unsupported(span, "operators on struct or enum values (compare fields, or `match`, instead)");
+        }
+        if l.ty.is_float() {
+            return self.float_binop(op, l, r, span);
         }
         let ty = l.ty;
         let t = self.fresh();
@@ -2506,6 +2711,9 @@ impl<'a> Emitter<'a> {
             "println" => return self.print_call(args, true),
             "print" => return self.print_call(args, false),
             "assert" if !self.sigs.contains_key(name) => return self.assert_call(e, args),
+            "sqrt" | "floor" | "ceil" | "abs" | "min" | "max" if !self.sigs.contains_key(name) && self.lookup(name).is_none() => {
+                return self.math_call(e, name, args)
+            }
             "panic" if !self.sigs.contains_key(name) => return self.panic_call(e, args),
             _ => {}
         }
@@ -2683,6 +2891,8 @@ impl<'a> Emitter<'a> {
                 SemaType::U16 => return Some(Ty::Int(IntTy::U16)),
                 SemaType::U32 | SemaType::Uint => return Some(Ty::Int(IntTy::U32)),
                 SemaType::U64 | SemaType::Ulong | SemaType::Usize => return Some(Ty::Int(IntTy::U64)),
+                SemaType::Float | SemaType::F32 => return Some(Ty::F32),
+                SemaType::Double | SemaType::F64 => return Some(Ty::F64),
                 SemaType::Bool => return Some(Ty::I1),
                 SemaType::Void => return Some(Ty::Void),
                 SemaType::Str => return Some(Ty::Str),
@@ -2774,7 +2984,7 @@ impl<'a> Emitter<'a> {
             sc.insert(name.to_string(), local.clone());
         }
         if let Some(c) = self.captures.last_mut() {
-            c.push(Capture { name: name.to_string(), ty: found.ty, outer_slot: found.slot });
+            c.push(Capture { ty: found.ty, outer_slot: found.slot });
         }
         Ok(Some(local))
     }
@@ -3125,6 +3335,8 @@ impl<'a> Emitter<'a> {
                     let l = self.fresh();
                     match v.ty {
                         Ty::I64 => self.inst(&format!("{l} = call i64 @ubel_i64_len(i64 {})", v.v)),
+                        Ty::F64 => self.inst(&format!("{l} = call i64 @ubel_f64_len(double {})", v.v)),
+                        Ty::F32 => self.inst(&format!("{l} = call i64 @ubel_f32_len(float {})", v.v)),
                         Ty::Int(IntTy::U64) => self.inst(&format!("{l} = call i64 @ubel_u64_len(i64 {})", v.v)),
                         Ty::Int(_) => {
                             let w = self.widen_i64(v);
@@ -3161,6 +3373,8 @@ impl<'a> Emitter<'a> {
                 }
                 Piece::Val(v) => match v.ty {
                     Ty::I64 => self.inst(&format!("call void @ubel_i64_write(ptr {dst}, i64 {})", v.v)),
+                    Ty::F64 => self.inst(&format!("call void @ubel_f64_write(ptr {dst}, double {})", v.v)),
+                    Ty::F32 => self.inst(&format!("call void @ubel_f32_write(ptr {dst}, float {})", v.v)),
                     Ty::Int(IntTy::U64) => self.inst(&format!("call void @ubel_u64_write(ptr {dst}, i64 {})", v.v)),
                     Ty::Int(_) => {
                         let w = self.widen_i64(v);
@@ -3294,6 +3508,8 @@ impl<'a> Emitter<'a> {
                 PItem::Text(t) => self.print_str(&t),
                 PItem::Val(v) => match v.ty {
                     Ty::I64 => self.inst(&format!("call void @ubel_print_i64(i64 {})", v.v)),
+                    Ty::F64 => self.inst(&format!("call void @ubel_print_f64(double {})", v.v)),
+                    Ty::F32 => self.inst(&format!("call void @ubel_print_f32(float {})", v.v)),
                     Ty::Int(IntTy::U64) => self.inst(&format!("call void @ubel_print_u64(i64 {})", v.v)),
                     Ty::Int(_) => {
                         let w = self.widen_i64(&v);

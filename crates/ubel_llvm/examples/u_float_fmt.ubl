@@ -1,0 +1,7 @@
+// Not supported yet: a format specifier in an interpolated string (`{x:.2}`), for floats as for everything
+// else. Plain `{x}` works and prints the shortest digits.
+// expect-refusal: format specifiers in interpolated strings
+fn main() void {
+    let x = 3.14159
+    println($"{x:.2}")
+}

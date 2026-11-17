@@ -1,0 +1,6 @@
+// Not supported: `sqrt` of a sized integer (the interpreter panics, "sqrt() not supported on i32").
+// expect-refusal: `sqrt` of this type
+fn main() void {
+    let s: i32 = 16
+    println(sqrt(s))
+}

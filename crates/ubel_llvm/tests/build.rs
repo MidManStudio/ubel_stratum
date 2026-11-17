@@ -133,6 +133,49 @@ fn a_runtime_failure_is_not_a_build_failure() {
 }
 
 #[test]
+fn floats_build_link_and_match_the_interpreter() {
+    if !have_cc() {
+        return;
+    }
+    let scratch = Scratch::new("floats");
+    // `%` and `floor` can be calls into the math library, so this also checks that `-lm` is on the command line
+    // (without it the link fails). The values themselves are checked against the interpreter, which prints them
+    // with Rust's `{}`; scripts/float_diff.sh checks the printing alone against millions of values.
+    for name in ["38_float_basic", "41_float_math", "42_float_f32"] {
+        let source = example(name);
+        let want = ubel_llvm::interpret(&source);
+        assert!(want.error.is_none(), "{name}: the interpreter failed: {:?}", want.error);
+        assert!(!want.output.is_empty(), "{name}: the interpreter printed nothing, the comparison would be empty");
+        let mut o = scratch.opts(name);
+        o.opt = OptLevel::O0;
+        let built = driver::build(&source, &o).unwrap_or_else(|e| panic!("{name}: build failed: {e}"));
+        let out = run(&built.output);
+        assert!(out.status.success(), "{name}: the native program failed: {}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want.output, "{name}: output differs from the interpreter");
+    }
+    assert_eq!(scratch.leftovers(), 0, "temporary directories were left behind");
+}
+
+#[test]
+fn a_float_division_by_zero_stops_like_the_interpreter() {
+    if !have_cc() {
+        return;
+    }
+    let scratch = Scratch::new("floatzero");
+    for name in ["fail_div_zero_f64", "fail_div_zero_f32", "fail_rem_zero_f64"] {
+        let source = example(name);
+        let want = ubel_llvm::interpret(&source);
+        assert!(want.error.is_some(), "{name} is expected to fail in the interpreter (it does not produce infinity)");
+        let mut o = scratch.opts(name);
+        o.opt = OptLevel::O0;
+        let built = driver::build(&source, &o).expect("it builds");
+        let out = run(&built.output);
+        assert_eq!(out.status.code(), Some(1), "{name}: the native program should exit with status 1");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want.output, "{name}: output before the failure differs");
+    }
+}
+
+#[test]
 fn front_end_and_emitter_errors_come_before_the_compiler_is_looked_for() {
     // The compiler named here does not exist. If it were looked up first, every one of these
     // would be reported as a missing compiler, which would blame the wrong thing.
@@ -218,7 +261,7 @@ fn clang_failures_carry_the_command_and_the_message() {
     o.keep_temps = true;
     match driver::build_ir("this is not llvm ir\n", &o) {
         Err(BuildError::CompilerFailed { kept_dir: Some(dir), .. }) => {
-            for f in ["program.ll", "ubel_rt.c", "ubel_rt.h", "ubel_unicode.h", "ubel_main.c"] {
+            for f in ["program.ll", "ubel_rt.c", "ubel_rt.h", "ubel_unicode.h", "ubel_float.h", "ubel_main.c"] {
                 assert!(dir.join(f).is_file(), "{f} missing in {}", dir.display());
             }
             assert_eq!(fs::read_to_string(dir.join("program.ll")).unwrap(), "this is not llvm ir\n");

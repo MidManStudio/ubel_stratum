@@ -1,0 +1,40 @@
+// `float` is a real 32-bit float: its arithmetic rounds to 24 bits and it prints its own shortest digits, not
+// those of the double it widens to. The interpreter computes a float operation in f64 and rounds the result to
+// f32, which is the same value as an f32 instruction gives; this checks it. The interpreter is the oracle.
+
+fn sum_tenths(n: int) float {
+    let mut s = 0.0f
+    for i in 0 .. n {
+        s += 0.1f
+    }
+    return s
+}
+
+fn scale(x: float, k: float) float {
+    return x * k + 0.5f
+}
+
+fn main() void {
+    let a = 0.1f
+    let b: float = 0.2f
+    println(a + b, a * b, a / b, a - b, b % a, 1.0f / 3.0f, 2.0f / 3.0f, 16777216.0f + 1.0f)
+    println(sum_tenths(10), sum_tenths(100), sum_tenths(1000), sum_tenths(100000))
+    println(scale(1.0f, 3.0f), scale(0.333f, 3.0f), scale(1e10f, 1e10f), scale(-1e10f, 1e10f))
+    println(16777217.0f, 33554433.0f, 0.1f, 0.3f, 1.1f, 3.14159265358979f, 2.718281828459045f)
+    println(1e39f, -1e39f, 1e-46f, 3.4028235e38f, 3.4028236e38f, 1.17549435e-38f, 1.4e-45f)
+    println(a < b, a <= b, a > b, a >= b, a == b, a != b, -a, -b)
+    println(a < a, a <= a, a > a, a >= a, a == a, a != a, b >= a, b <= a, b > a, b < a)
+    let wide: double = a as double
+    println(wide, wide == 0.1, a == (0.1 as float), a as double + b as double)
+    let mut x = 1.0f
+    for i in 0 .. 30 {
+        x = x * 1.1f
+    }
+    println(x)
+    let mut y = 1.0f
+    for i in 0 .. 30 {
+        y = y / 1.1f
+    }
+    println(y)
+    println($"{a} {b} {a + b} {x} {y}")
+}
