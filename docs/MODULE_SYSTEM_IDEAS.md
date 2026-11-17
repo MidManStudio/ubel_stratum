@@ -13,7 +13,8 @@
 > the check and stops with `undefined name 'L'` when the program runs, and `pub` is recorded in
 > the symbol table and never read. The grammar that shipped is `from X summon [A, B]`, which
 > differs from the form this document writes. The decisions of 2026-11-15 are in
-> `docs/MODULE_DESIGN.md`; this document stays as the list of parked ideas.
+> `docs/MODULE_DESIGN.md`; this document stays as the list of parked ideas. The import, rename and
+> initialization-cycle gaps named above were closed by MS1 on 2026-11-16.
 >
 > Source: a separate conversation's brainstorm on Ubel's future module
 > system. Filtered here — kept what's genuinely good and consistent

@@ -61,12 +61,13 @@ written. `TIER-007` is retired and its number is not reused.
 | [MOVE-001](./ownership.md#move-001) | UseAfterMove |
 | [NAME-001](./name.md#name-001) | UndefinedName |
 | [NAME-002](./name.md#name-002) | DuplicateDefinition |
-| [NAME-003](./name.md#name-003) | UnresolvedImport \* |
+| [NAME-003](./name.md#name-003) | UnresolvedImport |
 | [NAME-004](./name.md#name-004) | UnresolvedPathSegment \* |
 | [NAME-005](./name.md#name-005) | SelfOutsideMethod |
 | [NAME-006](./name.md#name-006) | UnresolvedTypeParam \* |
 | [NAME-007](./name.md#name-007) | AssignToConst |
 | [NAME-008](./name.md#name-008) | StaticInConst |
+| [NAME-009](./name.md#name-009) | InitializationCycle |
 | [PARSE-001](./parse.md#parse-001) | UnexpectedToken |
 | [PARSE-002](./parse.md#parse-002) | UnexpectedEof |
 | [PARSE-003](./parse.md#parse-003) | UnclosedDelimiter |

@@ -192,6 +192,7 @@ family in `TierError`.
 | NAME-006 | UnresolvedTypeParam |
 | NAME-007 | AssignToConst |
 | NAME-008 | StaticInConst |
+| NAME-009 | InitializationCycle |
 
 ### TYPE-1xx — ordinary type checking, `errors/types/mod.rs`
 
@@ -384,13 +385,14 @@ larger effort, not started.
 
 **NAME-0xx**
 - `NAME-001` `UndefinedName` — *Error*. "undefined name `x`". Suggestion: "did you mean `y`?" when a close match was found, otherwise none.
-- `NAME-002` `DuplicateDefinition` — *Error*. "`x` is already defined in this scope". No suggestion.
-- `NAME-003` `UnresolvedImport` — *Error*. "cannot resolve import path `x`". No suggestion.
+- `NAME-002` `DuplicateDefinition` — *Error*. "`x` is already defined in this scope". No suggestion. A rename (`as`) onto the name of another builtin, another import or an item in the file is this error too. A builtin has no place in the source, so that report has no "first defined here" note.
+- `NAME-003` `UnresolvedImport` — *Error*. "cannot resolve import path `x`". No suggestion. Reported once per path, where the `summon` is written: a member the std module does not have (`std.collections.Frobnicate`), a name from the wrong module, a module that does not exist, a module path with no member (`summon std.collections`), and any path outside `std`, which cannot resolve before files can be loaded. A `from` whose module path is bad is one report however many names follow it. The local name is still declared, so a use of it adds no `NAME-001`. The names that exist are the table in `crates/core/src/builtins/std_modules.rs`.
 - `NAME-004` `UnresolvedPathSegment` — *Error*. "no member `seg` in `resolved-so-far` (while resolving `full-path`)". No suggestion.
 - `NAME-005` `SelfOutsideMethod` — *Error*. "`self` can only be used inside a method body". Suggestion: move the code into a method that takes `self`.
 - `NAME-006` `UnresolvedTypeParam` — *Error*. "unknown type parameter `x`". No suggestion.
 - `NAME-007` `AssignToConst` — *Error*. "cannot assign to constant `x`". Suggestion: constants are initialized once, use a `let` binding if the value needs to change. Fires for plain and compound assignment; a local `let` that shadows the constant's name stays assignable.
 - `NAME-008` `StaticInConst` — *Error*. "a constant cannot read the static `x`". Suggestion: make the other item a `const` too, or initialize this value from a `static`. Fires from name resolution when an identifier inside a `const` initializer resolves to a `static`: a const is evaluated once at startup (and again if it had to wait for a later constant), so it cannot depend on a mutable global's current value. A `static` initializer reading a const or another static is fine.
+- `NAME-009` `InitializationCycle` — *Error*. "`x` depends on itself while it is being initialized" for one item, "initialization cycle among `a`, `b`" for several (the constants, statics and functions on the cycle, in source order). Suggestion: break the cycle, initialize one of the items from a literal or compute it inside a function that runs after startup. A secondary span marks each other constant or static on the cycle. Fires from name resolution after every body has been walked: one node per constant, static and top-level function, an edge to every constant, static or function a body or initializer names, and a constant or static that can reach itself is on a cycle. Each separate cycle is one report. Recursion among functions alone is not a cycle. Limits: conservative, because a function that names the item on a branch that never runs during initialization is still an edge; a method called with dot syntax, a call through a function value held in a variable and a call through a trait object are not followed, and a cycle through one of those still stops the program when it starts.
 
 **TYPE-1xx**
 - `TYPE-101` `TypeMismatch` — *Error*. "type mismatch: expected `x`, found `y`". No suggestion; carries a secondary span at where the expected type was established, when known.

@@ -680,6 +680,21 @@ stops at a `const`.
 
 ---
 
+### 5.7b Imports: `as`, and what the parser does not check
+
+An import entry is `Ident ("as" Ident)?`, in a `summon` and in a `from ... summon`, whether the
+`from` form takes one name or a list. `ImportItem` keeps the name and its optional rename
+together, so `[List as L, Dictionary]` is two entries, not three names. A missing name after `as`
+is `PARSE-001` ("identifier after 'as'"). The entry is kept without its rename, because dropping
+the error would import the name un-renamed and hide the mistake.
+
+The parser accepts any path. Whether a path names something is name resolution's job
+(`NAME-003`), and so is every rule about what a rename may be called (`NAME-002`).
+
+`pub` in front of a `const` or a `type` is parsed and stored on the item
+(`ConstDecl::visibility`, `TypeAlias::visibility`), as it is for a `static`. Nothing reads it
+inside one file.
+
 ### 5.8 `{` after a bare identifier — Struct Literal vs Block
 
 Found via exploratory testing (nested `while` loops doing a diagonal
@@ -1159,6 +1174,8 @@ would couple parsing and semantics, which we specifically avoid.
 | Is this attribute recognised? | **Parser**: known vs unknown via phf; **ECS codegen**: ECS-specific validation |
 | Are these lifetime constraints satisfiable? | **TierChecker / Borrow pass**: not the parser |
 | Is this `edge struct` used in the right tier? | **TierChecker**: not the parser |
+| Does this `summon` path name anything? | **Name resolution** (`NAME-003`); the parser accepts any path |
+| Do these constants and statics depend on each other in a loop? | **Name resolution** (`NAME-009`), not the parser and not the interpreter |
 
 The parser's job: turn a flat token stream into a tree. No more.
 

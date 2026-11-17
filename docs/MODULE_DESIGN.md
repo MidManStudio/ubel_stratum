@@ -26,7 +26,7 @@ recommended ones.
 
 ---
 
-## 1. Where things stand (probed 2026-11-15 on live master)
+## 1. Where things stand (probed 2026-11-15 on live master; imports, visibility and initialization updated when MS1 landed, 2026-11-16)
 
 Each line was confirmed by running a program through `ubel check` or `ubel run`, or by reading the
 source named.
@@ -36,24 +36,27 @@ source named.
 - The grammar is `summon a.b.C [as X]` and `from a.b summon X` or `from a.b summon [X, Y]`
   (`docs/ubel.ebnf`). Imports sit at the top of a file, after an optional `package` line.
   `summon` inside a function body and `summon` between items are both `PARSE-001`.
-- `summon` accepts any path. `UnresolvedImport` (`NAME-003`) is defined and never reported.
-  Name resolution only registers a `DefKind::Import` with the written path and resolves nothing
-  (`crates/core/src/sema/name_resolution.rs`).
-- The interpreter ignores imports. `summon std.collections.List as L` followed by `L.new()` passes
-  `ubel check` and stops at run time with `undefined name 'L'`. `from nothing.here summon Thing`
-  does the same. Only names that are global builtins (`List`, `println`) work, and they work with
-  no `summon` at all.
-- **Bug.** `from game.util summon [clamp as c]` passes the check, and both `clamp` and `c` resolve
-  as imported names. The list loop in `parse_decl.rs` reads identifiers only, so the `as` token is
-  skipped by the progress guard and `c` is read as a second name.
+- `summon std.*` is checked against a table of the names the compiler provides
+  (`crates/core/src/builtins/std_modules.rs`, tested against the builtins registry). A member the
+  module does not have, a module that does not exist, a module path with no member and a path
+  outside `std` are `NAME-003`, once per path. The local name is still declared, so a use adds no
+  `undefined name`. A path outside `std` cannot resolve before multi-file loading (MS2). Name
+  resolution registers a `DefKind::Import` per name.
+- A builtin renamed by an import works: after `summon std.collections.List as L`, `L.new()` and
+  `L<int>` are the builtin `List`. Name resolution records a use of `L` as a use of the builtin,
+  type inference maps a name written in a type through `SemaContext.builtin_aliases`, and the
+  interpreter binds the new name from the program's imports. A rename may not take the name of
+  another builtin, another import or an item in the file (`NAME-002`). The interpreter ignores
+  imports in every other respect, and importing a builtin stays optional.
+- `as` inside a list (`from std.collections summon [List as L, Dictionary]`) renames one name.
+  `ImportItem` carries the name and the optional rename. A missing name after `as` is `PARSE-001`.
 - `package a.b` is parsed and ignored. `@tier(low) package a.b` is `PARSE-001`.
 
 **Visibility**
 
-- `pub` is recorded on functions, structs, enums, traits and statics, and the AST has it on
-  fields and methods. `const` and `type` items are always declared private
-  (`pre_declare_item`), so `pub const` and `pub type` are accepted and ignored. Nothing in sema
-  or the interpreter reads visibility.
+- `pub` is recorded on functions, structs, enums, traits, statics, constants and type aliases
+  (the last two since MS1), and the AST has it on fields and methods. Nothing in sema or the
+  interpreter reads visibility.
 
 **Names and tables**
 
@@ -71,9 +74,16 @@ source named.
 
 **Initialization**
 
-- `const A: int = B + 1` with `const B: int = A + 1` passes `ubel check` and panics at run time
-  ("initializing constant `A`; the constants and statics involved refer to each other"). The same
-  holds for statics. This is the accept-then-panic class of bug.
+- `const A: int = B + 1` with `const B: int = A + 1` is `NAME-009`, for constants and statics
+  alike. The check also follows top-level functions called in initializers (2.5). A cycle through
+  a method, a function value or a trait object is not followed and still stops the program at
+  startup.
+- **Gap, not fixed in MS1.** A `const` initializer that calls a function which reads another
+  `const` stops at startup with `undefined name`, with no cycle involved. A function's closure is
+  a snapshot of the module scope taken before any constant is defined, and the second snapshot,
+  which includes the constants, is taken after every initializer has run. A `static` initializer
+  is not affected, because statics live in their own table. Passing the constant to the function
+  as an argument works.
 
 **Tooling**
 
@@ -105,7 +115,7 @@ source named.
 | `summon a.b as m` | Same, under the name `m`. |
 | `summon a.b.C` | Imports item `C` of module `a.b`. |
 | `from a.b summon C` | Imports item `C` of module `a.b`. |
-| `from a.b summon [C, D as E]` | Imports several items, with an optional rename each (`as` inside the list is new). |
+| `from a.b summon [C, D as E]` | Imports several items, with an optional rename each (`as` inside the list landed in MS1). |
 | `pub summon ...` | Any form above, re-exported to the importers of this module. |
 
 - **Path resolution.** For `a.b.C` the longest prefix that names a module wins and the rest names
@@ -147,16 +157,32 @@ source named.
   before it checks any body, so two files that refer to each other behave like two functions of
   one file.
 - Constants and statics initialize once, before `main`, in dependency order across the whole
-  program. A cycle among them, through initializers, is a compile-time error that names the
-  modules and items. Today it is a run-time panic (section 1), so this closes an existing gap and
-  does not depend on multiple files.
+  program. A cycle among them, through initializers, is a compile-time error (`NAME-009`) that
+  names the items on the cycle. MS1 reports it within one file. The modules are named once files
+  are loaded (MS2).
+- The check builds a graph with one node per constant, static and top-level function, and an edge
+  to every constant, static or function a body or initializer names. A constant or static that
+  can reach itself is on a cycle. Each separate cycle is one report. Recursion among functions
+  alone is not a cycle.
+- Limits, stated so the check is not read as exact. It is conservative: a function that names the
+  constant on a branch that never runs during initialization is still an edge, so
+  `const A = f(false)` with `fn f(b: bool) int { if b { return A } return 0 }` is rejected. It
+  does not follow a method called with dot syntax, a call through a function value held in a
+  variable, or a call through a trait object, and a cycle through one of those still stops the
+  program when it starts. A closure written inside a function body counts as part of that
+  function.
 
 ### 2.6 The standard library and builtins
 
 - The builtins (`List`, `println`, the collections, the prelude traits) stay global with no
   `summon`, as today.
-- `summon std.*` is checked against a table of the names the compiler provides. An unknown path is
-  `NAME-003`, which is finally reported. The checked form stays optional for builtins.
+- `summon std.*` is checked against a table of the names the compiler provides, grouped as
+  `std.collections` (`List`, `Dictionary`, `Set`, `Queue`, `Stack`, `InlineList`), `std.memory`
+  (`Pool`, `Unique`, `Shared`, `SyncShared`), `std.io` (`println`, `print`, `log`), `std.debug`
+  (`assert`, `panic`, `typeof`), `std.math` (`Math`, `sqrt`, `abs`, `min`, `max`, `floor`, `ceil`,
+  `range`) and `std.convert` (`to_string`, `to_int`, `to_float`, `to_double`). An unknown path is
+  `NAME-003`. The checked form stays optional for builtins. A test fails when a builtin is added
+  to the registry and not placed in the table.
 - A standard library written in Ubel source is a later step and needs the module system first.
 
 ### 2.7 A default tier for a module (M5)
@@ -236,12 +262,14 @@ recommendation, if there is an objection.
 
 1. **Shadowing a builtin.** Whether a module item or an import may reuse the name of a builtin
    (`List`, `println`). Recommended: a module item may shadow a builtin within its module and an
-   import may not, because a builtin never needs summoning.
+   import may not, because a builtin never needs summoning. MS1 enforces the import half: a
+   rename may not take the name of another builtin (`NAME-002`).
 2. **Diagnostic codes.** A private item used across modules, a `package` line that does not match
    the path, an ambiguous import path, an initialization cycle, an overlapping impl across
    modules. Allocated in `DIAGNOSTICS_RULES.md` at the slice that introduces each.
-3. **The table behind `summon std.*`.** Which names and which grouping (`std.collections`,
-   `std.io`, `std.fmt`, and the rest), taken from the builtins registry.
+3. **The table behind `summon std.*`.** Built in MS1 from the builtins registry (2.6). The grouping
+   is a first cut, not a decision: only `std.collections.List` and `std.io.println` were fixed by
+   an existing fixture. A name can move between modules while no program depends on it.
 4. **Initialization order between independent modules.** Dependency order is fixed by the
    initializers; the order among unrelated modules should be deterministic (recommended: by
    module name).
@@ -260,10 +288,10 @@ for traits.
 | Slice | Content | Depends on |
 |---|---|---|
 | **MS0** | This document and the public status page. | none |
-| **MS1** | Single-file groundwork that fixes bugs which exist today: `as` inside an import list, `summon std.*` validated (`NAME-003` reported, so an alias of a builtin works or fails at check time), a compile-time initialization-cycle error for constants and statics, `pub const` and `pub type` recorded, attributes on the package line. | MS0 |
+| **MS1** | **Done 2026-11-16.** Single-file groundwork that fixed bugs which existed: `as` inside an import list, `summon std.*` validated (`NAME-003`) and a builtin rename that works, a compile-time initialization-cycle error for constants and statics (`NAME-009`), `pub const` and `pub type` recorded. Attributes on the package line moved to MS5, because parsing `@tier(low) package a.b` without applying it would add a new accept-and-ignore gap. | MS0 |
 | **MS2** | The source map, the loader with a source provider, the module graph, per-module name resolution, visibility checks, import conflicts. `ubel check` on several files. | MS1 |
 | **MS3** | Canonical names in sema, the interpreter and the diagnostics, so a multi-module program runs. | MS2 |
 | **MS4** | Impls and trait scope across modules (M2), initialization order across modules. | MS3 |
-| **MS5** | The module default tier (M5) and `@cfg` on the package line. | MS1 |
+| **MS5** | The module default tier (M5) and attributes on the package line (`@tier`, `@cfg`). | MS1 |
 | **MS6** | CLI, LSP and playground with several files, and the self-hosted compiler split into modules as the first user. | MS3 |
 | **MS7** | Packages: the manifest, dependencies, the orphan rule between packages. A separate design. | MS6 |

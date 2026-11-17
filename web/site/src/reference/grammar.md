@@ -45,17 +45,23 @@ Program       ::= PackageDecl? ImportList? ItemList?
 PackageDecl   ::= "package" QualifiedIdent
 
 (* ── Imports ── *)
-(* All imports use summon. Two forms:                           *)
+(* All imports use summon. Forms:                               *)
 (*   summon std.collections.List                                *)
-(*   from std.collections summon [List, Dictionary]            *)
-(*   from std.collections summon List                          *)
+(*   summon std.collections.List as L                           *)
+(*   from std.collections summon [List, Dictionary as D]       *)
+(*   from std.collections summon List as L                      *)
+(* A path under std is checked against the names the compiler   *)
+(* provides (NAME-003 when it names nothing). A path outside    *)
+(* std cannot resolve before files can be loaded (NAME-003).    *)
 ImportList    ::= Import+
 
 Import        ::= "summon" QualifiedIdent ("as" Ident)?
                 | "from" QualifiedIdent "summon" ImportItems
 
-ImportItems   ::= "[" IdentList "]"
-                | Ident
+ImportItems   ::= "[" ImportItem ("," ImportItem)* "]"
+                | ImportItem
+
+ImportItem    ::= Ident ("as" Ident)?
 
 (* ── Top-level items ── *)
 ItemList      ::= Item+
@@ -175,6 +181,8 @@ ExtendDecl    ::= "extend" GenericParams? TypeExpr ("{" ExtendItem* "}")?
 ExtendItem    ::= MethodDecl
 
 (* ── Constants, Statics and Type Aliases ── *)
+(* `pub` in front of a `const` or a `type` is recorded with the item,
+   as it is for a `static`. Nothing reads it inside one file. *)
 ConstDecl     ::= "const" Ident TypeAnnotation? "=" Expr
 
 (* A mutable module-level global. The type annotation is REQUIRED, so

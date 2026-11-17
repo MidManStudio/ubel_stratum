@@ -66,11 +66,27 @@ fn main() int {
 
 **UnresolvedImport** — `` cannot resolve import path `x` ``
 
-A `summon` path could not be resolved.
+A `summon` path names nothing the compiler provides. Under `std` that is a member the module does not have, a module that does not exist, or a module path with no member. A path outside `std` cannot resolve yet, because modules are not loaded from other files. A `from` with a bad module path is one report however many names follow it, and the names are still declared, so their uses add no `undefined name`.
 
-*No verified example yet.*
+<!-- ubel-test: error NAME-003 -->
+```ubel
+summon std.collections.Frobnicate
 
-**Fix:** Check the path.
+fn main() void {
+    println("hello")
+}
+```
+
+```text
+>>> error[NAME-003]: cannot resolve import path `std.collections.Frobnicate`
+  --> 1:1
+    |
+  1 | summon std.collections.Frobnicate
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<<<
+```
+
+**Fix:** Check the path against the names the compiler provides: `std.collections` (`List`, `Dictionary`, `Set`, `Queue`, `Stack`, `InlineList`), `std.memory`, `std.io`, `std.debug`, `std.math` and `std.convert`. Importing a builtin is optional, since every one is available without a `summon`.
 
 ### NAME-004
 
@@ -175,3 +191,38 @@ fn main() void {
 ```
 
 **Fix:** Make the other item a `const` too, or initialise this value from a `static`.
+
+### NAME-009
+
+**InitializationCycle** — `` initialization cycle among `a`, `b` `` (or `` `x` depends on itself while it is being initialized `` for one item)
+
+A `const` or `static` is evaluated once, before `main`, so one that depends on itself, directly or through other initializers, has no value to start from. The check also follows the top-level functions an initializer calls. Each separate cycle is one report, naming the items on it. It is conservative about a function that names the item on a branch that never runs, and it does not follow a method called with dot syntax, a function value or a trait object. A cycle through one of those stops the program when it starts.
+
+<!-- ubel-test: error NAME-009 -->
+```ubel
+const A: int = B + 1
+const B: int = A + 1
+
+fn main() void {
+    println($"{A}")
+}
+```
+
+```text
+>>> error[NAME-009]: initialization cycle among `A`, `B`
+  --> 1:1
+    |
+  1 | const A: int = B + 1
+    | ^^^^^^^^^^^^^^^^^^^^
+  ~> note: `B` is on the cycle
+    --> 2:1
+      |
+    2 | const B: int = A + 1
+      | ^^^^^^^^^^^^^^^^^^^^
+  <~
+  ~> help: break the cycle: initialize one of the items from a literal, or compute it inside a function that runs after startup
+  <~
+<<<
+```
+
+**Fix:** Break the cycle: initialise one of the items from a literal, or compute it inside a function that runs after startup.

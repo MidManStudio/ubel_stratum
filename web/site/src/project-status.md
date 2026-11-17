@@ -77,6 +77,11 @@ verified safe.
   instead. Initializers run once before `main`, in any declaration order,
   and the declared type types a bare literal (`static HP: u8 = 250`). A
   `@tier(...)` written on a `const` is now an error rather than ignored
+- Imports are checked: `summon std.collections.List` and `from std.io summon [println as say]`
+  name something the compiler provides or are `NAME-003`, and `as` renames a builtin (`L.new()`,
+  `L<int>`, `say(...)`). `pub const` and `pub type` are accepted and recorded
+- A `const` or `static` that depends on itself, directly or through the functions its initializer
+  calls, is `NAME-009` instead of a failure at startup
 - Nested generic arguments (`List<List<int>>`,
   `Dictionary<string, List<int>>`) parse, and annotated dictionaries
   type-check
@@ -204,7 +209,8 @@ verified safe.
 - Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a
   module is a file named by its path, cycles between modules are allowed, everything is private
   unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.
-  Next: single-file fixes for imports and initialization cycles, then multi-file checking
+  Single-file groundwork has landed: `summon std...` paths are checked, `as` renames a builtin,
+  and a constant or static that depends on itself is an error. Next: multi-file checking
 - Still to decide: whether struct fields get default values. The literal
   typing it depended on has landed, so it can be taken up next
 - The language server publishes diagnostics only; hover, go to
@@ -226,12 +232,12 @@ verified safe.
 - `using` is parsed and type-checked but runs no cleanup at the end of its block
 - There are no threads, locks, atomics or channels, `SyncShared<T>` is single-threaded, and
   `SyncShared.new` is LOW only
-- `summon` accepts any path and the interpreter ignores imports, so
-  `summon std.collections.List as L` followed by `L.new()` passes the check and stops with
-  `undefined name 'L'` when the program runs
-- `from m summon [a as b]` is accepted and imports both `a` and `b` as separate names
-- Constants or statics that depend on each other circularly pass the check and stop with
-  `undefined name` when the program runs
+- A `const` initializer that calls a function which reads another `const` stops with
+  `undefined name` when the program runs, with no cycle involved. Pass the constant to the
+  function as an argument. A cycle through a method, a function value or a trait object passes
+  the check and stops the program at startup
+- The interpreter ignores imports except to rename a builtin, and a path outside `std` is an
+  error until several files can be loaded
 - `low`, `mid`, `high`, `with`, `using` and `Task` are reserved, so they
   cannot be used as a function, field, method or struct name
 - A range used as an index (`a[1 .. 3]`) is not a slice, and a fixed-size
