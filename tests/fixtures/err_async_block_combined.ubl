@@ -1,0 +1,27 @@
+// tests/fixtures/err_async_block_combined.ubl
+// A block whose `return` disagrees with another `return` in it, and a synchronous
+// function that awaits a block, in a program with a generic and a struct that are fine.
+// Expected: sema FAIL (TYPE-101 once, TYPE-143 once).
+
+struct Box<T> {
+    inner: T,
+}
+
+fn wrap<T>(value: T) Box<T> {
+    return Box { inner = value }
+}
+
+fn caller() int {
+    let t = async { return 1 }
+    return await t
+}
+
+async fn main() {
+    let b = wrap(3)
+    let t = async {
+        if b.inner > 1 {
+            return 1
+        }
+        return "two"
+    }
+}

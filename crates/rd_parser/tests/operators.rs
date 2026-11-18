@@ -867,7 +867,7 @@ fn a_field_of_an_expression_that_already_failed_reports_nothing_more() {
     // `await` on a non-task and a dereference of a non-reference give the
     // error type, and the field read after them used to index the type table
     // with it and panic the type checker.
-    let awaited = "struct P { x: int }\n@tier(high)\nfn main() void {\n    let n = 5\n    let t = await n\n    println(t.x)\n}\n";
+    let awaited = "struct P { x: int }\n@tier(high)\nasync fn main() {\n    let n = 5\n    let t = await n\n    println(t.x)\n}\n";
     let (stage, c) = codes(awaited);
     assert!(matches!(stage, Stage::Sema));
     assert_eq!(c.len(), 1, "{c:?}");

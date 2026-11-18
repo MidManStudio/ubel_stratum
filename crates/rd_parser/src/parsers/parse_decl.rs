@@ -297,16 +297,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         let span = lo.merge(&body.span);
 
-        // Warn if async is used outside HIGH tier
-        if is_async && tier != TierAnnotation::High {
-            self.emit(crate::error::illegal_here(
-                "async fn",
-                "async functions are only permitted in @tier(high) context",
-                lo,
-                Some("remove @tier(mid) / @tier(low), or remove 'async'"),
-            ));
-        }
-
         let prev_tier = self.enter_tier(tier);
         self.leave_tier(prev_tier);
         self.leave(prev);
@@ -820,7 +810,16 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         }
 
         // Method signature or default method
+        let async_span = self.span();
         let is_async = self.cursor.eat(&TokenType::Async);
+        if is_async {
+            self.emit(crate::error::illegal_here(
+                "async fn",
+                "async methods in a trait are not supported yet",
+                async_span,
+                Some("write a plain method that returns a `Task<T>` from a free async function, or wait for async trait methods"),
+            ));
+        }
         if let Err(e) = self.cursor.expect(&TokenType::Fn) {
             self.emit(crate::error::from_cursor(e, ParseContext::TraitDecl));
             return None;
@@ -932,6 +931,14 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                          else { tier };
             let m_vis = self.parse_visibility();
             if let Some(m) = self.parse_method_decl_inner(m_attrs, m_tier, m_vis) {
+                if m.is_async && trait_path.is_some() {
+                    self.emit(crate::error::illegal_here(
+                        "async fn",
+                        "async methods in a trait impl are not supported yet",
+                        m.span,
+                        Some("move the async method to an inherent `impl` block, or wait for async trait methods"),
+                    ));
+                }
                 methods.push(m);
             } else {
                 self.recover_to_decl();

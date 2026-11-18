@@ -253,9 +253,6 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
             Some(p.alloc(Expr { kind: ExprKind::Deref(o), span }))
         }
         TokenType::Await => {
-            if p.tier != TierAnnotation::High {
-                p.emit(crate::error::illegal_here("await", "await is only valid in @tier(high)", lo, Some("use callback pattern for MID/LOW")));
-            }
             p.cursor.advance();
             let o = parse_bp(p, 28)?; let span = lo.merge(&o.span);
             Some(p.alloc(Expr { kind: ExprKind::Await(o), span }))
@@ -267,12 +264,15 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         TokenType::Match        => parse_match_expr(p, lo),
         TokenType::Fn           => parse_lambda(p, lo),
         TokenType::Async        => {
-            // async block (not async fn — that's a declaration)
+            // `async { ... }` (not `async fn`, which is a declaration): a
+            // lambda with no parameters whose value is a cold task.
             p.cursor.advance();
             let block = crate::parsers::parse_stmt::parse_block_inner(p)?;
-            let block = p.alloc(block);
             let span  = lo.merge(&block.span);
-            Some(p.alloc(Expr { kind: ExprKind::Block(block), span }))
+            let node  = p.alloc(Lambda {
+                params: &[], body: LambdaBody::Block(block), span, is_async_block: true,
+            });
+            Some(p.alloc(Expr { kind: ExprKind::Lambda(node), span }))
         }
         TokenType::Unsafe       => {
             p.cursor.advance();
@@ -660,7 +660,7 @@ fn parse_lambda<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'a
     };
     let span   = lo.merge(&p.span());
     let params = p.arena.alloc_slice_copy(params.as_slice());
-    let node   = p.alloc(Lambda { params, body, span });
+    let node   = p.alloc(Lambda { params, body, span, is_async_block: false });
     Some(p.alloc(Expr { kind: ExprKind::Lambda(node), span }))
 }
 

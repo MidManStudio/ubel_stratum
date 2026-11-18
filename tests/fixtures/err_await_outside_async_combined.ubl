@@ -1,0 +1,31 @@
+// tests/fixtures/err_await_outside_async_combined.ubl
+// One `await` in a synchronous function, in a program whose async code is otherwise
+// sound: an async function that awaits, an async method, and a generic. The synchronous
+// caller is the only report.
+// Expected: sema FAIL (AwaitOutsideAsync TYPE-143 once).
+
+struct Counter {
+    n: int,
+}
+
+impl Counter {
+    async fn bump(self, by: int) Task<int> { return self.n + by }
+}
+
+async fn pair<T>(a: T) Task<T> {
+    return a
+}
+
+async fn fine() Task<int> {
+    let c = Counter { n = 1 }
+    let x = await c.bump(2)
+    return await pair(x)
+}
+
+fn caller() int {
+    return await fine()
+}
+
+async fn main() {
+    assert(await fine() == 3, "the async side is fine")
+}

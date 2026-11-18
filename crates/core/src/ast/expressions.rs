@@ -199,6 +199,10 @@ pub struct Lambda<'ast> {
     pub params: &'ast [LambdaParam<'ast>],
     pub body: LambdaBody<'ast>,
     pub span: Span,
+    /// `async { ... }`: a lambda with no parameters whose value is a cold
+    /// `Task<T>` instead of a function. It reuses the closure rules for what it
+    /// captures, `return` inside it ends the block, and `await` is legal inside it.
+    pub is_async_block: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

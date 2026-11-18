@@ -1,0 +1,39 @@
+// tests/fixtures/ok_async_block_isolated.ubl
+// `async { ... }` is a cold task for the block's value. It runs nothing until it is
+// awaited, captures what it uses from the scope around it as a closure does, `return`
+// inside it ends the block, and `await` is legal inside it. A block with no value is a
+// `Task<void>`, and a block can hold another.
+// Expected: sema OK, interpret OK.
+
+static RAN: int = 0
+
+async fn base() Task<int> {
+    return 40
+}
+
+async fn main() {
+    let offset = 2
+    let t = async {
+        RAN += 1
+        return 40 + offset
+    }
+    assert(RAN == 0, "an async block is cold")
+    assert(await t == 42, "a block captures its scope and yields its value")
+    assert(RAN == 1, "it ran once")
+
+    let chained = async {
+        let b = await base()
+        return b + offset
+    }
+    assert(await chained == 42, "await inside a block")
+
+    let nested = async {
+        let inner = async { return 5 }
+        return (await inner) + 1
+    }
+    assert(await nested == 6, "a block inside a block")
+
+    let no_value = async { RAN += 10 }
+    await no_value
+    assert(RAN == 11, "a block with no value is a Task<void>")
+}

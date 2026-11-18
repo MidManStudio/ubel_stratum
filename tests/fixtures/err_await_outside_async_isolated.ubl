@@ -1,0 +1,33 @@
+// tests/fixtures/err_await_outside_async_isolated.ubl
+// `await` is legal only directly inside an async function or an async block. It is an
+// error in a plain function, in a method that is not async, in a constant initializer,
+// and inside a plain lambda even when that lambda sits in an async function: `await` does
+// not reach through a closure. Each one is reported where the `await` is written.
+// Expected: sema FAIL (AwaitOutsideAsync TYPE-143 four times).
+
+async fn one() Task<int> {
+    return 1
+}
+
+fn plain() int {
+    return await one()
+}
+
+struct S {
+    x: int,
+}
+
+impl S {
+    fn method(self) int {
+        return await one()
+    }
+}
+
+const C = await one()
+
+async fn inside() {
+    let f = fn() await one()
+}
+
+fn main() void {
+}

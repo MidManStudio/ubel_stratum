@@ -674,7 +674,11 @@ impl<'ast> Interpreter<'ast> {
             .ok_or_else(|| "no `main` function found".to_string())?;
 
         match main_val {
-            Value::Function(id) => match self.call_function(id, &[]) {
+            // An async `main` is run to completion here: nothing else could drive it.
+            Value::Function(id) => match self.call_function(id, &[]).and_then(|v| match v {
+                Value::Task(_) => self.await_task(v),
+                other          => Ok(other),
+            }) {
                 Ok(_) | Err(Signal::Return(_)) => Ok(()),
                 Err(Signal::Panic(msg)) => Err(format!("panic: {}", msg)),
                 Err(Signal::Fail(v))    => Err(format!("unhandled fail: {}", v)),
@@ -692,6 +696,40 @@ impl<'ast> Interpreter<'ast> {
     /// Uses a local enum to carry extracted body data so the immutable borrow
     /// on `self.functions` is fully released before any mutation of `self.env`.
     pub fn call_function(&mut self, id: FunctionId, args: &[Value]) -> EvalResult {
+        // An async function does nothing when called: it builds a cold task, and
+        // `await` runs it.
+        if self.functions[id].is_async {
+            return Ok(self.cold_task(id, None, args));
+        }
+        self.run_function(id, args)
+    }
+
+    /// A cold task for `func` called with `args` (and `receiver`, for a method).
+    pub(crate) fn cold_task(&mut self, func: FunctionId, receiver: Option<Value>, args: &[Value]) -> Value {
+        Value::Task(std::rc::Rc::new(std::cell::RefCell::new(
+            crate::interpreter::value::TaskState::Cold { func, receiver, args: args.to_vec() },
+        )))
+    }
+
+    /// Run a task to completion from the awaiting task, and mark it awaited. A task is
+    /// awaited at most once; there are no threads yet, so it runs where it is awaited.
+    pub fn await_task(&mut self, task: Value) -> EvalResult {
+        let Value::Task(cell) = task else {
+            return Err(Signal::Panic(format!(
+                "`await` needs a task, found {}", task.type_name())));
+        };
+        let state = std::mem::replace(&mut *cell.borrow_mut(), crate::interpreter::value::TaskState::Awaited);
+        match state {
+            crate::interpreter::value::TaskState::Cold { func, receiver: Some(r), args } => self.run_method(func, r, &args),
+            crate::interpreter::value::TaskState::Cold { func, receiver: None, args }    => self.run_function(func, &args),
+            crate::interpreter::value::TaskState::Awaited => Err(Signal::Panic(
+                "a task can be awaited only once, and this one already was".to_string())),
+        }
+    }
+
+    /// Run a function body now. `call_function` is the same for a plain function; for an
+    /// async one it builds a task instead, and `await_task` comes here.
+    pub fn run_function(&mut self, id: FunctionId, args: &[Value]) -> EvalResult {
         // Phase 1: extract body data — immutable borrow on self.functions.
         enum BodyData<'a> {
             Builtin(BuiltinFn),
@@ -758,6 +796,19 @@ impl<'ast> Interpreter<'ast> {
 
     /// Call a struct method with an explicit `self` receiver.
     pub fn call_method(
+        &mut self,
+        id:       FunctionId,
+        receiver: Value,
+        args:     &[Value],
+    ) -> EvalResult {
+        if self.functions[id].is_async {
+            return Ok(self.cold_task(id, Some(receiver), args));
+        }
+        self.run_method(id, receiver, args)
+    }
+
+    /// Run a method body now (see `run_function`).
+    pub fn run_method(
         &mut self,
         id:       FunctionId,
         receiver: Value,

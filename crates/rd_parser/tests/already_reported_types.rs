@@ -56,7 +56,7 @@ const FAILED: &[(&str, &str)] = &[
 
 fn program(position: &str, expr: &str) -> String {
     let body = position.replace("{e}", expr);
-    format!("struct P {{ x: int }}\nfn id(a: int) int {{ return a }}\nfn main() void {{\n    {body}\n}}\n")
+    format!("struct P {{ x: int }}\nfn id(a: int) int {{ return a }}\nasync fn main() {{\n    {body}\n}}\n")
 }
 
 #[test]
@@ -67,7 +67,13 @@ fn every_position_reports_the_root_cause_once() {
             let report = check_source(&src);
             let codes: Vec<&str> = report.diagnostics.iter().map(|d| d.code).collect();
             assert!(matches!(report.stage, Stage::Sema), "{name} / {expr}: {:?} {codes:?}\n{src}", report.stage);
-            assert_eq!(codes, vec![*code], "{name} / {expr}\n{src}");
+            // `await` does not reach through a plain lambda: inside one it is also TYPE-143.
+            let expected: Vec<&str> = if *expr == "await 5" && *name == "a lambda body" {
+                vec!["TYPE-143", *code]
+            } else {
+                vec![*code]
+            };
+            assert_eq!(codes, expected, "{name} / {expr}\n{src}");
         }
     }
 }
@@ -82,7 +88,7 @@ fn the_receiver_of_a_method_call() {
 
 #[test]
 fn a_task_receiver_after_await() {
-    let report = check_source("fn main() void {\n    let t = await 5\n    t.go()\n}\n");
+    let report = check_source("async fn main() {\n    let t = await 5\n    t.go()\n}\n");
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(report.diagnostics[0].code, "TYPE-106");
 }

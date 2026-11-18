@@ -1,0 +1,16 @@
+// tests/fixtures/err_async_block_isolated.ubl
+// An async block is a `Task<T>` for the block's value, so it is checked as one: it is not
+// an `int`, and its value type must match the task type it is written against. `await`
+// inside a plain lambda in a block is outside any async context, and `await` needs a task.
+// Expected: sema FAIL (TYPE-101 twice, TYPE-143 once, TYPE-106 once).
+
+async fn main() {
+    let a: int = async { return 1 }
+    let b: Task<string> = async { return 1 }
+    let c = async {
+        let f = fn() await async { return 2 }
+        return 0
+    }
+    let d = async { let x = await 5
+                    return x }
+}

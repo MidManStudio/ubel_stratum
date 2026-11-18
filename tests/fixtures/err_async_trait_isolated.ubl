@@ -1,0 +1,24 @@
+// tests/fixtures/err_async_trait_isolated.ubl
+// Async methods in a trait, and in an impl of a trait, are not built yet. Each is an
+// explicit error where it is written instead of being accepted and run as a plain
+// method. Async methods in an inherent impl are fine and are not reported.
+// Expected: parse FAIL (PARSE-004 twice).
+
+trait Job {
+    async fn go(self) Task<int>
+}
+
+struct W {
+    x: int,
+}
+
+impl Job for W {
+    async fn go(self) Task<int> { return 1 }
+}
+
+impl W {
+    async fn fine(self) Task<int> { return 2 }
+}
+
+fn main() void {
+}

@@ -1,0 +1,27 @@
+// tests/fixtures/ok_async_tiers_isolated.ubl
+// `async fn` and `await` are legal in every tier. Until AS2 they were HIGH only
+// (TIER-002, TIER-003, PARSE-004). A LOW and a MID async function, one awaiting the
+// other's kind, and an async HIGH `main` that awaits both.
+// Expected: sema OK, interpret OK.
+
+@tier(low)
+async fn low_task(x: int) Task<int> {
+    return x + 1
+}
+
+@tier(mid)
+async fn mid_task() Task<int> {
+    return 2
+}
+
+@tier(low)
+async fn low_runner() Task<int> {
+    let a = await low_task(1)
+    return a
+}
+
+async fn main() {
+    assert(await low_runner() == 2, "await inside a LOW async function")
+    assert(await mid_task() == 2, "a MID async function")
+    assert(await low_task(5) == 6, "a LOW async function awaited from HIGH")
+}

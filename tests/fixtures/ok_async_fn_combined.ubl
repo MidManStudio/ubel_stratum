@@ -1,0 +1,60 @@
+// tests/fixtures/ok_async_fn_combined.ubl
+// Async functions beside the rest of the language: an async method in an inherent
+// `impl`, a plain trait method that returns a task from an async function, a generic
+// async function, a `match` in an async body, a constant read in a task, and `await`
+// on a call result in an expression position.
+// Expected: sema OK, interpret OK.
+
+trait Source {
+    fn fetch(self, id: int) Task<int>
+}
+
+struct Db {
+    base: int,
+}
+
+async fn read(base: int, id: int) Task<int> {
+    return base + id
+}
+
+impl Source for Db {
+    fn fetch(self, id: int) Task<int> {
+        return read(self.base, id)
+    }
+}
+
+impl Db {
+    async fn double_fetch(self, id: int) Task<int> {
+        let a = await self.fetch(id)
+        return a * 2
+    }
+}
+
+enum Kind {
+    Small,
+    Large(int),
+}
+
+async fn size(k: Kind) Task<int> {
+    match k {
+        Kind.Small    => { return 1 }
+        Kind.Large(n) => { return n }
+    }
+}
+
+async fn first<T>(items: List<T>) Task<T> {
+    return items.first()
+}
+
+const OFFSET: int = 100
+
+async fn main() {
+    let db = Db { base = OFFSET }
+    assert(await db.fetch(5) == 105, "a trait method returning a task")
+    assert(await db.double_fetch(5) == 210, "an async method awaiting a trait method")
+    assert(await size(Kind.Large(9)) == 9, "match inside an async function")
+    assert(await size(Kind.Small) == 1, "the other arm")
+    let mut xs: List<int> = List.new()
+    xs.push(3)
+    assert(await first(xs) == 3, "a generic async function")
+}

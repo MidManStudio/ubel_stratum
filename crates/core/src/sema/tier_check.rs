@@ -131,14 +131,6 @@ impl<'a> TierChecker<'a> {
     }
 
     fn check_function<'ast>(&mut self, f: &FunctionDecl<'ast>) {
-        // Rule: async functions must be HIGH tier.
-        if f.is_async && f.tier != TierAnnotation::High {
-            self.errors.add_tier_error(TierError::AsyncFunctionNotHigh {
-                actual: f.tier,
-                span:   f.span,
-            });
-        }
-
         // Rule: MID-tier return type must not contain an ArenaRef.
         if f.tier == TierAnnotation::Mid {
             self.check_mid_return_type(f.name, f.span);
@@ -152,12 +144,6 @@ impl<'a> TierChecker<'a> {
 
     fn check_method<'ast>(&mut self, m: &MethodDecl<'ast>) {
         let tier = self.ctx.method_tier(m);
-        if m.is_async && tier != TierAnnotation::High {
-            self.errors.add_tier_error(TierError::AsyncFunctionNotHigh {
-                actual: tier,
-                span:   m.span,
-            });
-        }
         let prev = self.current_tier;
         self.current_tier = tier;
         self.check_block(&m.body);
@@ -328,14 +314,8 @@ impl<'a> TierChecker<'a> {
 
     fn check_expr<'ast>(&mut self, expr: &Expr<'ast>) {
         match &expr.kind {
-            // Rule: `await` only in HIGH tier.
+            // `await` is legal in every tier (async functions are too).
             ExprKind::Await(inner) => {
-                if self.current_tier != TierAnnotation::High {
-                    self.errors.add_tier_error(TierError::AwaitInWrongTier {
-                        actual: self.current_tier,
-                        span:   expr.span,
-                    });
-                }
                 self.check_expr(inner);
             }
 

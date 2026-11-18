@@ -72,6 +72,18 @@ pub enum TypeError {
         span:  Span,
     },
 
+    /// `await` outside an async function or an async block.
+    AwaitOutsideAsync {
+        span: Span,
+    },
+
+    /// An async function whose declared result is not `Task<T>`. Written
+    /// `async fn f() Task<int>` (or bare, for `Task<void>`), never `async fn f() int`.
+    AsyncReturnNotTask {
+        found: String,
+        span:  Span,
+    },
+
     /// `*`/`deref` used on a non-reference type.
     DerefOnNonReference {
         found: String,
@@ -509,6 +521,8 @@ impl TypeError {
             TypeError::NoSuchMethod               { span, .. } => *span,
             TypeError::TryOnNonFallible           { span, .. } => *span,
             TypeError::AwaitOnNonTask             { span, .. } => *span,
+            TypeError::AwaitOutsideAsync          { span, .. } => *span,
+            TypeError::AsyncReturnNotTask         { span, .. } => *span,
             TypeError::DerefOnNonReference        { span, .. } => *span,
             TypeError::InvalidFormatSpec          { span, .. } => *span,
             TypeError::AlternateFormatWithoutBase { span, .. } => *span,
@@ -567,6 +581,12 @@ impl TypeError {
 
             TypeError::AwaitOnNonTask { found, .. } =>
                 format!("`await` requires `Task<T>`, found `{}`", found),
+
+            TypeError::AwaitOutsideAsync { .. } =>
+                "`await` is only valid inside an async function or an async block".to_string(),
+
+            TypeError::AsyncReturnNotTask { found, .. } =>
+                format!("an async function returns `Task<T>`, found `{}`", found),
 
             TypeError::DerefOnNonReference { found, .. } =>
                 format!("`*`/`deref` requires a reference type (`&T`/`ref T`), found `{}`", found),
@@ -907,6 +927,8 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::NoSuchMethod { .. }               => "TYPE-104",
             TypeError::TryOnNonFallible { .. }           => "TYPE-105",
             TypeError::AwaitOnNonTask { .. }             => "TYPE-106",
+            TypeError::AwaitOutsideAsync { .. }          => "TYPE-143",
+            TypeError::AsyncReturnNotTask { .. }         => "TYPE-144",
             TypeError::CannotInferType { .. }            => "TYPE-107",
             TypeError::GenericArgCountMismatch { .. }    => "TYPE-108",
             TypeError::UnknownVariant { .. }             => "TYPE-109",

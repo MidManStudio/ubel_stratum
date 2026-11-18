@@ -503,6 +503,9 @@ struct InferCtx<'a> {
     unifier:          Unifier,
     current_return:   Option<TypeId>,
     current_fallible: bool,
+    /// True inside an async function or an async block, where `await` is legal. A plain
+    /// lambda inside one clears it: `await` does not reach through a closure.
+    in_async:         bool,
     arena_stack:      Vec<ArenaId>,
     next_arena:       usize,
     /// Mirrors `arena_stack`, one entry per open `with pool<T>(count) { }`
@@ -742,6 +745,7 @@ impl<'a> InferCtx<'a> {
             unifier:          Unifier::new(),
             current_return:   None,
             current_fallible: false,
+            in_async:         false,
             arena_stack:      Vec::new(),
             next_arena:       0,
             pool_stack:       Vec::new(),
@@ -1582,6 +1586,52 @@ impl<'a> InferCtx<'a> {
                 })
             }
             TypeKind::Infer => self.fresh_var(),
+        }
+    }
+
+    /// What a function's declared result means. Returns
+    /// `(call_type, call_fallible, body_type, body_fallible)`: what a call evaluates to, and
+    /// what a `return` in the body produces. For a plain function both are the declared result.
+    /// An async function is written `async fn f() Task<T>` and its body returns `T`, so a call
+    /// has the type `Task<T>`; with no declared result, `async fn f()` is `Task<void>`.
+    /// `report` is true where the signature is collected, so a bad declaration is reported once.
+    fn fn_return_types<'ast>(
+        &mut self,
+        is_async: bool,
+        ret:      Option<&ReturnType<'ast>>,
+        span:     Span,
+        report:   bool,
+    ) -> (TypeId, bool, TypeId, bool) {
+        if !is_async {
+            let (t, f) = self.return_type_to_sema(ret);
+            return (t, f, t, f);
+        }
+        let Some(rt) = ret else {
+            let void = self.void_ty();
+            let task = self.ctx.types.intern(SemaType::Task(void));
+            return (task, false, void, false);
+        };
+        let (declared, _) = self.return_type_to_sema(Some(rt));
+        let resolved = self.apply(declared);
+        let inner = match self.ctx.types.get(resolved) {
+            SemaType::Task(inner) => Some(*inner),
+            _ => None,
+        };
+        match inner {
+            Some(inner) => {
+                let body_fallible = matches!(self.ctx.types.get(self.apply(inner)), SemaType::Fallible(_));
+                (resolved, false, inner, body_fallible)
+            }
+            None => {
+                if report {
+                    self.errors.add_type_error(TypeError::AsyncReturnNotTask {
+                        found: self.display_type(declared),
+                        span,
+                    });
+                }
+                let task = self.ctx.types.intern(SemaType::Task(TypeId::ERROR));
+                (task, false, TypeId::ERROR, false)
+            }
         }
     }
 
@@ -3790,7 +3840,7 @@ impl<'a> InferCtx<'a> {
                 }
             }
         }
-        let (ret_ty, is_fallible) = self.return_type_to_sema(f.return_type.as_ref());
+        let (ret_ty, is_fallible, _, _) = self.fn_return_types(f.is_async, f.return_type.as_ref(), f.span, true);
         self.pop_generic_scope(prev_generics);
         let fn_ty = self.ctx.types.insert(SemaType::Function {
             params: param_tys,
@@ -3827,7 +3877,7 @@ impl<'a> InferCtx<'a> {
                 }
             }
         }
-        let (ret_ty, is_fallible) = self.return_type_to_sema(m.return_type.as_ref());
+        let (ret_ty, is_fallible, _, _) = self.fn_return_types(m.is_async, m.return_type.as_ref(), m.span, true);
         let generics = self.method_generics_of(m.generic_params, base);
         self.pop_own_generic_scope(scope);
         let fn_ty = self.ctx.types.insert(SemaType::Function {
@@ -4416,10 +4466,11 @@ impl<'a> InferCtx<'a> {
 
     fn infer_function_body<'ast>(&mut self, f: &FunctionDecl<'ast>) {
         for param in f.params { self.seed_param(param); }
-        let (ret_ty, is_fallible) = self.return_type_to_sema(f.return_type.as_ref());
+        let (_, _, ret_ty, is_fallible) = self.fn_return_types(f.is_async, f.return_type.as_ref(), f.span, false);
         let prev_ret      = self.current_return.replace(ret_ty);
         let prev_fallible = self.current_fallible;
         self.current_fallible = is_fallible;
+        let prev_async = std::mem::replace(&mut self.in_async, f.is_async);
         let prev_tier = self.current_tier;
         self.current_tier = f.tier;
         let fn_def = self.ctx.top_level_def(f.name);
@@ -4429,16 +4480,18 @@ impl<'a> InferCtx<'a> {
         self.restore_def_scope(prev_scope);
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
+        self.in_async         = prev_async;
         self.current_tier     = prev_tier;
     }
 
     fn infer_method_body<'ast>(&mut self, m: &MethodDecl<'ast>, base: usize) {
         let scope = self.push_own_generic_scope(m.generic_params, base);
         for param in m.params { self.seed_param(param); }
-        let (ret_ty, is_fallible) = self.return_type_to_sema(m.return_type.as_ref());
+        let (_, _, ret_ty, is_fallible) = self.fn_return_types(m.is_async, m.return_type.as_ref(), m.span, false);
         let prev_ret      = self.current_return.replace(ret_ty);
         let prev_fallible = self.current_fallible;
         self.current_fallible = is_fallible;
+        let prev_async = std::mem::replace(&mut self.in_async, m.is_async);
         let prev_tier = self.current_tier;
         self.current_tier = self.ctx.method_tier(m);
         self.infer_block(&m.body);
@@ -4446,6 +4499,7 @@ impl<'a> InferCtx<'a> {
         self.pop_own_generic_scope(scope);
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
+        self.in_async         = prev_async;
         self.current_tier     = prev_tier;
     }
 
@@ -5992,6 +6046,9 @@ impl<'a> InferCtx<'a> {
                 self.unwrap_reference(inner_ty, expr.span)
             }
             ExprKind::Await(inner) => {
+                if !self.in_async {
+                    self.errors.add_type_error(TypeError::AwaitOutsideAsync { span: expr.span });
+                }
                 let inner_ty = self.infer_expr(inner);
                 self.unwrap_task(inner_ty, expr.span)
             }
@@ -6195,6 +6252,7 @@ impl<'a> InferCtx<'a> {
                 let prev_ret      = self.current_return.replace(ret_var);
                 let prev_fallible = self.current_fallible;
                 self.current_fallible = false;
+                let prev_async = std::mem::replace(&mut self.in_async, lambda.is_async_block);
                 let body_ty = match &lambda.body {
                     LambdaBody::Block(b) => self.infer_block(b),
                     LambdaBody::Expr(e)  => self.infer_expr(e),
@@ -6202,6 +6260,7 @@ impl<'a> InferCtx<'a> {
                 self.unify(ret_var, body_ty, lambda.span);
                 self.current_return   = prev_ret;
                 self.current_fallible = prev_fallible;
+                self.in_async         = prev_async;
                 let ret_resolved = self.apply(ret_var);
                 let fn_ty = self.ctx.types.insert(SemaType::Function {
                     params:      param_tys,
@@ -6209,6 +6268,12 @@ impl<'a> InferCtx<'a> {
                     is_fallible: false,
                     generic_arity: 0, // lambdas are never generic
                 });
+                // `async { ... }` is a cold task for the block's value, not a function.
+                let fn_ty = if lambda.is_async_block {
+                    self.ctx.types.intern(SemaType::Task(ret_resolved))
+                } else {
+                    fn_ty
+                };
                 // GAP 2 — closure capture. A lambda built inside a
                 // `with arena(…)` block may capture arena-scoped locals
                 // from the enclosing scope; lexical scoping guarantees

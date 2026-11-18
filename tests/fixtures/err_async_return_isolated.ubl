@@ -1,0 +1,28 @@
+// tests/fixtures/err_async_return_isolated.ubl
+// An async function declares `Task<T>`, not `T`: `async fn f() Task<int>`, or nothing at
+// all for `Task<void>`. A declared result that is not a task is reported where it is
+// declared, once per function, with the type that was written.
+// Expected: sema FAIL (AsyncReturnNotTask TYPE-144 four times).
+
+async fn a() int {
+    return 1
+}
+
+async fn b() string {
+    return "text"
+}
+
+async fn c() void {
+}
+
+async fn d<T>(x: T) T {
+    return x
+}
+
+async fn fine() Task<int> {
+    return 1
+}
+
+async fn main() {
+    let n = await fine()
+}

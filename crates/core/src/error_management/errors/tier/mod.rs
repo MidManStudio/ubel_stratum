@@ -23,18 +23,6 @@ pub enum TierError {
         span:   Span,
     },
 
-    /// `await` used outside `@tier(high)`.
-    AwaitInWrongTier {
-        actual: TierAnnotation,
-        span:   Span,
-    },
-
-    /// An async function is not `@tier(high)`.
-    AsyncFunctionNotHigh {
-        actual: TierAnnotation,
-        span:   Span,
-    },
-
     /// A value that carries an arena lifetime crossed a boundary where
     /// it would outlive its arena: assigned to a binding whose home
     /// arena doesn't match (including a binding declared outside any
@@ -191,8 +179,6 @@ impl TierError {
     pub fn span(&self) -> Span {
         match self {
             TierError::ArenaInWrongTier           { span, .. } => *span,
-            TierError::AwaitInWrongTier           { span, .. } => *span,
-            TierError::AsyncFunctionNotHigh       { span, .. } => *span,
             TierError::ArenaRefEscapesBoundary    { span, .. } => *span,
             TierError::IllegalTierCall            { span, .. } => *span,
             TierError::MidReturnContainsArenaRef  { span, .. } => *span,
@@ -214,18 +200,6 @@ impl TierError {
             TierError::ArenaInWrongTier { actual, .. } =>
                 format!(
                     "`with arena` is only valid in `@tier(mid)`; this function is `@tier({})`",
-                    tier_name(*actual)
-                ),
-
-            TierError::AwaitInWrongTier { actual, .. } =>
-                format!(
-                    "`await` is only valid in `@tier(high)`; this function is `@tier({})`",
-                    tier_name(*actual)
-                ),
-
-            TierError::AsyncFunctionNotHigh { actual, .. } =>
-                format!(
-                    "async functions must be `@tier(high)`; this function is `@tier({})`",
                     tier_name(*actual)
                 ),
 
@@ -317,12 +291,6 @@ impl TierError {
             TierError::ArenaInWrongTier { .. } =>
                 Some("annotate this function with `@tier(mid)` or remove the arena block".to_string()),
 
-            TierError::AwaitInWrongTier { .. } =>
-                Some("annotate this function with `@tier(high)` or remove the `await`".to_string()),
-
-            TierError::AsyncFunctionNotHigh { .. } =>
-                Some("add `@tier(high)` annotation, or remove `async`".to_string()),
-
             TierError::ArenaRefEscapesBoundary { .. } =>
                 Some("copy the data out into a plain (non-arena) value before it leaves the \
                       `with arena(...)` block, or restructure with the callback pattern: pass a \
@@ -413,8 +381,6 @@ impl crate::error_management::render::Diagnosable for TierError {
     fn code(&self) -> &'static str {
         match self {
             TierError::ArenaInWrongTier { .. }           => "TIER-001",
-            TierError::AwaitInWrongTier { .. }           => "TIER-002",
-            TierError::AsyncFunctionNotHigh { .. }       => "TIER-003",
             TierError::ArenaRefEscapesBoundary { .. }    => "TIER-004",
             TierError::IllegalTierCall { .. }            => "TIER-005",
             TierError::MidReturnContainsArenaRef { .. }  => "TIER-006",

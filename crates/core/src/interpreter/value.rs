@@ -16,6 +16,17 @@ use std::rc::Rc;
 /// Stored inside `Value::Function` so Value carries no AST lifetimes.
 pub type FunctionId = usize;
 
+/// The state of a task (`Value::Task`). A task is cold: calling an async function, or
+/// evaluating an `async { }` block, builds one and runs nothing. `await` runs it, and
+/// only once (docs/ASYNC_SYNC_DESIGN.md, AS2).
+#[derive(Debug, Clone)]
+pub enum TaskState {
+    /// Not started: the function to run, its receiver (for a method) and its arguments.
+    Cold { func: FunctionId, receiver: Option<Value>, args: Vec<Value> },
+    /// Already awaited. A second `await` of the same task is an error.
+    Awaited,
+}
+
 /// Every runtime value an Ubel program can produce.
 ///
 /// Scalars are stored inline. Heap values (`List`, `Dict`, `Struct`) are
@@ -132,6 +143,9 @@ pub enum Value {
     /// Index into the interpreter's function table.
     /// Both named functions and lambdas (closures) are represented this way.
     Function(FunctionId),
+    /// A cold task (see `TaskState`). Copies share the one state, so a task copied and awaited
+    /// twice is still awaited once.
+    Task(Rc<RefCell<TaskState>>),
     /// `Pool<T>` — fixed-capacity slot table with a LIFO free list and a
     /// generation counter per slot (MEMORY_MODEL.md §11). Capacity comes
     /// from the innermost enclosing `with pool<T>(count) { }` at
@@ -380,6 +394,7 @@ impl Value {
             Value::Struct { .. } => "struct",
             Value::Enum { .. }   => "enum",
             Value::Function(_)   => "function",
+            Value::Task(_)       => "task",
             Value::Pool(_)       => "Pool",
             Value::Handle { .. } => "Handle",
             Value::InlineList(_) => "InlineList",
@@ -468,6 +483,7 @@ impl Value {
                 }
             }
             (Value::Function(a), Value::Function(b)) => a == b,
+            (Value::Task(a), Value::Task(b)) => Rc::ptr_eq(a, b),
             (Value::Pool(a), Value::Pool(b)) => Rc::ptr_eq(a, b),
             (Value::Handle { index: ia, generation: ga },
              Value::Handle { index: ib, generation: gb }) => ia == ib && ga == gb,
@@ -664,6 +680,7 @@ impl Value {
                 }
             }
             Value::Function(id) => id.hash(hasher),
+            Value::Task(t) => (Rc::as_ptr(t) as usize).hash(hasher),
             Value::Pool(rc) => Rc::as_ptr(rc).hash(hasher),
             Value::Handle { index, generation } => { index.hash(hasher); generation.hash(hasher); }
             Value::InlineList(rc) => Rc::as_ptr(rc).hash(hasher),
@@ -708,7 +725,7 @@ impl Value {
             | Value::I8(_) | Value::I16(_) | Value::I32(_)
             | Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::UInt(_)
             | Value::Char(_) | Value::Str(_)
-            | Value::Function(_) | Value::Handle { .. }
+            | Value::Function(_) | Value::Task(_) | Value::Handle { .. }
             | Value::Pool(_) | Value::InlineList(_) | Value::Linqerizer(_) => self.clone(),
             Value::List(rc) => {
                 let items: Vec<Value> = rc.borrow().iter().map(Value::deep_clone).collect();
@@ -980,6 +997,7 @@ impl fmt::Display for Value {
             Value::Char(c)     => write!(f, "{}", c),
             Value::Str(s)      => write!(f, "{}", s),
             Value::Function(i) => write!(f, "<fn #{}>", i),
+            Value::Task(_) => write!(f, "<task>"),
             Value::Tuple(elems) => {
                 write!(f, "(")?;
                 for (i, e) in elems.iter().enumerate() {

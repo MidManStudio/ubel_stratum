@@ -1,0 +1,49 @@
+// tests/fixtures/ok_async_block_combined.ubl
+// Async blocks beside the rest of the language: returned from a function, stored in a
+// struct field typed `Task<int>`, held in a list, built in a generic function, and
+// created inside an async method. Each is a cold task until it is awaited.
+// Expected: sema OK, interpret OK.
+
+struct Job {
+    work: Task<int>,
+}
+
+fn later(n: int) Task<int> {
+    return async { return n * 2 }
+}
+
+fn wrap<T>(value: T) Task<T> {
+    return async { return value }
+}
+
+struct Worker {
+    base: int,
+}
+
+impl Worker {
+    async fn run(self, extra: int) Task<int> {
+        let t = async { return self.base + extra }
+        return await t
+    }
+}
+
+async fn main() {
+    assert(await later(21) == 42, "a block returned from a function")
+
+    let job = Job { work = later(5) }
+    assert(await job.work == 10, "a block in a struct field")
+
+    let mut jobs: List<Task<int>> = List.new()
+    jobs.push(later(1))
+    jobs.push(later(2))
+    let mut sum = 0
+    for j in jobs {
+        sum += await j
+    }
+    assert(sum == 6, "blocks held in a list")
+
+    assert(await wrap("text") == "text", "a block in a generic function")
+
+    let w = Worker { base = 10 }
+    assert(await w.run(5) == 15, "a block inside an async method")
+}

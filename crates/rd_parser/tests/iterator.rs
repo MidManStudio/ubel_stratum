@@ -567,7 +567,7 @@ fn a_loop_over_an_expression_that_already_failed_reports_nothing_more() {
     // crash the type checker; it adds no diagnostic of its own.
     let deref = "fn main() void { let n = 5 for x in *n { println(x) } }\n";
     assert_eq!(codes(deref), (Stage::Sema, vec!["TYPE-114"]));
-    let awaited = "fn main() void { let n = 5 for x in await n { println(x) } }\n";
+    let awaited = "async fn main() { let n = 5 for x in await n { println(x) } }\n";
     assert_eq!(codes(awaited), (Stage::Sema, vec!["TYPE-106"]));
 }
 

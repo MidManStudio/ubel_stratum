@@ -692,15 +692,17 @@ fn an_impl_of_a_prelude_trait_with_supertraits_is_low_throughout() {
     );
 }
 
-// ── async keeps its own rule ─────────────────────────────────────────────────
+// ── async in a trait is not built yet ────────────────────────────────────────
 
 #[test]
-fn an_async_default_method_that_inherits_low_is_an_async_tier_error() {
-    assert_eq!(
-        codes(&prog("@tier(low) trait T { async fn f(self) int { return 1 } }")),
-        (Stage::Sema, vec!["TIER-003"]),
-    );
-    assert_clean(&prog("@tier(low) trait T { @tier(high) async fn f(self) int { return 1 } }"));
+fn an_async_trait_method_is_not_supported_yet_in_any_tier() {
+    // Async methods in traits arrive with AS7 (docs/ASYNC_SYNC_DESIGN.md). Until then
+    // every one is an explicit error, whatever the tier, instead of being accepted
+    // and run as a plain method.
+    for tier in ["low", "mid", "high"] {
+        let src = prog(&format!("@tier({tier}) trait T {{ async fn f(self) Task<int> {{ return 1 }} }}"));
+        assert_eq!(codes(&src), (Stage::Parse, vec!["PARSE-004"]), "{tier}");
+    }
 }
 
 // ── Run time is unchanged ────────────────────────────────────────────────────

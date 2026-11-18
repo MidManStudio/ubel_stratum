@@ -433,26 +433,25 @@ fn a_tier_reaches_the_call_sites_of_methods_it_covers() {
     ));
 }
 
-// ── async keeps its own rule ─────────────────────────────────────────────────
+// ── async is legal in every tier ─────────────────────────────────────────────
 
 #[test]
-fn an_async_method_that_inherits_low_is_an_async_tier_error() {
-    // The same rule as an `async fn` inside a tier block.
-    let in_block = "@tier(low) { async fn g() int { return 1 } }\nfn main() void { }\n";
-    assert_eq!(codes(in_block), (Stage::Sema, vec!["TIER-003"]));
-    assert_eq!(
-        codes(&prog("@tier(low) { impl S { async fn f(self) int { return 1 } } }")),
-        (Stage::Sema, vec!["TIER-003"]),
-    );
-    assert_eq!(
-        codes("@tier(low) struct S { x: int\n    async fn f(self) int { return 1 } }\nfn main() void { }\n"),
-        (Stage::Sema, vec!["TIER-003"]),
-    );
+fn an_async_method_is_legal_in_every_tier() {
+    // `async` used to be HIGH only (TIER-003). It is legal in every tier now
+    // (docs/ASYNC_SYNC_DESIGN.md, AS2), for a function in a tier block, a method
+    // in an impl and a method written in a struct body alike.
+    for tier in ["low", "mid", "high"] {
+        let in_block = format!("@tier({tier}) {{ async fn g() Task<int> {{ return 1 }} }}\nfn main() void {{ }}\n");
+        assert_clean(&in_block);
+        assert_clean(&prog(&format!("@tier({tier}) {{ impl S {{ async fn f(self) Task<int> {{ return 1 }} }} }}")));
+        assert_clean(&format!(
+            "@tier({tier}) struct S {{ x: int\n    async fn f(self) Task<int> {{ return 1 }} }}\nfn main() void {{ }}\n"));
+    }
 }
 
 #[test]
-fn an_async_method_with_its_own_high_tier_is_fine_in_a_low_impl() {
-    assert_clean(&prog("@tier(low) impl S { @tier(high) async fn f(self) int { return 1 } }"));
+fn an_async_method_with_its_own_tier_is_fine_in_another_tiers_impl() {
+    assert_clean(&prog("@tier(low) impl S { @tier(high) async fn f(self) Task<int> { return 1 } }"));
 }
 
 // ── Run time is unchanged ────────────────────────────────────────────────────

@@ -1,0 +1,41 @@
+// tests/fixtures/ok_async_tiers_combined.ubl
+// Async in other tiers beside the rest of the language: an async method in a LOW impl
+// block, an async block in a MID function, a generic LOW async function, and a trait
+// implemented for a struct whose inherent methods are async.
+// Expected: sema OK, interpret OK.
+
+trait Name {
+    fn name(self) string
+}
+
+struct Acc {
+    n: int,
+}
+
+impl Name for Acc {
+    fn name(self) string { return "acc" }
+}
+
+@tier(low)
+impl Acc {
+    async fn add(self, k: int) Task<int> { return self.n + k }
+}
+
+@tier(mid)
+async fn with_block(x: int) Task<int> {
+    let t = async { return x * 3 }
+    return await t
+}
+
+@tier(low)
+async fn ident<T>(v: T) Task<T> {
+    return v
+}
+
+async fn main() {
+    let a = Acc { n = 4 }
+    assert(a.name() == "acc", "the trait side is untouched")
+    assert(await a.add(6) == 10, "an async method in a LOW impl")
+    assert(await with_block(5) == 15, "an async block in a MID function")
+    assert(await ident("v") == "v", "a generic LOW async function")
+}

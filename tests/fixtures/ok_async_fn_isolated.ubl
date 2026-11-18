@@ -1,0 +1,52 @@
+// tests/fixtures/ok_async_fn_isolated.ubl
+// An async function is written with the task in its signature: `async fn f() Task<T>`
+// with a body that returns T. Calling it builds a cold task and runs nothing; `await`
+// runs the task where it is awaited and yields T. A function with no result is bare,
+// `async fn run()`, and means `Task<void>`; the explicit `Task<void>` is the same thing.
+// A task can be passed to another function and held in a list before it is awaited.
+// `main` may be async, since nothing else could run async code before spawn exists.
+// Expected: sema OK, interpret OK.
+
+static RAN: int = 0
+
+async fn double(x: int) Task<int> {
+    RAN += 1
+    return x * 2
+}
+
+async fn note() {
+    RAN += 10
+}
+
+async fn explicit() Task<void> {
+    RAN += 100
+}
+
+async fn run_it(t: Task<int>) Task<int> {
+    return await t
+}
+
+async fn main() {
+    let t = double(21)
+    assert(RAN == 0, "a call builds a cold task and runs nothing")
+    let v = await t
+    assert(v == 42, "await yields the result")
+    assert(RAN == 1, "await ran the body once")
+
+    await note()
+    await explicit()
+    assert(RAN == 111, "a bare async fn and an explicit Task<void> are the same")
+
+    let inner = await run_it(double(4))
+    assert(inner == 8, "a task passed to another async function")
+
+    let mut pending: List<Task<int>> = List.new()
+    pending.push(double(1))
+    pending.push(double(2))
+    let mut total = 0
+    for job in pending {
+        total += await job
+    }
+    assert(total == 6, "tasks held in a list and awaited in turn")
+    println("ok")
+}

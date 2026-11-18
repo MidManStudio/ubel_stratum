@@ -246,8 +246,11 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             Ok(val)
         }
 
-        // ── Await: async is a no-op in the tree-walker ────────────
-        ExprKind::Await(inner) => eval_expr(interp, inner),
+        // ── Await: run the task here, once ────────────────────────
+        ExprKind::Await(inner) => {
+            let task = eval_expr(interp, inner)?;
+            interp.await_task(task)
+        }
 
         // ── Borrow: &place / ref place, &mut place / ref mut place ─
         // No runtime representation yet — same as GcRef/ArenaRef/
@@ -389,7 +392,12 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 tier:     crate::ast::common::TierAnnotation::High,
                 is_async: false,
             });
-            Ok(Value::Function(id))
+            // `async { ... }` is a cold task over that closure, not the function itself.
+            if lambda.is_async_block {
+                Ok(interp.cold_task(id, None, &[]))
+            } else {
+                Ok(Value::Function(id))
+            }
         }
 
         // ── Block expression: { stmts } ───────────────────────────

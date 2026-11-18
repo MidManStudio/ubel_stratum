@@ -1,0 +1,27 @@
+// tests/fixtures/err_async_trait_combined.ubl
+// A trait with an async default method among sound items: a plain trait method that
+// returns a task, an impl for it, and an async free function. One report, for the
+// default method.
+// Expected: parse FAIL (PARSE-004 once).
+
+trait Source {
+    fn fetch(self) Task<int>
+    async fn warm(self) Task<int> { return 0 }
+}
+
+struct Db {
+    base: int,
+}
+
+async fn read(base: int) Task<int> {
+    return base
+}
+
+impl Source for Db {
+    fn fetch(self) Task<int> { return read(self.base) }
+}
+
+async fn main() {
+    let db = Db { base = 1 }
+    assert(await db.fetch() == 1, "the rest is fine")
+}

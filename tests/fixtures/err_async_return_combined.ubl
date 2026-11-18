@@ -1,0 +1,28 @@
+// tests/fixtures/err_async_return_combined.ubl
+// The declared result is what the body and the callers are checked against. The body of
+// `Task<int>` must return an int, a call has the type `Task<int>` (not `int`), and `await`
+// needs a task. Beside them, a struct and a trait impl that are fine.
+// Expected: sema FAIL (TYPE-101 twice, TYPE-106 once).
+
+trait Size {
+    fn size(self) int
+}
+
+struct Bag {
+    items: List<int>,
+}
+
+impl Size for Bag {
+    fn size(self) int { return self.items.len() }
+}
+
+async fn one() Task<int> {
+    return "not an int"
+}
+
+async fn main() {
+    let bag = Bag { items = List.new() }
+    assert(bag.size() == 0, "the rest of the program is fine")
+    let n: int = one()
+    let m = await 5
+}
