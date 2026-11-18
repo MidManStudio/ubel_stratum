@@ -60,8 +60,6 @@ Failures travel up the call chain through `?` until something handles them.
 
 ## Async
 
-`async fn` and `await` are part of the design and are checked by the
-compiler: an `async fn` is HIGH tier only
-([PARSE-004](../errors/parse.md#parse-004)), and `await` needs a `Task`
-([TYPE-106](../errors/type.md#type-106)). The runtime side is not built, so
-there is nothing to run yet; an Async chapter will be added when there is.
+`async fn` and `await` work in every tier. An async function declares the task it returns,
+`async fn f() Task<int>`, a call builds a task that has not started, and `await` runs it. There
+are no threads yet, so a task runs where it is awaited. See [Async](./async.md).

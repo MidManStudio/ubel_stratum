@@ -96,7 +96,7 @@ fn main() {
 
 **IllegalInContext** — `` `what` is not allowed here: reason ``
 
-A construct is valid syntax but not in this place. Examples the compiler reports: a return type on a lambda; `@tier(...)` written on a `const` (a const is readable from every tier, so the annotation would do nothing) or `@tier(mid)` / `@tier(low)` on a `static`; and `async fn` outside `@tier(high)`. A `@tier` block around a const or static is not an annotation of its own and is not reported.
+A construct is valid syntax but not in this place. Examples the compiler reports: a return type on a lambda; `@tier(...)` written on a `const` (a const is readable from every tier, so the annotation would do nothing) or `@tier(mid)` / `@tier(low)` on a `static`; and `async` on a method declared in a trait or in a trait impl. A `@tier` block around a const or static is not an annotation of its own and is not reported.
 
 <!-- ubel-test: error PARSE-004 -->
 ```ubel
@@ -124,8 +124,8 @@ fn main() void {
 
 <!-- ubel-test: error PARSE-004 -->
 ```ubel
-@tier(mid)
-async fn run() {
+trait Job {
+    async fn go(self) Task<int>
 }
 
 fn main() {
@@ -133,12 +133,12 @@ fn main() {
 ```
 
 ```text
->>> error[PARSE-004]: `async fn` is not allowed here: async functions are only permitted in @tier(high) context
-  --> 2:1
+>>> error[PARSE-004]: `async fn` is not allowed here: async methods in a trait are not supported yet
+  --> 2:5
     |
-  2 | async fn run() {
-    | ^^^^^
-  ~> help: remove @tier(mid) / @tier(low), or remove 'async'
+  2 |     async fn go(self) Task<int>
+    |     ^^^^^
+  ~> help: write a plain method that returns a `Task<T>` from a free async function, or wait for async trait methods
   <~
 <<<
 ```

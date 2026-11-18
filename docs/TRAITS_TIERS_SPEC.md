@@ -489,9 +489,9 @@ Acceptance narrows in two ways.
    walk methods: a call to a function at a higher tier (`TIER-005`), `await` and
    `with arena` outside their tier, a static read outside `HIGH` (`TIER-015`)
    and a collection constructed in `LOW` (`TIER-009`). The borrow, move and
-   outlives passes walk free functions only and still do. An `async` method that
-   inherits `LOW` or `MID` is now `TIER-003`, the same rule as an `async fn` in
-   a tier block; writing `@tier(high)` on it keeps it legal.
+   outlives passes walk free functions only and still do. An `async` method is
+   legal in every tier (`TIER-003` was retired in AS2); `async` on a trait method
+   stays an error (`PARSE-004`) until async trait methods are built.
 
 The prelude is ordinary source, so it is subject to the same rule: its `Hasher`
 had to be given `@tier(low)`.

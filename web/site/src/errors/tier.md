@@ -34,26 +34,6 @@ fn main() void {
 
 **Fix:** Annotate the function `@tier(mid)`, or remove the arena block.
 
-### TIER-002
-
-**AwaitInWrongTier** — `` `await` is only valid in `@tier(high)`; this function is `@tier(x)` ``
-
-`await` is used outside HIGH tier.
-
-*No verified example yet.*
-
-**Fix:** Annotate the function `@tier(high)`, or remove the `await`.
-
-### TIER-003
-
-**AsyncFunctionNotHigh** — `` async functions must be `@tier(high)`; this function is `@tier(x)` ``
-
-An async function declared outside HIGH tier. In the compiler as it stands, `async fn` under `@tier(mid)` is already reported by the parser as [PARSE-004](./parse.md#parse-004), so that is what you will see for that case.
-
-*No verified example yet.*
-
-**Fix:** Add `@tier(high)`, or remove `async`.
-
 ### TIER-005
 
 **IllegalTierCall** — `` `@tier(caller)` code cannot call `@tier(callee)` function `name` ``

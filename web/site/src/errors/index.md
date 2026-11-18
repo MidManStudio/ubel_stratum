@@ -40,7 +40,7 @@ summary line says which stage stopped (`stopped at sema`).
 
 An asterisk marks an entry with no verified example yet: the compiler defines the
 code, but it could not be reproduced from ordinary source when the page was
-written. `TIER-007` is retired and its number is not reused.
+written. `TIER-002`, `TIER-003` and `TIER-007` are retired and their numbers are not reused.
 
 | Code | Name |
 |------|------|
@@ -75,8 +75,6 @@ written. `TIER-007` is retired and its number is not reused.
 | [PARSE-005](./parse.md#parse-005) | Raw \* |
 | [PARSE-006](./parse.md#parse-006) | NestingTooDeep |
 | [TIER-001](./tier.md#tier-001) | ArenaInWrongTier |
-| [TIER-002](./tier.md#tier-002) | AwaitInWrongTier \* |
-| [TIER-003](./tier.md#tier-003) | AsyncFunctionNotHigh \* |
 | [TIER-004](./tier.md#tier-004) | ArenaRefEscapesBoundary |
 | [TIER-005](./tier.md#tier-005) | IllegalTierCall |
 | [TIER-006](./tier.md#tier-006) | MidReturnContainsArenaRef \* |
@@ -132,6 +130,8 @@ written. `TIER-007` is retired and its number is not reused.
 | [TYPE-140](./type.md#type-140) | NotCallable |
 | [TYPE-141](./type.md#type-141) | TupleIndexOutOfRange |
 | [TYPE-142](./type.md#type-142) | NotAStruct |
+| [TYPE-143](./type.md#type-143) | AwaitOutsideAsync |
+| [TYPE-144](./type.md#type-144) | AsyncReturnNotTask |
 
 ## For contributors
 

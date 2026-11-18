@@ -1382,3 +1382,61 @@ fn main() void {
 ```
 
 **Fix:** Use an operator that fits the type; for booleans use `and` and `or`.
+
+### TYPE-143
+
+**AwaitOutsideAsync** — `` `await` is only valid inside an async function or an async block ``
+
+An `await` that is not directly inside an async function or an async block: in a plain function, in a method that is not async, in a constant or static initializer, or inside a plain lambda. A lambda inside an async function is not an async context, because `await` does not reach through a closure. It is reported in every tier.
+
+<!-- ubel-test: error TYPE-143 -->
+```ubel
+async fn one() Task<int> {
+    return 1
+}
+
+fn plain() int {
+    return await one()
+}
+
+fn main() {
+}
+```
+
+```text
+>>> error[TYPE-143]: `await` is only valid inside an async function or an async block
+  --> 6:12
+    |
+  6 |     return await one()
+    |            ^^^^^^^^^^^
+<<<
+```
+
+**Fix:** Make the enclosing function `async` and declare the task it returns, or build the work as an `async { ... }` block and await that from async code.
+
+### TYPE-144
+
+**AsyncReturnNotTask** — `` an async function returns `Task<T>`, found `int` ``
+
+An `async fn` whose declared result is not a `Task<T>`. The declared type is the task and the body returns the `T`: `async fn count() Task<int>` with `return 1`. With no declared result, `async fn run()` means `Task<void>` and is fine. A fallible task, `Task<int>!`, is not a task result either; a task that yields a fallible value, `Task<int!>`, is.
+
+<!-- ubel-test: error TYPE-144 -->
+```ubel
+async fn count() int {
+    return 1
+}
+
+fn main() {
+}
+```
+
+```text
+>>> error[TYPE-144]: an async function returns `Task<T>`, found `int`
+  --> 1:1
+    |
+  1 | async fn count() int {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+<<<
+```
+
+**Fix:** Declare the task: `async fn count() Task<int>`. The body still returns the `int`.

@@ -2997,6 +2997,9 @@ impl<'a> Emitter<'a> {
     /// usual rules from there (a closure written in HIGH code allocates in the GC heap wherever it is
     /// called from). Parameter types must be written; the result type comes from sema.
     fn lambda(&mut self, e: &Expr, lam: &Lambda) -> R<Val> {
+        if lam.is_async_block {
+            return unsupported(e.span, "async blocks");
+        }
         let mut ptys: Vec<Ty> = Vec::new();
         for p in lam.params {
             match p.ty {

@@ -472,7 +472,7 @@ identifiers, regardless of what kind of thing you're trying to name
 | Reserved | Why |
 |---|---|
 | `List`, `Dictionary`, `Set`, `Queue`, `Stack` | `CollectionType` keyword tokens — `CollectionType ::= "List" (...) \| "Dictionary" (...) \| "Set" (...) \| "Queue" (...) \| "Stack" (...)` |
-| `Task` | `TaskType` keyword token, used for HIGH-tier async return types |
+| `Task` | `TaskType` keyword token, used for async return types |
 | `self` | Reserved receiver-parameter keyword, never a plain binding name |
 | `high`, `mid`, `low` (lowercase, inside `@tier(...)`) | `TierValue` — the *only* three legal values, and case-sensitive |
 | `arena`, `pool`, `gc`, `heap` (lowercase, inside `with ...`) | `AllocatorExpr` keyword tokens |

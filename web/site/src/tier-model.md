@@ -8,8 +8,8 @@ to native code.
 | Tier | Annotation | Memory | `await` | Typical use |
 |------|-----------|--------|---------|--------------|
 | HIGH | `@tier(high)` (default) | Garbage collected | Allowed | Business logic, I/O |
-| MID  | `@tier(mid)`            | Arena allocated    | Not allowed | Parsers, hot paths |
-| LOW  | `@tier(low)`            | Manual, borrow-checked | Not allowed | Systems code, FFI, packet handling |
+| MID  | `@tier(mid)`            | Arena allocated    | Allowed | Parsers, hot paths |
+| LOW  | `@tier(low)`            | Manual, borrow-checked | Allowed | Systems code, FFI, packet handling |
 
 A function with no `@tier` annotation is HIGH. Lower tiers are opted into
 for performance, never opted out of by default.

@@ -60,6 +60,10 @@ FunctionDecl  ::= TierAttr? Attributes? "pub"? "async"? "fn" Ident
 ReturnSpec    ::= TypeExpr "!"?
                 | "Task" "<" TypeExpr ">" "!"?
 
+(* An async function declares the task it returns: `async fn f() Task<int>`, with a body *)
+(* that returns an int. With no ReturnSpec, `async fn f()` means Task<void>. `async` on a   *)
+(* trait method, or on a method of a trait impl, is not accepted yet.                      *)
+
 (* ── Tier Annotation ──                                        *)
 (* Constrains to exactly three valid values.                    *)
 TierAttr      ::= "@tier" "(" TierValue ")"
@@ -363,11 +367,17 @@ ArgList       ::= Arg ("," Arg)*
 Arg           ::= Expr | Ident "=" Expr   (* named arg *)
 
 (* ── Primary expressions ── *)
+(* `async { ... }` is a cold task over a block. It parses to a lambda with no parameters,  *)
+(* so it captures its scope as a closure does; `return` ends the block and `await` is    *)
+(* legal inside it.                                                                       *)
+AsyncBlock    ::= "async" Block
+
 PrimaryExpr   ::= Literal
                 | Ident
                 | "self"
                 | "null"
                 | LambdaExpr
+                | AsyncBlock
                 | IfExpr
                 | MatchExpr
                 | BlockExpr
@@ -595,14 +605,14 @@ LineEnd       ::= "\n" | "\r\n"
 (* MID - Arena allocated                                        *)
 (*   "with arena(size) { }" required for allocation             *)
 (*   Zero-copy inter-tier via callbacks, iterators, views       *)
-(*   No async/await                                             *)
+(*   async/await allowed                                        *)
 (*   No LINQ query syntax (use method chains)                   *)
 (*                                                              *)
 (* LOW - Manual ownership                                       *)
 (*   Rust-style borrow checker enforced                         *)
 (*   "edge struct" for manual heap nodes                        *)
 (*   Lifetime annotations required for references               *)
-(*   No async/await, no GC, no arena                           *)
+(*   async/await allowed; no GC, no arena                       *)
 (*                                                              *)
 (* Tier boundaries:                                             *)
 (*   HIGH can call MID via callback/iterator/view pattern       *)

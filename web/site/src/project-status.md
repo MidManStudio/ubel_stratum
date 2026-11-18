@@ -201,11 +201,12 @@ verified safe.
   impl, a trait that cannot work that way (a method with no `self`, a generic method, or `Self` in a
   signature) is a compile error, and a value whose type does not implement the trait is a compile
   error instead of a run-time panic. Next: associated types
-- Async and synchronization are designed and not built (`docs/ASYNC_SYNC_DESIGN.md`, decided
-  2026-11-14): tasks run in parallel on a thread pool in every tier, `async` and `await` become
-  compiler-generated state machines, a compile-time rule decides what may be shared between
-  tasks, and the usual locks, atomics and channels ship. Next: the `using` cleanup, then the
-  async core
+- Async and synchronization are designed (`docs/ASYNC_SYNC_DESIGN.md`, decided 2026-11-14): tasks
+  run in parallel on a thread pool in every tier, `async` and `await` become compiler-generated
+  state machines, a compile-time rule decides what may be shared between tasks, and the usual
+  locks, atomics and channels ship. The async core has landed (2026-11-17): `async fn` with a
+  `Task<T>` result, cold tasks, `await`, async blocks and every tier, all without threads. Next:
+  the `using` cleanup, then threads in the interpreter
 - Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a
   module is a file named by its path, cycles between modules are allowed, everything is private
   unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.
@@ -227,8 +228,9 @@ verified safe.
 - An array literal of different `dyn` shapes is still typed by its first
   element as the argument of a method call, the tail expression of a
   function, a tuple variant payload and an argument of a generic function
-- `async fn`, `await` and `Task<T>` type-check but cannot run: no program can build a `Task`,
-  an `async fn` call has its declared return type, and `await` does nothing at run time
+- A task is awaited at most once, and a second `await` of the same task stops the program when it
+  runs; there is no compile-time check for it yet. An async function cannot be a trait method, and
+  the native backend does not build async code
 - `using` is parsed and type-checked but runs no cleanup at the end of its block
 - There are no threads, locks, atomics or channels, `SyncShared<T>` is single-threaded, and
   `SyncShared.new` is LOW only

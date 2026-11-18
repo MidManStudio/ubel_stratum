@@ -297,9 +297,9 @@ now so it isn't designed away later.
 
 ## 8. Method Availability Per Tier ("Method Tier Inheritance")
 
-✅ **Existing precedent:** `await` (`ExprKind::Await`) is already
-hard-gated to `@tier(high)` functions only, at the expression level. Decided
-2026-11-14 and not yet built: `await` and `async fn` open to every tier (`docs/ASYNC_SYNC_DESIGN.md`).
+✅ **Former precedent:** `await` (`ExprKind::Await`) was hard-gated to `@tier(high)` functions
+at the expression level. Since AS2 (2026-11-17) `await` and `async fn` are legal in every tier
+(`docs/ASYNC_SYNC_DESIGN.md`), and an `await` needs an async context instead (`TYPE-143`).
 (LINQ query-comprehension syntax used to be the second example here —
 removed in favor of `Linqerizer<T>`, a HIGH-tier-only *type* rather than
 special expression-level grammar; see `docs/PARSER_RULES.md` §6.)

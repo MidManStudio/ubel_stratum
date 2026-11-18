@@ -289,8 +289,8 @@ messages and positions and through the interpreter for run-time values.
 - Where a tier comes from: an unrelated attribute never changes it; a method's own `@tier`
   wins over the `impl`, `extend`, struct and tier block around it; a tier block moves only
   the methods that write none; an item's own tier survives a block; the innermost block
-  wins; an `async` method that inherits `LOW` is `TIER-003`, one that writes `@tier(high)`
-  is fine.
+  wins; an `async` method is legal in every tier (one that inherited `LOW` was `TIER-003`
+  until AS2).
 - The cases that first sat here as "not checked yet" (a call through a bound, a default
   method call, a `@tier` on a trait default method) became checks in S4b and moved to
   `tests/trait_tiers.rs`.

@@ -43,7 +43,26 @@ those choices cost.
 
 ---
 
-## 1. Where things stand (probed 2026-11-14 on live master)
+### AS2 decisions (2026-11-17)
+
+- An async function is written in the C# form, `async fn f() Task<T>`, with a body that returns
+  `T`. A task is awaited at most once. The cleanup trait that `using` calls is `Dispose`. These are
+  items 2 (signature part), 4 and 5 of section 5, as recommended.
+- With no result, an async function is written bare: `async fn run()` means `Task<void>`
+  (**against the recommendation**, which was an explicit `Task<void>` and an error for a bare
+  `async fn`). Cost: two spellings of one type are accepted, and only functions with a result show
+  the task in their signature.
+- `await` outside an async function or block is an error in every tier, as recommended.
+- `async { ... }` blocks are built in AS2 (**against the recommendation**, which was an explicit
+  error until a later slice). Cost: a flag on the lambda node that every pass has to respect,
+  closure capture rules applied to tasks, and the sendable rule at AS4 has to cover them.
+- Settled without a question: methods in an `impl` or `extend` block may be async; `async` on a
+  trait method or on a method of a trait impl is `PARSE-004` until AS7; a task that is never
+  awaited does nothing and is not reported; `async fn main` is allowed and run to completion,
+  because with `await` limited to async code and no spawn before AS3, nothing else could start an
+  async function from a synchronous `main`.
+
+## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17)
 
 Each line was confirmed by running a program through `ubel check` or `ubel run`, or by reading
 the source named.
@@ -52,17 +71,21 @@ the source named.
 
 - `Task<T>` is a type in sema (`SemaType::Task`) and `await` is a unary operator typed by
   `unwrap_task`. `TYPE-106` is "`await` requires `Task<T>`".
-- **No program can produce a `Task`.** A call to `async fn f() int` has type `int`, so `await` on
-  it is `TYPE-106`. `async fn f() Task<int> { return x * 2 }` is `TYPE-101`, because the body
-  must itself return a `Task`. `async { 5 }` parses as an ordinary block, the same as `unsafe`.
-  `Task` is a keyword token, so `Task.new(5)` is a parse error. `await` type-checks only on a
-  parameter declared `Task<T>`, and nothing can supply one.
-- `await` outside HIGH is `TIER-002`. `async fn` in MID or LOW is `PARSE-004`.
-- The interpreter treats `await` as a no-op (`crates/core/src/interpreter/eval/expr.rs`) and has
-  no task value. No fixture mentions `async` or `await`.
-- An `async fn` example written in the earlier public language tour (declared `Task<User>!`, body
-  returning the user) has the same shape as the failing `Task<int>` probe, so it did not run. The
-  rewritten tour has no async section, and the site's Async chapter is still a placeholder.
+- **A task can be built (AS2, 2026-11-17).** `async fn f() Task<int>` has the call type
+  `Task<int>` and a body that returns `int`; a bare `async fn f()` is `Task<void>`; `async { }` is a
+  `Task` over a block. A declared result that is not a task is `TYPE-144`. A call or a block builds
+  a cold task and runs nothing.
+- `async fn` and `await` are legal in every tier. `await` outside an async function or block is
+  `TYPE-143`, and a plain lambda inside an async function is not an async context. `TIER-002`,
+  `TIER-003` and the `PARSE-004` for `async fn` outside HIGH are retired. `async` on a trait method,
+  or on a method of a trait impl, is `PARSE-004` until AS7.
+- The interpreter has a task value (`Value::Task`). `await` runs the task where it is awaited and
+  marks it awaited, and a second `await` of the same task is a run-time error. The move checker
+  tracks only LOW-tier `Unique` locals, so there is no compile-time error for a second `await` yet.
+  `main` may be async and is run to completion. The native backend reports async functions, `await`
+  and async blocks as unsupported.
+- The earlier public tour wrote an `async fn` declared `Task<User>!` with a body returning the user;
+  that example did not run when it was written. The Async guide now has examples that do.
 
 **Synchronization and sharing**
 
@@ -116,10 +139,14 @@ would matter far more.
 
 - `async fn` declares an asynchronous function. Calling it builds a `Task<T>` and does nothing
   else (A9). A task is a compiler-generated state machine that holds only the variables alive
-  across a wait (A8). How the return type is written in the signature is an open detail
-  (section 5, item 2).
+  across a wait (A8). An async function is written `async fn f() Task<T>` and its body returns
+  `T`; with no result it is written bare, `async fn run()`, and means `Task<void>`. `async { ... }`
+  is a cold task over a block that captures its scope as a closure does.
 - `await task` runs the task to completion from the awaiting task and yields its result. Awaiting
   a cold task inline allocates nothing; the machine runs inside the awaiting task's frame.
+- `await` is legal only directly inside an async function or an async block. `main` may be async;
+  the interpreter runs it to completion, because nothing else can start async code before
+  `Task.spawn` exists (AS3).
 - `Task.spawn(task)` starts a task on the pool and returns a handle that can be awaited, or
   joined from synchronous code.
 - A task frame is allocated once by the runtime and does not move after it first runs. A borrow
@@ -263,9 +290,9 @@ work is elsewhere:
 - A state-machine transform for every tier, with frame storage chosen per tier.
 - The borrow checker treats `await` as a point where the task can move to another thread, and a
   new pass enforces the sendable rule.
-- `TIER-002` and the parse error for `async fn` in MID or LOW are retired. The `await` column of
-  the tier table in `tier-model.md`, the Async chapter of the site when it is written,
-  `MEMORY_MODEL.md` section 8 and `PARSER_RULES.md` section 11 all change when this is built.
+- `TIER-002`, `TIER-003` and the parse error for `async fn` in MID or LOW are retired (done in AS2),
+  and the `await` column of the tier table in `tier-model.md`, the Async guide, `MEMORY_MODEL.md`
+  section 8 and `PARSER_RULES.md` section 11 say so.
 - `async` becomes part of a method signature in traits (2.7).
 - The interpreter pays almost nothing extra, because it does not enforce tiers at run time. The
   cost lands in sema and in the native backend.
@@ -342,23 +369,22 @@ a recommendation.
    boundary. Recommended: (b). It models the native design (per-task heaps, copies at the
    boundary) and makes a program that relied on accidental sharing fail in the interpreter
    instead of racing in native code. (a) stays the fallback because it is mechanical and cheap.
-2. **Signature and typing of async functions and failed tasks.**
-   (a) The declared return type. Either `async fn f() T`, where a call has type `Task<T>`, or
-   `async fn f() Task<T>` with a body that returns `T` (the C# form, which the earlier public
-   tour wrote). Recommended: the C# form, so `Task<T>` stays visible in the signature and the
-   form already shown in public documentation stays valid.
-   (b) Failure. Candidates: `await` yields `T` and re-raises a captured panic in the awaiting task,
-   with a separate `join` returning `T!`; or `await` always yields a failure value. Also the
-   placement of `!` for expected errors: `Task<User!>` against `Task<User>!` (the earlier tour wrote the
-   second form, which then means the call itself can fail). Recommended: `Task<User!>`, with
-   `await` re-raising a captured panic and `Task.join` returning the error.
+2. **Signature and typing of async functions and failed tasks.** *Signature decided 2026-11-17:*
+   `async fn f() Task<T>` with a body that returns `T`, and a bare `async fn run()` for no result,
+   which means `Task<void>` (against the recommendation of an explicit `Task<void>`). *Failure
+   typing is still open and belongs to AS6:* the placement of `!` for expected errors, `Task<User!>`
+   against `Task<User>!` (the earlier tour wrote the second form, which then means the call itself
+   can fail). Recommended: `Task<User!>`, with `await` re-raising a captured panic and `Task.join`
+   returning the error. AS2 already accepts `Task<User!>` as a declared result and rejects
+   `Task<User>!` (`TYPE-144`).
 3. **Executor interface shape.** The methods in 2.8, the default worker count (recommended:
    logical cores minus one, at least one), thread names and affinity for engines that pin
    threads.
-4. **Awaiting a task more than once.** Recommended: a task is awaited at most once. A second
-   await is a compile error where the move checker sees it and a run-time error in HIGH.
-5. **Cleanup trait name.** `using` calls a cleanup method at the closing brace. Candidates:
-   `Drop`, `Dispose`. Recommended: `Dispose`, matching `using`.
+4. **Awaiting a task more than once.** *Decided 2026-11-17:* a task is awaited at most once. A second
+   await is a run-time error in every tier. The compile-time error where the move checker can see
+   it is not built: the move checker tracks only LOW-tier `Unique` locals, so it needs a pass over
+   task values first.
+5. **Cleanup trait name.** *Decided 2026-11-17:* `Dispose`, matching `using`.
 6. **Marker traits.** Whether `Send` and `Sync` are written in bounds of generic library code.
    Recommended: compiler-known marker traits, derived structurally, writable as bounds.
 7. **Names.** `Task.spawn`, `Task.scope`, `Task.cancelled`, the async-aware lock type, the
@@ -396,7 +422,7 @@ for traits.
 |---|---|---|
 | **AS0** | This document and the public status page. | none |
 | **AS1** | `using` cleanup: the cleanup trait, run on every exit path (`return`, `break`, `continue`, `?`, failure, cancellation), reverse order for several bindings, a type check that a `using` binding implements it. Useful on its own. | AS0 |
-| **AS2** | Async core in sema and the interpreter: `async fn` typing, cold `Task<T>`, `await` that runs a task inline, tier rules opened. No threads yet. | AS0 |
+| **AS2** | **Done 2026-11-17.** Async core in sema and the interpreter: `async fn` typing, cold `Task<T>`, `await` that runs a task inline, tier rules opened. No threads yet. | AS0 |
 | **AS3** | Threads in the interpreter: the state split, the pool, `Task.spawn`, join, the executor interface, the park hook. | AS2 |
 | **AS4** | The sendable rule: marker traits, the sema pass, copy at the boundary, a real `SyncShared`, `TIER-014` lifted for it. | AS3 |
 | **AS5** | The lock types, `Condvar`, `Semaphore`, `Barrier`, `Atomic`, `Channel`, parking through the executor, the guard rules and the async-aware lock. | AS1, AS3, AS4 |

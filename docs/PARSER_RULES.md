@@ -695,6 +695,20 @@ The parser accepts any path. Whether a path names something is name resolution's
 (`ConstDecl::visibility`, `TypeAlias::visibility`), as it is for a `static`. Nothing reads it
 inside one file.
 
+### 5.7c `async` and `await`
+
+`async fn` and `await` are parsed in every tier: the parser holds no tier rule for either. An async
+function or method records `is_async` and nothing else. `async { ... }` is not an expression of its
+own: it parses to a `Lambda` with no parameters and `is_async_block` set, so every pass that handles
+a closure handles the block, and only the passes that care about the difference read the flag (type
+inference gives it the type `Task<T>`, the interpreter builds a cold task, and the native emitter
+reports it unsupported).
+
+The parser rejects one thing here: `async` on a method declared in a trait, or on a method of a
+trait impl, is `PARSE-004` ("async methods in a trait are not supported yet") until async trait
+methods are built. Whether an `await` sits inside an async function or block (`TYPE-143`) and
+whether an async function declares a `Task<T>` (`TYPE-144`) are type inference's rules.
+
 ### 5.8 `{` after a bare identifier — Struct Literal vs Block
 
 Found via exploratory testing (nested `while` loops doing a diagonal
@@ -1169,7 +1183,8 @@ would couple parsing and semantics, which we specifically avoid.
 
 | Question | Answer |
 |---|---|
-| Does `await` appear outside HIGH tier? | **Parser**: warn; **TierChecker**: hard error (today; the rule is being opened to every tier, see `docs/ASYNC_SYNC_DESIGN.md`) |
+| Is this `await` inside an async function or block? | **TypeInfer** (`TYPE-143`); the parser accepts `await` anywhere |
+| Does an async function declare a `Task<T>`? | **TypeInfer** (`TYPE-144`) |
 | Is this a valid type expression? | **Parser**: syntactic validity only; **TypeInfer**: structural validity |
 | Is this attribute recognised? | **Parser**: known vs unknown via phf; **ECS codegen**: ECS-specific validation |
 | Are these lifetime constraints satisfiable? | **TierChecker / Borrow pass**: not the parser |

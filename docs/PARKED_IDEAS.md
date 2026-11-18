@@ -269,8 +269,7 @@ against the real source and parts don't:
 - **Tier-gated trait methods** (`@tier(mid) fn tick(mut self)` inside a
   trait, enforced on every implementor) — checked this one directly:
   `tier_check.rs`'s `check_expr` already does real cross-tier call
-  validation (`check_callee_tier`, the same machinery behind the
-  `await`-only-in-HIGH-tier rule) as its core job today. Extending that
+  validation (`check_callee_tier`, the machinery behind the cross-tier call rule) as its core job today. Extending that
   to validate a trait method's body against its own declared tier is a
   natural extension of a pattern that already exists, not a stretch —
   the most concretely buildable piece of the whole proposal.
