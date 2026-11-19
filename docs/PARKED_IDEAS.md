@@ -599,6 +599,24 @@ parked because the right behavior is a design choice, not because it is hard.
 - A float literal needs a digit after the dot (`3.0`, not `3.`), so that `7.double()` and `0..3`
   read as a method call and a range.
 
+## Found while building AS1 (verified by execution, parked)
+
+- A binding moved out inside a `using` block is still cleaned up at the end. In
+  `using let u = Unique.new(g) { consume(u) }` the program prints what `consume` prints and then
+  runs `dispose` on the same value. The move checker does not know `using` bindings, so a
+  `dispose` that is not safe to run twice runs twice if the body also disposes by hand.
+- `fail` is accepted in a function whose result is not fallible: `fn f() void { fail "x" }` checks
+  clean, and a `try` around a call to it catches the failure. A `dispose` is declared `void`, so a
+  `fail` inside it is accepted too. At run time a signal that leaves a `dispose` replaces what the
+  block was leaving with, unless a panic is already on its way out.
+- The cleanup is found by the trait name `Dispose`. A program that declares its own
+  `trait Dispose { fn dispose(self) void }` replaces the prelude one, and `using` calls the impls
+  of the program's trait. `Display` and `Clone` behave the same way.
+- A `using` binding of a type without a `Dispose` impl is accepted and has no cleanup, also when the
+  type has a method named `dispose` that is not the impl. A warning for that case is possible.
+- A `let mut` binding that is assigned inside the block is cleaned up with the value it started
+  with. The replacement is not cleaned up.
+
 ## Built
 
 **Unsuffixed integer literals: full context-driven typing (Rust style).**

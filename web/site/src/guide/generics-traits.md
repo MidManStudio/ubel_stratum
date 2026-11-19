@@ -142,6 +142,82 @@ A struct has no ordering unless it derives or implements one
 derive; the prerequisites of a derive are checked
 ([TYPE-117](../errors/type.md#type-117)).
 
+## Cleanup with `using` and `Dispose`
+
+A `using` block binds one or more values, runs its body, and then cleans the values up, last
+binding first. A value is cleaned up by calling the `dispose` of its `Dispose` impl. The cleanup
+runs on every way out of the block: the end, `return`, `break`, `continue`, a `fail` and a panic.
+
+<!-- ubel-test: run -->
+```ubel
+struct Connection {
+    name: string,
+}
+
+impl Dispose for Connection {
+    fn dispose(self) void {
+        println($"closing {self.name}")
+    }
+}
+
+fn first_line() int {
+    using let a = Connection { name = "a" }, let b = Connection { name = "b" } {
+        println("working")
+        return 1
+    }
+    return 0
+}
+
+fn main() void {
+    let n = first_line()
+    println(n)
+}
+```
+
+```text
+working
+closing b
+closing a
+1
+```
+
+The value of a `return` is computed before the cleanup runs, and the `defer` expressions of the
+body run before it too. A binding whose initializer fails is not cleaned up, and neither is any
+binding after it, but the ones before it are.
+
+`using` accepts a value of any type. A value whose type has no `Dispose` impl has no cleanup, and a
+method that is merely named `dispose` is not called: only the `Dispose` impl is. A `Unique<T>` is
+cleaned up as its `T`. A `Shared<T>` or a `SyncShared<T>` is not cleaned up, because it is one of
+several owners. A `let mut` binding is cleaned up with the value it started with.
+
+`dispose` is `fn dispose(self) void`. Any other signature is an error
+([TYPE-125](../errors/type.md#type-125)).
+
+<!-- ubel-test: error TYPE-125 -->
+```ubel
+struct Connection {
+    name: string,
+}
+
+impl Dispose for Connection {
+    fn dispose(self) int {
+        return 0
+    }
+}
+
+fn main() {
+}
+```
+
+`Dispose` is a `@tier(low)` trait like the other prelude traits, so a `using` block in any tier
+can call it, and the body of a `dispose` is LOW-tier code (it cannot build a `List`,
+[TIER-009](../errors/tier.md#tier-009)). It cannot be derived
+([TYPE-116](../errors/type.md#type-116)).
+
+If a `dispose` panics, the other cleanups of the block still run. A panic that is already on its
+way out is the one reported. Otherwise the first panic raised by a cleanup replaces whatever the
+block was leaving with.
+
 ## Operators on your own types
 
 The operators are traits too: implementing `Add`, `Sub`, `Mul`, `Index` and

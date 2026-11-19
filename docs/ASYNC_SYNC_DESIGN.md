@@ -62,7 +62,37 @@ those choices cost.
   because with `await` limited to async code and no spawn before AS3, nothing else could start an
   async function from a synchronous `main`.
 
-## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17)
+### AS1 decisions (2026-11-18)
+
+- A `using` binding may hold a value of any type, and the cleanup runs only when the type of the
+  value implements `Dispose` (**against the recommendation**, which was an error for a type without
+  `Dispose`). Cost: section 3. The cleanup method is `fn dispose(self) void`, and the cleanup also
+  runs when a panic unwinds through the block, both as recommended. These are the AS1 row of
+  section 7 and item 5 of section 5.
+- Settled without a question:
+  - `Dispose` is a prelude trait written in Ubel source and `@tier(low)`, like the other prelude
+    traits. The body of a `dispose` is therefore LOW-tier code (a `List` cannot be built in it,
+    `TIER-009`), and a `using` block in any tier may call it. It cannot be derived (`TYPE-116`).
+  - Several bindings in one `using` are cleaned up in reverse order of declaration. A binding whose
+    initializer fails, and every binding after it, is never cleaned up. The bindings before it are.
+  - The cleanup runs on every way out of the block: the end, `return` (its value is computed
+    first), `break`, `continue`, `fail` and a panic. The `defer` expressions of the body run before
+    the cleanup.
+  - The value cleaned up is the one the binding was initialized with. Assigning to a `let mut`
+    binding inside the block does not change what is cleaned up.
+  - A `Unique<T>` is looked through, so its `T` is cleaned up. A `Shared<T>` or a `SyncShared<T>`
+    is not, because it is one of several owners and no one block is where the value ends.
+  - Every cleanup runs even when one of them panics. A panic that is already on its way out is
+    kept. Otherwise the first panic raised by a cleanup replaces whatever the block was leaving
+    with (a `return`, a `break`, a `fail`).
+  - The interpreter finds the cleanup by the trait name `Dispose`, as it finds `Display` and
+    `Clone`, so a program that declares its own trait `Dispose` gets that trait used.
+  - A `using` block in an `async` function cleans up after the awaits inside it.
+- Known gaps, recorded in `docs/PARKED_IDEAS.md`: a binding moved out inside the block is still
+  cleaned up at the end, `fail` is accepted in a function that is not fallible (so a `dispose` can
+  fail at run time), and the native backend reports `using` as unsupported.
+
+## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17, `using` when AS1 landed, 2026-11-18)
 
 Each line was confirmed by running a program through `ubel check` or `ubel run`, or by reading
 the source named.
@@ -95,9 +125,8 @@ the source named.
   actually `Arc<Mutex<_>>` yet".
 - A HIGH `List` is a shared reference: after `let b = a`, `b.push(2)` is visible through `a`.
   That is why a plain value cannot simply be handed to another task.
-- `using` is parsed and typed, but runs no cleanup: the interpreter has a comment where the
-  cleanup call would go. No fixture uses it and no `Drop`-like trait exists. `with` is an
-  allocator block only (`arena`, `pool`, `gc`, `heap`).
+- `using` calls the `dispose` of each bound value whose type implements `Dispose` (AS1, 2026-11-18,
+  see the AS1 decisions above). `with` is an allocator block only (`arena`, `pool`, `gc`, `heap`).
 
 **Interpreter structure** (`crates/core/src/interpreter/`)
 
@@ -305,6 +334,14 @@ behaviour-oriented concurrency stays parked (section 6).
 **A18, automatic boxing.** One allocation for each async call made through `dyn`. In LOW that
 allocation is hidden, hence the note at the call site. Static dispatch is unaffected.
 
+**AS1, `using` accepts any type.** The recommendation was an error for a binding whose type has no
+`Dispose` impl. As built, such a block compiles and does nothing at its end. A forgotten
+`impl Dispose`, a misspelled method, or an inherent method named `dispose` that is not the
+`Dispose` impl therefore gives no error and no cleanup. That is the accept-and-ignore trap that AS1
+set out to close, and it stays open for user types. The guard types of AS5 implement `Dispose`
+themselves, so a lock guard is not exposed to it. If the trap shows up in practice, a warning for a
+`using` binding whose type has a method named `dispose` but no `Dispose` impl is cheap to add.
+
 ---
 
 ## 4. What was checked against outside work
@@ -384,7 +421,8 @@ a recommendation.
    await is a run-time error in every tier. The compile-time error where the move checker can see
    it is not built: the move checker tracks only LOW-tier `Unique` locals, so it needs a pass over
    task values first.
-5. **Cleanup trait name.** *Decided 2026-11-17:* `Dispose`, matching `using`.
+5. **Cleanup trait name.** *Decided 2026-11-17:* `Dispose`, matching `using`. Built in AS1 as a `@tier(low)` prelude trait with
+   `fn dispose(self) void`.
 6. **Marker traits.** Whether `Send` and `Sync` are written in bounds of generic library code.
    Recommended: compiler-known marker traits, derived structurally, writable as bounds.
 7. **Names.** `Task.spawn`, `Task.scope`, `Task.cancelled`, the async-aware lock type, the
@@ -421,7 +459,7 @@ for traits.
 | Slice | Content | Depends on |
 |---|---|---|
 | **AS0** | This document and the public status page. | none |
-| **AS1** | `using` cleanup: the cleanup trait, run on every exit path (`return`, `break`, `continue`, `?`, failure, cancellation), reverse order for several bindings, a type check that a `using` binding implements it. Useful on its own. | AS0 |
+| **AS1** | **Done 2026-11-18.** `using` cleanup: the `Dispose` trait, run on every exit path (`return`, `break`, `continue`, `?`, failure, panic), reverse order for several bindings. The cleanup runs for a bound value whose type implements `Dispose`, and a binding of any other type is accepted and has none (**against the recommendation**, which was a type check). Cancellation arrives with AS6. Useful on its own. | AS0 |
 | **AS2** | **Done 2026-11-17.** Async core in sema and the interpreter: `async fn` typing, cold `Task<T>`, `await` that runs a task inline, tier rules opened. No threads yet. | AS0 |
 | **AS3** | Threads in the interpreter: the state split, the pool, `Task.spawn`, join, the executor interface, the park hook. | AS2 |
 | **AS4** | The sendable rule: marker traits, the sema pass, copy at the boundary, a real `SyncShared`, `TIER-014` lifted for it. | AS3 |

@@ -147,6 +147,7 @@ The record is `docs/ASYNC_SYNC_DESIGN.md`. In brief, the decisions are:
 - **The playground.** The browser build has no threads, so starting parallel
   work there is an error.
 
-The async core is built. Delivery continues with making `using` run its cleanup, then threads in the
-interpreter and the sharing rule. [Project Status](../project-status.md) tracks it, and this guide
+The async core and the `using` cleanup are built (see
+[Generics and traits](./generics-traits.md#cleanup-with-using-and-dispose)). Delivery continues with
+threads in the interpreter and the sharing rule. [Project Status](../project-status.md) tracks it, and this guide
 grows as those land.

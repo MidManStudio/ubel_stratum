@@ -205,8 +205,8 @@ verified safe.
   run in parallel on a thread pool in every tier, `async` and `await` become compiler-generated
   state machines, a compile-time rule decides what may be shared between tasks, and the usual
   locks, atomics and channels ship. The async core has landed (2026-11-17): `async fn` with a
-  `Task<T>` result, cold tasks, `await`, async blocks and every tier, all without threads. Next:
-  the `using` cleanup, then threads in the interpreter
+  `Task<T>` result, cold tasks, `await`, async blocks and every tier, all without threads. The `using` cleanup has landed too (2026-11-18): a `using` block calls the
+  `dispose` of each bound value whose type implements `Dispose`. Next: threads in the interpreter
 - Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a
   module is a file named by its path, cycles between modules are allowed, everything is private
   unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.
@@ -231,7 +231,11 @@ verified safe.
 - A task is awaited at most once, and a second `await` of the same task stops the program when it
   runs; there is no compile-time check for it yet. An async function cannot be a trait method, and
   the native backend does not build async code
-- `using` is parsed and type-checked but runs no cleanup at the end of its block
+- `using` runs the `dispose` of a bound value only when its type implements `Dispose`. A binding of any
+  other type is accepted and has no cleanup, and a binding moved out inside the block is still
+  cleaned up at the end
+- `fail` is accepted in a function whose result is not fallible, and the failure propagates when
+  the program runs (`fn f() void { fail "x" }` checks clean)
 - There are no threads, locks, atomics or channels, `SyncShared<T>` is single-threaded, and
   `SyncShared.new` is LOW only
 - A `const` initializer that calls a function which reads another `const` stops with

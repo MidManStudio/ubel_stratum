@@ -451,7 +451,7 @@ delivery adds a combined fixture that uses the rules together with generics
   `parse_trait_item`); a default method takes its own `@tier`, then the trait's
   (P2); a tier block around a trait reaches the methods that write none
   (`retier_trait_items`). `TraitDecl` needed no field.
-- Prelude: the six prelude traits are `@tier(low)`.
+- Prelude: the six prelude traits are `@tier(low)`. `Dispose` (AS1, `docs/ASYNC_SYNC_DESIGN.md`) is `@tier(low)` as well, so that a `using` block in any tier may call it.
 - Sema: the resolved tier in the trait's method shapes; the conformance check of
   Q1 (`TIER-016`, `TierError::TraitMethodTierMismatch`) and the unwritten-tier
   rule of Q2 in `register_one_trait_impl`, with the result kept in

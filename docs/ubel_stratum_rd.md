@@ -732,11 +732,12 @@ and through the interpreter for run-time values.
 
 **What it does:** `prelude.rs` holds the declarations every program sees
 without writing them (`Ordering`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-`Clone`, `Display`, `Iterator`, the twelve operator traits `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`,
+`Clone`, `Display`, `Dispose`, `Iterator`, the twelve operator traits `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`,
 `BitOr`, `BitXor`, `Shl`, `Shr`, `Neg`, `BitNot`, `Index` and `IndexSet`, `Hasher`, `Hash`) as Ubel source. `Hasher` and the traits are `@tier(low)`, so code at any tier can
 hash, show and call their methods through a bound: the prelude is ordinary source and its methods are `HIGH` unless a tier is written.
 `parse()` calls `prelude::inject` after parsing the
-program. `tests/prelude_traits.rs` (95 tests) covers what each kind of type
+program. `Dispose` (`fn dispose(self) void`) is the cleanup that a `using` block calls at the end of
+its block, and `tests/using_cleanup.rs` covers it. `tests/prelude_traits.rs` (95 tests) covers what each kind of type
 satisfies, the methods, hashing, the `Dictionary` key requirement, the
 operators on a type parameter, hand-written impls and what calls them
 (operators, `contains`, dictionaries, `order_by`, `group_by`, derived

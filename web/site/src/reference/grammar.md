@@ -317,7 +317,7 @@ ContinueStmt  ::= "continue"
 
 (* ── Memory management ──                                      *)
 (* with = scoped arena/allocator block (MID/LOW tier)          *)
-(* using = RAII resource cleanup (any tier)                     *)
+(* using = RAII cleanup, calls dispose on Dispose values (any tier)                     *)
 WithStmt      ::= "with" AllocatorExpr Block
 AllocatorExpr ::= "arena" "(" SizeExpr ")"
                 | "pool" "<" TypeExpr ">" "(" SizeExpr ")"

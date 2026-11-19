@@ -1191,6 +1191,7 @@ would couple parsing and semantics, which we specifically avoid.
 | Is this `edge struct` used in the right tier? | **TierChecker**: not the parser |
 | Does this `summon` path name anything? | **Name resolution** (`NAME-003`); the parser accepts any path |
 | Do these constants and statics depend on each other in a loop? | **Name resolution** (`NAME-009`), not the parser and not the interpreter |
+| Does a `using` binding have a cleanup? | **Interpreter**: the `dispose` of the `Dispose` impl of the value runs at the end of the block. The parser reads `using` as one statement, and no pass checks the type of a binding |
 
 The parser's job: turn a flat token stream into a tree. No more.
 
