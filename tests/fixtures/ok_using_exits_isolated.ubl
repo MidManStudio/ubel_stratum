@@ -1,0 +1,64 @@
+// tests/fixtures/ok_using_exits_isolated.ubl
+// The cleanup of a `using` block runs on every way out of it: `return`, `continue`,
+// `break`, and a `fail` caught by `try`/`catch`. The log shows each one.
+// Expected: sema OK, interpret OK.
+
+struct Guard {
+    name: string,
+    log: List<string>,
+}
+
+impl Dispose for Guard {
+    fn dispose(self) void {
+        self.log.push($"dispose {self.name}")
+    }
+}
+
+fn returns(log: List<string>) int {
+    using let g = Guard { name = "return", log = log } {
+        log.push("return body")
+        return 7
+    }
+    return 0
+}
+
+fn loops(log: List<string>) void {
+    let mut i = 0
+    while i < 4 {
+        i += 1
+        using let g = Guard { name = $"pass{i}", log = log } {
+            if i == 1 { continue }
+            if i == 3 { break }
+            log.push($"body {i}")
+        }
+    }
+}
+
+fn fails(log: List<string>) void! {
+    using let g = Guard { name = "fail", log = log } {
+        fail "body failed"
+    }
+}
+
+fn main() void {
+    let log: List<string> = List.new()
+
+    assert(returns(log) == 7, "the value of the return survives the cleanup")
+    loops(log)
+    try {
+        fails(log)?
+    } catch (e) {
+        log.push("caught")
+    }
+
+    assert(log.len() == 8, "eight entries")
+    assert(log[0] == "return body", "return body")
+    assert(log[1] == "dispose return", "cleanup after return")
+    assert(log[2] == "dispose pass1", "cleanup after continue")
+    assert(log[3] == "body 2", "second pass runs its body")
+    assert(log[4] == "dispose pass2", "cleanup after a normal end")
+    assert(log[5] == "dispose pass3", "cleanup after break")
+    assert(log[6] == "dispose fail", "cleanup before the catch")
+    assert(log[7] == "caught", "catch after the cleanup")
+    println("using exits ok")
+}

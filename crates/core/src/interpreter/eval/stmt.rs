@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use crate::ast::expressions::{Expr, IfBranchBody};
-use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
+use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind, UsingBinding};
 use crate::interpreter::eval::{expr, pattern, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
 
@@ -76,6 +76,55 @@ pub(crate) fn eval_if_branch_body<'ast>(
         IfBranchBody::Expr(e)  => expr::eval_expr(interp, e),
         IfBranchBody::Block(b) => eval_block(interp, b),
     }
+}
+
+/// `using let a = .., let b = .. { body }`: bind in order, run the body, then call the
+/// `dispose` of every bound value that has a `Dispose` impl, last binding first, on
+/// every way out of the block (end, `return`, `break`, `continue`, `fail`, panic).
+///
+/// A binding whose initializer did not finish is never disposed, and neither is a
+/// later one, but the earlier ones are. The value disposed is the one the binding was
+/// initialized with, so assigning to a `let mut` binding inside the block does not
+/// change what is cleaned up. The body's own `defer` expressions run first.
+fn eval_using<'ast>(
+    interp:   &mut Interpreter<'ast>,
+    bindings: &[UsingBinding<'ast>],
+    body:     &Block<'ast>,
+) -> EvalResult {
+    interp.env.push();
+    let mut bound: Vec<Value> = Vec::with_capacity(bindings.len());
+    let mut outcome: EvalResult = Ok(Value::Void);
+
+    for b in bindings.iter() {
+        match expr::eval_expr(interp, b.value) {
+            Ok(val) => {
+                bound.push(val.clone());
+                interp.env.define(b.name, val);
+            }
+            Err(sig) => {
+                outcome = Err(sig);
+                break;
+            }
+        }
+    }
+    if outcome.is_ok() {
+        outcome = eval_block_in_scope(interp, body);
+    }
+
+    // Every cleanup runs, even after one of them panics. A panic that is already
+    // on its way out is kept; a panic in a cleanup otherwise replaces whatever
+    // the block was leaving with (a `return`, a `break`, a `fail`).
+    for val in bound.iter().rev() {
+        let Some((func, receiver)) = interp.dispose_target(val) else { continue; };
+        if let Err(sig) = interp.run_method(func, receiver, &[]) {
+            if !matches!(outcome, Err(Signal::Panic(_))) {
+                outcome = Err(sig);
+            }
+        }
+    }
+
+    interp.env.pop();
+    outcome
 }
 
 /// Run deferred expressions in LIFO order.
@@ -295,18 +344,7 @@ pub fn eval_stmt<'ast>(
         }
 
         // ── Using (RAII resource management) ─────────────────────
-        StmtKind::Using { bindings, body } => {
-            interp.env.push();
-            for b in bindings.iter() {
-                let val = expr::eval_expr(interp, b.value)?;
-                interp.env.define(b.name, val);
-            }
-            // Note: cleanup (e.g., file.close()) would be called here on exit.
-            // For the tree-walker MVP, Rust's Drop handles Rc cleanup.
-            let result = eval_block_in_scope(interp, body);
-            interp.env.pop();
-            result
-        }
+        StmtKind::Using { bindings, body } => eval_using(interp, bindings, body),
 
         // ── Destructuring (`extract`) ──────────────────────────────
         StmtKind::Extract { pattern, value } => {

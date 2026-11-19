@@ -171,6 +171,18 @@ impl<'ast> Interpreter<'ast> {
             .copied()
     }
 
+    /// What `using` calls when its block ends: the `dispose` of the value's `Dispose`
+    /// impl, with the value `dispose` receives as `self`. A `Unique` is looked through,
+    /// because it has one owner and that owner's scope is where the value ends. A
+    /// `Shared` or a `SyncShared` is not: it is one of several owners, and no one
+    /// block is where the value ends. A value with no `Dispose` impl has no cleanup.
+    pub(crate) fn dispose_target(&self, value: &Value) -> Option<(FunctionId, Value)> {
+        match value {
+            Value::Unique(inner) => self.dispose_target(inner),
+            _ => self.user_trait_fn(value, "Dispose", "dispose").map(|f| (f, value.clone())),
+        }
+    }
+
     /// The `next` of the `Iterator` impl a struct or an enum has, which a
     /// `for` loop calls. A built-in value has none (sema rejects an impl of
     /// `Iterator` for one), so only these two are asked.

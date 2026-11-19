@@ -1,0 +1,47 @@
+// tests/fixtures/ok_using_dispose_isolated.ubl
+// A `using` block calls the `dispose` of each value it binds, last binding first.
+// A value with no `Dispose` impl (an `int`, a struct) has no cleanup, and a generic
+// function with a `Dispose` bound can bind its argument. The log shows the order.
+// Expected: sema OK, interpret OK.
+
+struct Guard {
+    name: string,
+    log: List<string>,
+}
+
+struct Plain {
+    n: int,
+}
+
+impl Dispose for Guard {
+    fn dispose(self) void {
+        self.log.push($"dispose {self.name}")
+    }
+}
+
+fn scoped<T: Dispose>(x: T, log: List<string>) void {
+    using let held = x {
+        log.push("generic body")
+    }
+}
+
+fn main() void {
+    let log: List<string> = List.new()
+
+    using let a = Guard { name = "a", log = log }, let b = Guard { name = "b", log = log } {
+        log.push("body")
+    }
+    using let n = 5, let p = Plain { n = 1 } {
+        log.push("plain values")
+    }
+    scoped(Guard { name = "g", log = log }, log)
+
+    assert(log.len() == 6, "six entries")
+    assert(log[0] == "body", "body first")
+    assert(log[1] == "dispose b", "last binding first")
+    assert(log[2] == "dispose a", "then the first")
+    assert(log[3] == "plain values", "no cleanup for plain values")
+    assert(log[4] == "generic body", "generic body")
+    assert(log[5] == "dispose g", "generic cleanup")
+    println("using dispose ok")
+}

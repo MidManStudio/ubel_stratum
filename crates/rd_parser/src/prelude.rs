@@ -88,6 +88,11 @@ trait Display {
 }
 
 @tier(low)
+trait Dispose {
+    fn dispose(self) void
+}
+
+@tier(low)
 trait Iterator<T> {
     fn next(self) T?
 }
@@ -179,7 +184,7 @@ trait Hash: Eq {
 /// it depends on, so one pass over this list in `kept_names` reaches a
 /// fixpoint.
 const NAMES: &[&str] = &[
-    "Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator",
+    "Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Dispose", "Iterator",
     "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot",
     "Index", "IndexSet",
     "Hasher", "Hash",
@@ -308,27 +313,35 @@ mod tests {
 
     #[test]
     fn nothing_declared_keeps_everything() {
-        assert_eq!(kept(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
+        assert_eq!(kept(&[]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Dispose", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_ordering_takes_the_ordering_traits_with_it() {
-        assert_eq!(kept(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Ordering"]), vec!["PartialEq", "Eq", "Clone", "Display", "Dispose", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_partial_eq_takes_every_trait_built_on_it() {
-        assert_eq!(kept(&["PartialEq"]), vec!["Ordering", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher"]);
+        assert_eq!(kept(&["PartialEq"]), vec!["Ordering", "Clone", "Display", "Dispose", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher"]);
     }
 
     #[test]
     fn a_user_clone_loses_only_clone() {
-        assert_eq!(kept(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Clone"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Display", "Dispose", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
     }
 
     #[test]
     fn a_user_iterator_loses_only_iterator() {
-        assert_eq!(kept(&["Iterator"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
+        assert_eq!(kept(&["Iterator"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Dispose", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher", "Hash"]);
+    }
+
+    #[test]
+    fn a_user_dispose_loses_only_dispose() {
+        let all = kept(&[]);
+        assert!(all.contains(&"Dispose"));
+        let without: Vec<&str> = all.iter().copied().filter(|n| *n != "Dispose").collect();
+        assert_eq!(kept(&["Dispose"]), without);
     }
 
     #[test]
@@ -363,12 +376,12 @@ mod tests {
 
     #[test]
     fn a_user_hasher_takes_hash_with_it() {
-        assert_eq!(kept(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet"]);
+        assert_eq!(kept(&["Hasher"]), vec!["Ordering", "PartialEq", "Eq", "PartialOrd", "Ord", "Clone", "Display", "Dispose", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet"]);
     }
 
     #[test]
     fn a_user_eq_takes_ord_and_hash_but_leaves_partial_eq() {
-        assert_eq!(kept(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Display", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher"]);
+        assert_eq!(kept(&["Eq"]), vec!["Ordering", "PartialEq", "PartialOrd", "Clone", "Display", "Dispose", "Iterator", "Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet", "Hasher"]);
     }
 
     #[test]
@@ -391,6 +404,7 @@ mod tests {
         assert_eq!(deps("Ord"),        vec!["Ordering", "PartialOrd", "Eq"]);
         assert_eq!(deps("Clone"),      Vec::<&str>::new());
         assert_eq!(deps("Display"),    Vec::<&str>::new());
+        assert_eq!(deps("Dispose"),    Vec::<&str>::new());
         assert_eq!(deps("Iterator"),   Vec::<&str>::new());
         for op in ["Add", "Sub", "Mul", "Div", "Rem", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Neg", "BitNot", "Index", "IndexSet"] {
             assert_eq!(deps(op), Vec::<&str>::new(), "{op}");

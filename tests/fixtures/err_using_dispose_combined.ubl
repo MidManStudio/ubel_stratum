@@ -1,0 +1,42 @@
+// tests/fixtures/err_using_dispose_combined.ubl
+// An impl of `Dispose` with no `dispose` method, in a program whose `using` blocks,
+// loop, `fail` and `try`/`catch` are fine.
+// Expected: sema FAIL (TYPE-123 once).
+
+struct Lease {
+    id: int,
+}
+
+struct Plain {
+    n: int,
+}
+
+impl Dispose for Lease {
+}
+
+fn open(id: int) Lease! {
+    if id < 0 {
+        fail "negative id"
+    }
+    return Lease { id = id }
+}
+
+fn run(id: int) int! {
+    using let lease = open(id)?, let plain = Plain { n = 1 } {
+        return lease.id + plain.n
+    }
+    return 0
+}
+
+fn main() void {
+    let mut i = 0
+    while i < 3 {
+        i += 1
+        try {
+            let n = run(i)?
+            println(n)
+        } catch (e) {
+            println("failed")
+        }
+    }
+}

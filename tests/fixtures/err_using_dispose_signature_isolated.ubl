@@ -1,0 +1,20 @@
+// tests/fixtures/err_using_dispose_signature_isolated.ubl
+// An impl of `Dispose` whose `dispose` returns a value. The trait declares
+// `fn dispose(self) void`, so a result type is a signature mismatch.
+// Expected: sema FAIL (TYPE-125 once).
+
+struct Guard {
+    name: string,
+}
+
+impl Dispose for Guard {
+    fn dispose(self) int {
+        return 1
+    }
+}
+
+fn main() void {
+    using let g = Guard { name = "a" } {
+        println("body")
+    }
+}

@@ -1,0 +1,21 @@
+// tests/fixtures/err_using_dispose_tier_isolated.ubl
+// The body of `dispose` is LOW-tier code, because `Dispose` is a LOW-tier trait and
+// a `using` block in any tier may call it. A `List` cannot be built there.
+// Expected: sema FAIL (TIER-009 once).
+
+struct Guard {
+    name: string,
+}
+
+impl Dispose for Guard {
+    fn dispose(self) void {
+        let seen = List.new()
+        seen.push(1)
+    }
+}
+
+fn main() void {
+    using let g = Guard { name = "a" } {
+        println("body")
+    }
+}

@@ -1,0 +1,112 @@
+// tests/fixtures/ok_using_dispose_combined.ubl
+// `using` beside the features around it: a leased resource counted by a shared
+// meter, a stage that ends in `?`, a `fail` caught by `try`/`catch`, a `defer` in the
+// body (it runs before the cleanup), nested blocks, an enum with a cleanup, and a
+// generic function with a `Dispose` bound.
+// Expected: sema OK, interpret OK.
+
+enum Mode {
+    Read,
+    Write,
+}
+
+struct Meter {
+    held: int,
+}
+
+struct Lease {
+    id: int,
+    meter: Meter,
+    log: List<string>,
+}
+
+impl Dispose for Lease {
+    fn dispose(self) void {
+        self.meter.held -= 1
+        self.log.push($"release {self.id}")
+    }
+}
+
+impl Dispose for Mode {
+    fn dispose(self) void {
+        println("mode released")
+    }
+}
+
+fn acquire(id: int, meter: Meter, log: List<string>) Lease {
+    meter.held += 1
+    return Lease { id = id, meter = meter, log = log }
+}
+
+fn half(x: int) int! {
+    if x % 2 != 0 {
+        fail "odd"
+    }
+    return x / 2
+}
+
+fn process(x: int, meter: Meter, log: List<string>) int! {
+    using let lease = acquire(x, meter, log) {
+        defer log.push("deferred")
+        let h = x |> half?
+        return h + 1
+    }
+    return 0
+}
+
+fn nested(meter: Meter, log: List<string>) void {
+    using let outer = acquire(10, meter, log) {
+        using let inner = acquire(11, meter, log) {
+            log.push($"held {meter.held}")
+        }
+        log.push($"held {meter.held}")
+    }
+}
+
+fn hold<T: Dispose>(value: T) int {
+    using let kept = value {
+        return 1
+    }
+    return 0
+}
+
+fn main() void {
+    let meter = Meter { held = 0 }
+    let log: List<string> = List.new()
+
+    try {
+        let first = process(4, meter, log)?
+        assert(first == 3, "the value of a return survives the cleanup")
+    } catch (e) {
+        log.push("unexpected failure")
+    }
+    assert(meter.held == 0, "the lease was given back")
+
+    try {
+        let second = process(3, meter, log)?
+        log.push("not reached")
+    } catch (e) {
+        log.push("caught")
+    }
+    assert(meter.held == 0, "a failure gives the lease back too")
+
+    nested(meter, log)
+    assert(meter.held == 0, "nested leases are all given back")
+
+    assert(hold(Mode.Read) == 1, "a generic function binds a Dispose value")
+    assert(hold(acquire(99, meter, log)) == 1, "and a struct")
+    assert(meter.held == 0, "the generic function gave the lease back")
+
+    assert(log.len() == 10, "ten entries")
+    assert(log[0] == "deferred", "defer before cleanup")
+    assert(log[1] == "release 4", "release after defer")
+    assert(log[2] == "deferred", "second defer")
+    assert(log[3] == "release 3", "release before the catch")
+    assert(log[4] == "caught", "caught")
+    assert(log[5] == "held 2", "inner body")
+    assert(log[6] == "release 11", "inner released first")
+    assert(log[7] == "held 1", "outer body")
+    assert(log[8] == "release 10", "outer released last")
+    assert(log[9] == "release 99", "the generic function released its argument")
+    println("using combined ok")
+}
