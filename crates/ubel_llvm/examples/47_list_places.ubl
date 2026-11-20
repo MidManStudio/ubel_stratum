@@ -1,0 +1,59 @@
+// `List.new()` has no element type of its own (sema leaves it unsolved), so the emitter takes it from the place the list
+// goes to. This writes one in each such place: a `let` annotation, `return`, an assignment, a struct field, an enum
+// payload, a call argument and a `push` argument; and also a closure that captures a list. The interpreter is the oracle.
+
+struct Bag {
+    items: List<int>
+    name:  string
+}
+
+enum Holder {
+    Full(List<int>),
+    Nothing,
+}
+
+fn empty() List<int> {
+    return List.new()
+}
+
+fn count(xs: List<int>) int {
+    xs.push(1)
+    xs.push(2)
+    return xs.len()
+}
+
+fn held(h: Holder) int {
+    match h {
+        Holder.Full(xs) => return xs.len() + 100,
+        Holder.Nothing => return -1,
+    }
+}
+
+fn main() void {
+    let a: List<int> = List.new()
+    a.push(5)
+    let b = empty()
+    b.push(6)
+    b.push(7)
+    let mut c: List<int> = List.new()
+    c.push(1)
+    c = List.new()
+    c.push(8)
+    c.push(9)
+    c.push(10)
+    let bag = Bag { items = List.new(), name = "bag" }
+    bag.items.push(11)
+    bag.items = List.new()
+    bag.items.push(12)
+    bag.items.push(13)
+    println(a.len(), b.len(), c.len(), bag.items.len(), bag.name, count(List.new()))
+    println(held(Holder.Full(List.new())), held(Holder.Nothing))
+    let rows: List<List<int>> = List.new()
+    rows.push(List.new())
+    rows.push(a)
+    rows[0].push(99)
+    println(rows.len(), rows[0].len(), rows[0][0], rows[1][0], rows[-1].len())
+    let more = fn(x: int) x + a.len() + b.len()
+    a.push(1)
+    println(more(1000), a.len(), c.len())
+}

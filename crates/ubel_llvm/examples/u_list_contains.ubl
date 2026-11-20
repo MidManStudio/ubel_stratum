@@ -1,0 +1,7 @@
+// Not supported yet: list methods other than `len`, `is_empty` and `push` (M3b has `contains`, `first`, `last` and more).
+// expect-refusal: the method `contains` on a list
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    println(xs.contains(1))
+}

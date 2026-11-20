@@ -1,0 +1,228 @@
+// The project's own self-hosted tokenizer (self-hosted/tokenizer/tokenizer.ubl, copied here unchanged below), driven by
+// a small `main`: it needs `List<int>`, `List<Token>`, `push`, `len`, indexing, a struct with an enum, a string and a
+// double field, `while` loops and `double` arithmetic, which M2b and M3a provide. It is the first real program of
+// the language itself that compiles natively; the interpreter is the oracle for what it prints.
+
+enum TokenKind {
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Colon,
+    Comma,
+    StringLit,
+    NumberLit,
+    TrueLit,
+    FalseLit,
+    NullLit,
+    Eof,
+    Invalid
+}
+
+struct Token {
+    kind: TokenKind,
+    str_val: Str,
+    num_val: double
+}
+
+fn is_digit(ch: int) bool {
+    return (ch >= 48) and (ch <= 57)
+}
+
+fn is_whitespace(ch: int) bool {
+    return (ch == 32) or (ch == 9) or (ch == 10) or (ch == 13)
+}
+
+fn tokenize(raw_ascii: List<int>) List<Token> {
+    let mut tokens: List<Token> = List.new()
+    let len = raw_ascii.len()
+    let mut i = 0
+
+    while (i < len) {
+        let ch = raw_ascii[i]
+
+        if (is_whitespace(ch) == true) {
+            i = i + 1
+            continue
+        }
+
+        if (ch == 123) {
+            let t = Token { kind = TokenKind.LBrace, str_val = "{", num_val = 0.0 }
+            tokens.push(t)
+            i = i + 1
+            continue
+        }
+
+        if (ch == 125) {
+            let t = Token { kind = TokenKind.RBrace, str_val = "}", num_val = 0.0 }
+            tokens.push(t)
+            i = i + 1
+            continue
+        }
+
+        if (ch == 91) {
+            let t = Token { kind = TokenKind.LBracket, str_val = "[", num_val = 0.0 }
+            tokens.push(t)
+            i = i + 1
+            continue
+        }
+
+        if (ch == 93) {
+            let t = Token { kind = TokenKind.RBracket, str_val = "]", num_val = 0.0 }
+            tokens.push(t)
+            i = i + 1
+            continue
+        }
+
+        if (ch == 58) {
+            let t = Token { kind = TokenKind.Colon, str_val = ":", num_val = 0.0 }
+            tokens.push(t)
+            i = i + 1
+            continue
+        }
+
+        if (ch == 44) {
+            let t = Token { kind = TokenKind.Comma, str_val = ",", num_val = 0.0 }
+            tokens.push(t)
+            i = i + 1
+            continue
+        }
+
+        if (ch == 34) {
+            i = i + 1
+            while ((i < len) and (raw_ascii[i] != 34)) {
+                i = i + 1
+            }
+
+            if ((i >= len) == true) {
+                let err_tok = Token { kind = TokenKind.Invalid, str_val = "Unterminated String", num_val = 0.0 }
+                tokens.push(err_tok)
+                return tokens
+            }
+
+            let str_tok = Token { kind = TokenKind.StringLit, str_val = "parsed_str", num_val = 0.0 }
+            tokens.push(str_tok)
+            i = i + 1
+            continue
+        }
+
+        if (is_digit(ch) or (ch == 45)) {
+            let mut num_accum: double = 0.0
+            let mut is_negative = false
+
+            if (ch == 45) {
+                is_negative = true
+                i = i + 1
+            }
+
+            while ((i < len) and (is_digit(raw_ascii[i]) == true)) {
+                let digit_val: double = (raw_ascii[i] - 48) as double
+                num_accum = (num_accum * 10.0) + digit_val
+                i = i + 1
+            }
+
+            if (is_negative == true) {
+                num_accum = 0.0 - num_accum
+            }
+
+            let num_tok = Token { kind = TokenKind.NumberLit, str_val = "", num_val = num_accum }
+            tokens.push(num_tok)
+            continue
+        }
+
+        let inv_tok = Token { kind = TokenKind.Invalid, str_val = "Unexpected Character", num_val = 0.0 }
+        tokens.push(inv_tok)
+        i = i + 1
+    }
+
+    let eof_tok = Token { kind = TokenKind.Eof, str_val = "EOF", num_val = 0.0 }
+    tokens.push(eof_tok)
+    return tokens
+}
+
+fn kind_code(k: TokenKind) int {
+    match k {
+        TokenKind.LBrace => return 0,
+        TokenKind.RBrace => return 1,
+        TokenKind.LBracket => return 2,
+        TokenKind.RBracket => return 3,
+        TokenKind.Colon => return 4,
+        TokenKind.Comma => return 5,
+        TokenKind.StringLit => return 6,
+        TokenKind.NumberLit => return 7,
+        TokenKind.TrueLit => return 8,
+        TokenKind.FalseLit => return 9,
+        TokenKind.NullLit => return 10,
+        TokenKind.Eof => return 11,
+        TokenKind.Invalid => return 12,
+    }
+}
+
+fn show(name: string, codes: List<int>) void {
+    let toks = tokenize(codes)
+    println(name, "->", toks.len(), "tokens")
+    for i in 0 .. toks.len() {
+        let t = toks[i]
+        println("  ", i, kind_code(t.kind), t.str_val, t.num_val)
+    }
+}
+
+fn main() void {
+    // {"a": 12, "b": [-3]}
+    let a: List<int> = List.new()
+    for c in 0 .. 20 {
+        let table: List<int> = List.new()
+        table.push(123)
+        table.push(34)
+        table.push(97)
+        table.push(34)
+        table.push(58)
+        table.push(32)
+        table.push(49)
+        table.push(50)
+        table.push(44)
+        table.push(32)
+        table.push(34)
+        table.push(98)
+        table.push(34)
+        table.push(58)
+        table.push(32)
+        table.push(91)
+        table.push(45)
+        table.push(51)
+        table.push(93)
+        table.push(125)
+        a.push(table[c])
+    }
+    show("object", a)
+
+    let unterminated: List<int> = List.new()
+    unterminated.push(34)
+    unterminated.push(97)
+    unterminated.push(98)
+    show("unterminated", unterminated)
+
+    let junk: List<int> = List.new()
+    junk.push(64)
+    junk.push(35)
+    junk.push(49)
+    junk.push(46)
+    junk.push(53)
+    show("junk", junk)
+
+    let empty: List<int> = List.new()
+    show("empty", empty)
+
+    // a long input: 2000 numbers, to make the collector run while the token list grows
+    let many: List<int> = List.new()
+    for n in 0 .. 2000 {
+        many.push(49 + n % 9)
+        many.push(44)
+    }
+    let big = tokenize(many)
+    let mut sum = 0.0
+    for i in 0 .. big.len() {
+        sum += big[i].num_val
+    }
+    println("many ->", big.len(), "tokens, sum", sum)
+}

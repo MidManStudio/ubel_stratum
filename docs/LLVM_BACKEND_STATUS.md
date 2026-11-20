@@ -20,8 +20,8 @@ table in `LLVM_ROADMAP.md` stops at slice 4 and should be replaced by a pointer 
   The `ubel` command line has `check`, `run`, `build` and `debug-tokens`, and the LLVM crate is a member of the main
   workspace.
 - **The subset is small next to the language.** Measured on current master: the target program
-  (`examples/arena_demo/ast_builder.ubl`) compiles; the self-hosted tokenizer does not; **29 of the 187 `ok_`
-  fixtures compile** (4 of 168 before M2a, 28 before M2b) (they are sema snippets, so this measures which features the language tests use, not how many
+  (`examples/arena_demo/ast_builder.ubl`) compiles, and so does the self-hosted tokenizer (since M3a); **30 of the 196 `ok_`
+  fixtures compile** (4 of 168 before M2a, 28 before M2b, 29 before M3a, each counted on the fixtures of its day) (they are sema snippets, so this measures which features the language tests use, not how many
   programs would compile, but the direction is not in doubt). The interpreter runs the language; the backend
   runs a corner of it.
 - **The corner is the part that was hardest to design, not the part that is largest.** The three memory tiers
@@ -66,7 +66,7 @@ The emitter's own list of refusals is the authority (87 distinct messages in `em
 | Group | Refused today |
 |---|---|
 | **Types** | `short`/`ushort` casts, `char`, tuples, generic types and structs and enums (so `Pool<T>` and `Handle<T>` too), `&mut`, references to anything but a struct, qualified type names, fallible types |
-| **Collections** | `List<T>`, `Dictionary`, `Queue`, `InlineList`, `Unique<T>`, `Shared<T>`, indexing, `push`, `len` on a list, `for` over anything but an integer range |
+| **Collections** | `Dictionary`, `Queue`, `InlineList`, `Unique<T>`, `Shared<T>`; for `List<T>` (GC heap only since M3a): `for` over a list, `pop`, `first`, `last`, `contains` and the other methods, printing, array literals, lists in arenas, lists of closures, a `List.new()` with no type where it is stored |
 | **Declarations** | traits, `impl` and `extend` blocks, struct methods and properties, attributes (`@derive`), `static` items and other declaration kinds, generic functions, `async`/`await`; imports do not exist because the language has no modules yet |
 | **Calls** | your own functions, `println`/`print`, `assert` and `panic` (a string message only); no other builtins (`len`, `push`, math, ...), no named arguments, no calling a value that is not a local |
 | **Patterns and control** | guards (`where`), nested patterns, struct-style variants, destructuring `let` and `for`, `break` with a value, an `if` expression that lacks an `else` |
@@ -76,21 +76,21 @@ The emitter's own list of refusals is the authority (87 distinct messages in `em
 | **Closures** | captures of mutable variables, closures that capture more than 30 variables, a closure inside a closure inside an arena |
 
 How much does each group matter? The first refusal of each `ok_` fixture, measured with the binary after M2b on 2026-11-16
-(`tests/fixtures/ok_*.ubl`, 187 files; **29 of them compile now**, 28 before M2b and 4 of 168 before M2a; a program refused for one
+(`tests/fixtures/ok_*.ubl`, 196 files; **30 of them compile now**, 29 before M3a, 28 before M2b and 4 of 168 before M2a; a program refused for one
 reason is usually refused for several, so these count what a program would hit first, and the ranking is more reliable than
-the numbers). The 158 that are still refused (recounted for this table on all 187 files, so the rows differ a little from the ones counted after M2a; the same count with the emitter from before M2b gives 28 compiling and 39 type refusals, so a fixture that first failed on a `double` now fails on its next feature, mostly traits):
+the numbers). The 166 that are still refused after M3a (the table was recounted on all 196 files; on the 187 files of the day before, 158 were refused before M3a, 35 of them for a type, so the rows differ a little from the ones counted after M2a; the same count with the emitter from before M2b gives 28 compiling and 39 type refusals, so a fixture that first failed on a `double` now fails on its next feature, mostly traits):
 
 | First refusal | Fixtures | What would unlock it |
 |---|---|---|
-| a value or annotation of an unsupported type (`List<T>`, `InlineList`, `Dictionary`, `Unique`, `Queue`, `Shared`, `&mut`, `Callback`, `char`, and other annotations) | 35 | collections (M3) |
-| trait, `impl` and `extend` declarations | 34 | traits (the traits chat) |
+| a value or annotation of an unsupported type (`InlineList`, `Dictionary`, `Unique`, `Queue`, `Shared`, `&mut`, `Callback`, `char`, and other annotations) | 17 | the rest of the collections (M3b onwards) |
+| trait, `impl` and `extend` declarations | 40 | traits (the traits chat) |
 | generic structs, types and functions | 27 | monomorphization (decision) |
 | attributes on structs (`@derive`) | 21 | derives, which wait on traits |
-| references that are not to a struct, struct-style variants, `static`, constants, struct methods, other blocks, format specifiers | 41 | several small slices |
+| references that are not to a struct, struct-style variants, `static`, constants, struct methods, other blocks, format specifiers; new with lists: a `List.new()` with no type where it is stored (9), a list in an arena (3), `for` over a list (2) | 61 | several small slices |
 
-The self-hosted tokenizer (137 lines, the project's own next target in `self-hosted/docs/SELF_HOSTED.md`) is refused
-at its `List<int>` parameter (line 31; its `double` field is accepted since M2b and its `Str` type since M2a, example 37), and needs `List<int>`, `List<Token>`, `List.new()`, `push`, indexing and
-`len`. That is a short, concrete list.
+The self-hosted tokenizer (137 lines, the project's own next target in `self-hosted/docs/SELF_HOSTED.md`) compiles
+since M3a (with `double` since M2b, `Str` since M2a, example 37, and `List<int>`, `List<Token>`, `List.new()`, `push`, indexing and
+`len`), and equals the interpreter on its inputs: example 48 holds a copy of it and a driver `main`, and runs at -O0, -O2 and under ASan and UBSan with the collector forced on every allocation.
 
 ## 3. From source to an executable, today and as it should be
 
@@ -134,7 +134,7 @@ than that or dependent on language work that is not done. These are estimates fr
 | M0 | Subset and target program | done | | done | `ast_builder` equals the interpreter in the suite |
 | M1 | `ubel build` and packaging (done: M1a `ubel-llvm build`, M1b `ubel build` and the workspace join) | the thing a user can try | nothing in the language | S to M | `ubel build examples/x.ubl -o x && ./x` on Linux, and CI does it through the real CLI |
 | M2 | Numeric tower and `assert` (M2a done: sized integers, `assert`, `panic`; M2b done: `float` and `double`, printed exactly like Rust's `{}`, with `sqrt floor ceil abs min max`) | floats and sized integers are in the tokenizer and everywhere else | overflow behaviour is decided for the sized integers (wrap, as the interpreter does); plain `int` in the interpreter saturates through `f64`, a core bug (`LLVM_POC.md`, known differences) | M | the fixtures that first fail on `u8`, `u64`, `double`, `assert` compile and match the interpreter |
-| M3 | Collections v1: `List<T>`, indexing, `push`, `len`, `for` over a list, bounds checks | most of the 42 | the generics decision (below) for `List<T>` | L | the self-hosted tokenizer compiles and equals the interpreter on its inputs |
+| M3 | Collections v1 (M3a done: `List<T>` on the GC heap, `List.new()`, `push`, `len`, `is_empty`, indexing with bounds checks, element writes, the self-hosted tokenizer; M3b open: `for` over a list, `pop`, `first`, `last`, `contains`, printing, lists in arenas) | most of the 42 | the generics decision (below) for `List<T>` | L | the self-hosted tokenizer compiles and equals the interpreter on its inputs |
 | M4 | Generics (monomorphization) and traits (static dispatch), `@derive` | 24 + 25 + 21 first refusals | the traits chat; decision on monomorphization versus uniform representation | XL | the generic and trait fixtures compile; `Dictionary`, `Unique`, `Shared` follow |
 | M5 | Modules, imports and a minimal standard library (arguments, stdin and files, exit code) | real programs, the self-hosted parser | language work: modules do not exist yet | L, language-dependent | a multi-file program builds; the self-hosted parser compiles |
 | M6 | LOW for real: allocation, `Unique`, moves, `Pool`/`Handle`, `dyn` traits | the third tier is today "no allocation" | D-decisions on LOW (B3), the `dyn` work now in `core` | XL | a LOW-tier program that owns and frees memory, checked by the sanitizers |
@@ -150,6 +150,8 @@ and the interpreter's type checker already assume) or use a uniform representati
 slot, like our enum payloads and closure captures). Uniform is a smaller first step and fits the collector; it makes
 `List<int>` boxed or needs a second representation. *Decision*, with the self-hosted tokenizer's `List<int>` and
 `List<Token>` as the first test of whichever is chosen.
+**Decided 2026-11-10 (owner), done in M3a:** the built-in collection types are specialised per concrete element type (`Ty::List` indexes a
+table of element types, so `List<int>` and `List<Token>` are different types for the emitter); user-defined generics wait for M4.
 
 ## 5. How far, in three bars (reasoned)
 

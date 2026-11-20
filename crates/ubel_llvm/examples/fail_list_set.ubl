@@ -1,0 +1,9 @@
+// A write past the end stops the program too, and so does a read of an empty list.
+fn main() void {
+    let xs: List<string> = List.new()
+    xs.push("a")
+    xs[0] = "b"
+    println(xs[0])
+    xs[1] = "c"
+    println("not reached")
+}

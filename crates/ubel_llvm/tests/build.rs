@@ -176,6 +176,48 @@ fn a_float_division_by_zero_stops_like_the_interpreter() {
 }
 
 #[test]
+fn lists_and_the_self_hosted_tokenizer_match_the_interpreter() {
+    if !have_cc() {
+        return;
+    }
+    let scratch = Scratch::new("lists");
+    // 44 is the list basics (growth, aliasing, nested lists, every element type), 47 the places `List.new()` takes its
+    // element type from, and 48 the project's own self-hosted tokenizer with a driver: a `List<int>` in, a `List<Token>`
+    // out, with enough tokens to make the collector run.
+    for name in ["44_list_basic", "47_list_places", "48_tokenizer"] {
+        let source = example(name);
+        let want = ubel_llvm::interpret(&source);
+        assert!(want.error.is_none(), "{name}: the interpreter failed: {:?}", want.error);
+        assert!(!want.output.is_empty(), "{name}: the interpreter printed nothing, the comparison would be empty");
+        let mut o = scratch.opts(name);
+        o.opt = OptLevel::O0;
+        let built = driver::build(&source, &o).unwrap_or_else(|e| panic!("{name}: build failed: {e}"));
+        let out = run(&built.output);
+        assert!(out.status.success(), "{name}: the native program failed: {}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want.output, "{name}: output differs from the interpreter");
+    }
+}
+
+#[test]
+fn a_list_index_out_of_range_stops_like_the_interpreter() {
+    if !have_cc() {
+        return;
+    }
+    let scratch = Scratch::new("listindex");
+    for name in ["fail_list_index", "fail_list_index_neg", "fail_list_set"] {
+        let source = example(name);
+        let want = ubel_llvm::interpret(&source);
+        assert!(want.error.is_some(), "{name} is expected to fail in the interpreter");
+        let mut o = scratch.opts(name);
+        o.opt = OptLevel::O0;
+        let built = driver::build(&source, &o).expect("it builds");
+        let out = run(&built.output);
+        assert_eq!(out.status.code(), Some(1), "{name}: the native program should exit with status 1");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want.output, "{name}: output before the failure differs");
+    }
+}
+
+#[test]
 fn front_end_and_emitter_errors_come_before_the_compiler_is_looked_for() {
     // The compiler named here does not exist. If it were looked up first, every one of these
     // would be reported as a missing compiler, which would blame the wrong thing.

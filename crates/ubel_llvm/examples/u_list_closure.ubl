@@ -1,0 +1,6 @@
+// Not supported yet: a list of closures.
+// expect-refusal: a list of this element type
+fn main() void {
+    let fs: List<fn(int) int> = List.new()
+    println(fs.len())
+}

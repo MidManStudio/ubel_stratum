@@ -1,0 +1,64 @@
+// Lists under allocation pressure: a long-lived list keeps some elements alive while short-lived lists are built
+// and dropped, so the collector runs many times while lists, their arrays, and the strings and structs inside them
+// are live. Run with GC_STRESS in the suite as well. The interpreter is the oracle.
+
+struct Node {
+    id:     int
+    label:  string
+    weight: double
+}
+
+fn churn(rounds: int, per: int) int {
+    let keep: List<Node> = List.new()
+    let mut total = 0
+    for r in 0 .. rounds {
+        let tmp: List<Node> = List.new()
+        for i in 0 .. per {
+            let n = Node { id = r * per + i, label = $"n{i}", weight = i as double * 0.5 }
+            tmp.push(n)
+            if i % 50 == 0 {
+                keep.push(n)
+            }
+        }
+        total += tmp.len() + tmp[-1].id + tmp[per / 2].label.len()
+    }
+    for i in 0 .. keep.len() {
+        total += keep[i].id + keep[i].label.len()
+    }
+    return total + keep.len()
+}
+
+fn strings(n: int) int {
+    let xs: List<string> = List.new()
+    for i in 0 .. n {
+        xs.push($"item-{i}-" + "x")
+    }
+    let mut chars = 0
+    for i in 0 .. xs.len() {
+        chars += xs[i].len()
+    }
+    return chars
+}
+
+fn rows(n: int) int {
+    let grid: List<List<int>> = List.new()
+    for i in 0 .. n {
+        let row: List<int> = List.new()
+        for j in 0 .. 20 {
+            row.push(i * j)
+        }
+        grid.push(row)
+    }
+    let mut s = 0
+    for i in 0 .. grid.len() {
+        s += grid[i][19] + grid[i][-1] + grid[i].len()
+    }
+    return s
+}
+
+fn main() void {
+    println(churn(60, 2000))
+    println(strings(30000))
+    println(rows(3000))
+    println(churn(5, 100), strings(10), rows(10))
+}

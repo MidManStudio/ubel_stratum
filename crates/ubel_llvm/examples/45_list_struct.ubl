@@ -1,0 +1,80 @@
+// Lists of structs, enums and strings (the shape the self-hosted tokenizer needs: a list of Token records built by
+// `push` and read by index), lists inside structs, element writes through an index (`toks[i].kind = ...`), and a
+// `match` on an element. The interpreter is the oracle.
+
+struct Token {
+    kind:  int
+    text:  string
+    value: double
+}
+
+enum Shape {
+    Circle(double),
+    Square(int),
+    Empty,
+}
+
+struct Bag {
+    items: List<Token>
+    total: int
+}
+
+fn tokenize(n: int) List<Token> {
+    let out: List<Token> = List.new()
+    for i in 0 .. n {
+        out.push(Token { kind = i % 3, text = "t" + "x", value = i as double / 2.0 })
+    }
+    return out
+}
+
+fn describe(s: Shape) int {
+    match s {
+        Shape.Circle(r) => return (r * 2.0) as int,
+        Shape.Square(n) => return n * n,
+        Shape.Empty => return 0,
+    }
+}
+
+fn main() void {
+    let toks = tokenize(10)
+    println(toks.len(), toks[0].kind, toks[9].value, toks[-1].text, toks[4].kind)
+    toks[2].kind = 42
+    toks[3] = Token { kind = 7, text = "seven", value = 7.5 }
+    toks[-1].value += 100.0
+    println(toks[2].kind, toks[3].text, toks[3].value, toks[9].value)
+
+    let shapes: List<Shape> = List.new()
+    shapes.push(Shape.Circle(1.5))
+    shapes.push(Shape.Square(4))
+    shapes.push(Shape.Empty)
+    shapes.push(Shape.Circle(0.25))
+    let mut total = 0
+    for i in 0 .. shapes.len() {
+        total += describe(shapes[i])
+    }
+    println(total, shapes.len())
+
+    let bag = Bag { items = tokenize(3), total = 0 }
+    bag.items.push(Token { kind = 5, text = "extra", value = 1.0 })
+    bag.total = bag.items.len()
+    println(bag.total, bag.items[-1].kind, bag.items[-1].text, bag.items[0].text)
+
+    let words: List<string> = List.new()
+    for i in 0 .. 50 {
+        words.push($"word{i}")
+    }
+    let mut chars = 0
+    for i in 0 .. words.len() {
+        chars += words[i].len()
+    }
+    println(chars, words[0], words[49], words[-3])
+
+    let by_kind: List<List<Token>> = List.new()
+    for k in 0 .. 3 {
+        by_kind.push(List.new())
+    }
+    for i in 0 .. toks.len() {
+        by_kind[toks[i].kind % 3].push(toks[i])
+    }
+    println(by_kind[0].len(), by_kind[1].len(), by_kind[2].len())
+}

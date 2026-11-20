@@ -18,6 +18,7 @@
  */
 #include "ubel_rt.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -435,6 +436,31 @@ void ubel_panic(const char *s, int64_t len) {
     fwrite(s, 1, (size_t)len, stderr);
     fputc('\n', stderr);
     exit(1);
+}
+
+/* ---------------------------------------------------------------- lists (M3a) ---
+ * Lists are references (assigning one shares it, as in the interpreter). The header holds one pointer, `data`, so its
+ * collector mask has one bit, computed from the layout; the array is allocated with the element's own pointer mask
+ * (0 for a list of numbers, which the collector then never scans). */
+ubel_list *ubel_list_new(void) {
+    uint64_t mask = (uint64_t)1 << (offsetof(ubel_list, data) / sizeof(void *));
+    return (ubel_list *)ubel_gc_alloc(sizeof(ubel_list), mask);
+}
+
+/* Room for one more element: the array doubles (4 to start with). The old array is left for the collector. */
+void ubel_list_grow(ubel_list *l, uint64_t elem_size, uint64_t elem_ptrmask) {
+    if ((uint64_t)l->cap > (UINT64_MAX / 4) / elem_size) ubel_panic("list is too large", 17);
+    int64_t ncap = l->cap == 0 ? 4 : l->cap * 2;
+    void *data = ubel_gc_alloc_array(elem_size, (uint64_t)ncap, elem_ptrmask);
+    if (l->len > 0) memcpy(data, l->data, (size_t)l->len * (size_t)elem_size);
+    l->data = data;
+    l->cap = ncap;
+}
+
+void ubel_trap_index(int64_t index, int64_t len) {
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "list index %lld out of bounds (len %lld)", (long long)index, (long long)len);
+    ubel_panic(buf, n);
 }
 
 void ubel_trap_no_return(void) {

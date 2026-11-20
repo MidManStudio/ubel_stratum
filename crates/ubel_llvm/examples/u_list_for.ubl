@@ -1,0 +1,9 @@
+// Not supported yet: `for` over a list (M3b). Index it with a range instead.
+// expect-refusal: `for` over anything but an integer range
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    for x in xs {
+        println(x)
+    }
+}

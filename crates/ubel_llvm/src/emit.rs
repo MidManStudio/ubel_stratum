@@ -187,6 +187,9 @@ enum Ty {
     F64,
     /// `float` / `f32`: an IEEE 754 binary32, LLVM `float` (M2b).
     F32,
+    /// `List<T>` (M3a): a pointer to a GC list object. The payload indexes `Emitter::list_tys`, which holds the
+    /// element type (lists are specialised per element type, decided 2026-11-10).
+    List(usize),
 }
 
 /// The shape of a function type: parameter types and result.
@@ -202,7 +205,7 @@ impl Ty {
             Ty::I64 => "i64",
             Ty::I1 => "i1",
             Ty::Void => "void",
-            Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) => "ptr",
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) | Ty::List(_) => "ptr",
             Ty::Int(k) => k.ir(),
             Ty::F64 => "double",
             Ty::F32 => "float",
@@ -224,7 +227,7 @@ impl Ty {
 
     /// Values that are pointers to objects, and so need a collector mask bit.
     fn is_ptr(self) -> bool {
-        matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_))
+        matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) | Ty::List(_))
     }
 }
 
@@ -410,6 +413,10 @@ struct Emitter<'a> {
     arena_scan: BTreeSet<String>,
     /// Function types seen so far (interned, so equal shapes have equal `Ty::Fn` indexes).
     fn_tys: RefCell<Vec<FnTy>>,
+    /// The element type of each list type (`Ty::List(i)` is a list of `list_tys[i]`).
+    list_tys: RefCell<Vec<Ty>>,
+    /// Set when a list is used: the list type and the runtime's list functions are declared.
+    uses_list: bool,
     /// Closures emitted so far, for unique names.
     lam_n: usize,
     /// While a closure body is emitted and sema left its result type open (an integer literal not yet
@@ -511,6 +518,8 @@ impl<'a> Emitter<'a> {
             decls: BTreeSet::new(),
             arena_scan: BTreeSet::new(),
             fn_tys: RefCell::new(Vec::new()),
+            list_tys: RefCell::new(Vec::new()),
+            uses_list: false,
             lam_n: 0,
             ret_infer: false,
             ret_seen: None,
@@ -586,6 +595,12 @@ impl<'a> Emitter<'a> {
         }
         if self.uses_gc || self.uses_bump || self.uses_str {
             out.push('\n');
+        }
+        if self.uses_list {
+            out.push_str("%ubel.list = type { i64, i64, ptr }\n");
+            out.push_str("declare ptr  @ubel_list_new()\n");
+            out.push_str("declare void @ubel_list_grow(ptr, i64, i64)\n");
+            out.push_str("declare void @ubel_trap_index(i64, i64)\n\n");
         }
         if !self.decls.is_empty() {
             for d in &self.decls {
@@ -832,6 +847,7 @@ impl<'a> Emitter<'a> {
             Ty::Struct(_) => return unsupported(span, "printing a struct value (print its fields)"),
             Ty::Enum(_) => return unsupported(span, "printing an enum value (match on it and print the payload)"),
             Ty::Fn(_) => return unsupported(span, "printing a closure"),
+            Ty::List(_) => return unsupported(span, "printing a list (print its elements)"),
             _ => {}
         }
         Ok(())
@@ -865,6 +881,14 @@ impl<'a> Emitter<'a> {
             TypeKind::Bool => Ok(Ty::I1),
             TypeKind::Void => Ok(Ty::Void),
             TypeKind::Str => Ok(Ty::Str),
+            TypeKind::List(Some(inner)) => {
+                let elem = self.ty_of_type(inner)?;
+                if !Self::list_elem_ok(elem) {
+                    return unsupported(inner.span, "a list of this element type (numbers, bool, strings, structs, enums and lists so far)");
+                }
+                Ok(self.list_ty(elem))
+            }
+            TypeKind::List(None) => unsupported(t.span, "a list type without an element type"),
             TypeKind::Function(ft) => {
                 if ft.is_fallible {
                     return unsupported(t.span, "fallible function types");
@@ -903,7 +927,7 @@ impl<'a> Emitter<'a> {
                         // `Str` is another spelling of `string` (sema and the interpreter accept it; the
                         // self-hosted tokenizer writes its string fields that way).
                         (None, None) if *name == "Str" => Ok(Ty::Str),
-                        (None, None) => unsupported(t.span, format!("the type `{name}` (only integers, floats, bool, string, void, plain structs and enums so far)")),
+                        (None, None) => unsupported(t.span, format!("the type `{name}` (only integers, floats, bool, string, void, plain structs and enums, and lists of those, so far)")),
                     },
                     _ => unsupported(t.span, "qualified type names"),
                 }
@@ -1091,6 +1115,7 @@ impl<'a> Emitter<'a> {
                     SemaType::ArenaRef { inner, .. } => id = *inner,
                     SemaType::OwnedRef { mutable: false, inner } => id = *inner,
                     SemaType::Reference { mutable: false, inner, .. } => id = *inner,
+                    SemaType::List(inner) => id = *inner,
                     SemaType::Named { def, args }
                         if args.is_empty()
                             && (self.struct_ids.contains_key(&self.ctx.symbols.lookup(*def).name)
@@ -1100,7 +1125,7 @@ impl<'a> Emitter<'a> {
                     }
                     _ => {
                         let shown = self.ctx.types.get(start).display(&self.ctx.types, &self.ctx.symbols);
-                        return unsupported(e.span, format!("values of type `{shown}` (only integers, floats, bool, string, void, plain structs and enums so far)"));
+                        return unsupported(e.span, format!("values of type `{shown}` (only integers, floats, bool, string, void, plain structs and enums, and lists of those, so far)"));
                     }
                 }
             }
@@ -1276,12 +1301,23 @@ impl<'a> Emitter<'a> {
 
     fn stmt(&mut self, s: &Stmt) -> R<()> {
         match s.kind {
-            StmtKind::Let { mutable, binding, value, .. } => {
+            StmtKind::Let { mutable, binding, ty, value } => {
                 let name = match binding {
                     BindingTarget::Ident(n) => n,
                     BindingTarget::Destructure(_) => return unsupported(s.span, "destructuring `let`"),
                 };
-                let v = self.expr(value)?;
+                // An annotation is otherwise ignored (sema has checked it; the value's type is used), except that a
+                // `List.new()` takes its element type from it.
+                let want = match ty.map(|t| self.ty_of_type(t)) {
+                    Some(Ok(w)) => Some(w),
+                    // an annotation the emitter cannot lower matters for `List.new()` (its element type): say why
+                    Some(Err(err)) if self.is_list_new_call(value) => return Err(err),
+                    _ => None,
+                };
+                let v = match want {
+                    Some(w) => self.expr_as(value, w)?,
+                    None => self.expr(value)?,
+                };
                 self.need_value(&v, value.span)?;
                 let slot = self.declare(name, v.ty);
                 if mutable {
@@ -1306,7 +1342,7 @@ impl<'a> Emitter<'a> {
             }
             StmtKind::Return(opt) => {
                 let v = match opt {
-                    Some(e) => Some(self.expr(e)?),
+                    Some(e) => Some(if self.ret_infer { self.expr(e)? } else { self.expr_as(e, self.ret)? }),
                     None => None,
                 };
                 self.do_return(v, s.span)
@@ -1700,9 +1736,13 @@ impl<'a> Emitter<'a> {
                         (local.slot, local.ty)
                     }
                     ExprKind::Field { target: obj, field } => self.field_addr(obj, field, target.span)?,
-                    _ => return unsupported(target.span, "assignment to anything but a local variable or a struct field"),
+                    ExprKind::Index { target: obj, index } => self.list_elem_addr(obj, index, target.span)?,
+                    _ => return unsupported(target.span, "assignment to anything but a local variable, a struct field or a list element"),
                 };
-                let rhs = self.expr(value)?;
+                let rhs = self.expr_as(value, pty)?;
+                if matches!(target.kind, ExprKind::Index { .. }) && self.sema_tags_arena_string(value) {
+                    return unsupported(value.span, "storing a value that lives in an arena into a list (the list could outlive the arena)");
+                }
                 let stored = match assign_binop(op) {
                     None => {
                         self.need(pty, &rhs, value.span)?;
@@ -1761,6 +1801,12 @@ impl<'a> Emitter<'a> {
                 self.inst(&format!("{t} = load {}, ptr {addr}", ty.ir()));
                 Ok(Val { v: t, ty })
             }
+            ExprKind::Index { target, index } => {
+                let (addr, ty) = self.list_elem_addr(target, index, e.span)?;
+                let t = self.fresh();
+                self.inst(&format!("{t} = load {}, ptr {addr}", ty.ir()));
+                Ok(Val { v: t, ty })
+            }
             ref other => unsupported(e.span, expr_kind_name(other)),
         }
     }
@@ -1808,7 +1854,7 @@ impl<'a> Emitter<'a> {
             if vals[idx].is_some() {
                 return Err(CompileError::at(init.span, format!("the field `{}` is given twice", init.name)));
             }
-            let v = self.expr(init.value)?;
+            let v = self.expr_as(init.value, fty)?;
             self.need(fty, &v, init.value.span)?;
             vals[idx] = Some(v);
         }
@@ -1941,7 +1987,7 @@ impl<'a> Emitter<'a> {
                 ArgKind::Positional(x) => x,
                 ArgKind::Named { .. } => return unsupported(a.span, "named arguments"),
             };
-            let v = self.expr(ae)?;
+            let v = self.expr_as(ae, fields[i])?;
             self.need(fields[i], &v, ae.span)?;
             vals.push(v);
         }
@@ -2404,6 +2450,207 @@ impl<'a> Emitter<'a> {
         Ok(Val { v: t, ty: to })
     }
 
+    // ?? lists (M3a) ??????????????????????????????????????????????
+
+    /// Evaluates `e` for a place that wants a value of type `want`. Only `List.new()` looks at it: its element type
+    /// comes from the annotation, parameter, field, element or result type it is stored in.
+    fn expr_as(&mut self, e: &Expr, want: Ty) -> R<Val> {
+        if let (Ty::List(_), ExprKind::Call { args, .. }) = (want, e.kind) {
+            if self.is_list_new_call(e) {
+                return self.list_new(e, args, Some(want));
+            }
+        }
+        self.expr(e)
+    }
+
+    /// Is `e` the call `List.new(..)` (and not a call of something the program itself named `List`)?
+    fn is_list_new_call(&self, e: &Expr) -> bool {
+        let ExprKind::Call { callee, .. } = e.kind else { return false };
+        let ExprKind::Field { target, field: "new" } = callee.kind else { return false };
+        let ExprKind::Ident("List") = target.kind else { return false };
+        self.lookup("List").is_none() && !self.struct_ids.contains_key("List") && !self.enum_ids.contains_key("List")
+    }
+
+    /// Intern a list type: equal element types give equal `Ty::List` indexes (so `need` can compare them).
+    fn list_ty(&self, elem: Ty) -> Ty {
+        let mut tys = self.list_tys.borrow_mut();
+        if let Some(i) = tys.iter().position(|t| *t == elem) {
+            return Ty::List(i);
+        }
+        tys.push(elem);
+        Ty::List(tys.len() - 1)
+    }
+
+    fn list_elem(&self, idx: usize) -> Ty {
+        self.list_tys.borrow()[idx]
+    }
+
+    /// The element types a list may have so far: numbers, bool, strings, structs, enums and other lists. Closures
+    /// and void are refused.
+    fn list_elem_ok(elem: Ty) -> bool {
+        matches!(elem, Ty::I1 | Ty::I64 | Ty::Int(_) | Ty::F64 | Ty::F32 | Ty::Str | Ty::Struct(_) | Ty::Enum(_) | Ty::List(_))
+    }
+
+    /// Creating or growing a list allocates in the GC heap, like building a string: LOW must not, and MID code
+    /// outside `with arena` has no decided place to allocate.
+    fn list_alloc_allowed(&self, span: Span, what: &str) -> R<()> {
+        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+        match self.cur_tier {
+            TierAnnotation::Low => {
+                unsupported(span, format!("{what} in `@tier(low)` (a list lives in the GC heap, which LOW must not use)"))
+            }
+            TierAnnotation::Mid if !in_arena => unsupported(
+                span,
+                format!("{what} in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    /// `List.new()`: an empty list on the GC heap. Its element type is the one sema fixed for the expression (from
+    /// the annotation, or from how the list is used later). A list that sema places in an arena is refused:
+    /// arena lists are a later slice.
+    fn list_new(&mut self, e: &Expr, args: &[Arg], want: Option<Ty>) -> R<Val> {
+        if !args.is_empty() {
+            return Err(CompileError::at(e.span, "wrong number of arguments"));
+        }
+        if self.sema_tags_arena_string(e) {
+            return unsupported(e.span, "a list allocated in an arena (lists live in the GC heap so far)");
+        }
+        // Sema leaves the type of this call as an unsolved variable (`List<?T8>`), so the element type comes from
+        // the place the list is stored in (`expr_as`); a type sema did fix is the fallback.
+        let ty = match want.or_else(|| self.ctx.expr_types.get(&e.span).and_then(|&id| self.ty_of_sema(id))) {
+            Some(t @ Ty::List(_)) => t,
+            _ => {
+                return unsupported(
+                    e.span,
+                    "`List.new()` where the element type is not known here (write the type where the list is stored, as in `let xs: List<int> = List.new()`, or pass it where a `List<T>` parameter is expected)",
+                )
+            }
+        };
+        self.list_alloc_allowed(e.span, "`List.new()`")?;
+        self.uses_list = true;
+        let t = self.fresh();
+        self.inst(&format!("{t} = call ptr @ubel_list_new()"));
+        Ok(Val { v: t, ty })
+    }
+
+    /// `xs.len()`, `xs.is_empty()` and `xs.push(v)` on a list (the receiver is already evaluated).
+    fn list_method(&mut self, e: &Expr, callee: &Expr, recv: Val, li: usize, field: &str, args: &[Arg]) -> R<Val> {
+        let elem = self.list_elem(li);
+        self.uses_list = true;
+        match field {
+            "len" | "is_empty" => {
+                if !args.is_empty() {
+                    return Err(CompileError::at(e.span, "wrong number of arguments"));
+                }
+                let lenp = self.fresh();
+                self.inst(&format!("{lenp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 0", recv.v));
+                let len = self.fresh();
+                self.inst(&format!("{len} = load i64, ptr {lenp}"));
+                if field == "len" {
+                    return Ok(Val { v: len, ty: Ty::I64 });
+                }
+                let z = self.fresh();
+                self.inst(&format!("{z} = icmp eq i64 {len}, 0"));
+                Ok(Val { v: z, ty: Ty::I1 })
+            }
+            "push" => self.list_push(e, callee, recv, elem, args),
+            _ => unsupported(callee.span, format!("the method `{field}` on a list (only `len`, `is_empty` and `push` so far)")),
+        }
+    }
+
+    /// `xs.push(v)`: grow the array when it is full, then store at `len` and add one. The value is checked
+    /// against the element type, and a value that sema places in an arena is refused: it would dangle once the
+    /// arena ends, and sema does not stop a list from being filled with one (the interpreter, which keeps
+    /// everything alive, would not show it).
+    fn list_push(&mut self, e: &Expr, callee: &Expr, list: Val, elem: Ty, args: &[Arg]) -> R<Val> {
+        if args.len() != 1 {
+            return Err(CompileError::at(e.span, "wrong number of arguments"));
+        }
+        let ae = match args[0].kind {
+            ArgKind::Positional(x) => x,
+            ArgKind::Named { .. } => return unsupported(args[0].span, "named arguments"),
+        };
+        let v = self.expr_as(ae, elem)?;
+        self.need_value(&v, ae.span)?;
+        self.need(elem, &v, ae.span)?;
+        if self.sema_tags_arena_string(ae) {
+            return unsupported(ae.span, "pushing a value that lives in an arena into a list (the list could outlive the arena)");
+        }
+        self.list_alloc_allowed(callee.span, "`push`")?;
+        let size = format!("ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64)", elem.ir());
+        let mask = if elem.is_ptr() { 1 } else { 0 };
+        let lenp = self.fresh();
+        self.inst(&format!("{lenp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 0", list.v));
+        let len = self.fresh();
+        self.inst(&format!("{len} = load i64, ptr {lenp}"));
+        let capp = self.fresh();
+        self.inst(&format!("{capp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 1", list.v));
+        let cap = self.fresh();
+        self.inst(&format!("{cap} = load i64, ptr {capp}"));
+        let full = self.fresh();
+        self.inst(&format!("{full} = icmp eq i64 {len}, {cap}"));
+        let grow = self.label("pushgrow");
+        let ok = self.label("pushok");
+        self.term(&format!("br i1 {full}, label %{grow}, label %{ok}"));
+        self.begin(&grow);
+        self.inst(&format!("call void @ubel_list_grow(ptr {}, i64 {size}, i64 {mask})", list.v));
+        self.term(&format!("br label %{ok}"));
+        self.begin(&ok);
+        let datap = self.fresh();
+        self.inst(&format!("{datap} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 2", list.v));
+        let data = self.fresh();
+        self.inst(&format!("{data} = load ptr, ptr {datap}"));
+        let slot = self.fresh();
+        self.inst(&format!("{slot} = getelementptr {}, ptr {data}, i64 {len}", elem.ir()));
+        self.inst(&format!("store {} {}, ptr {slot}", elem.ir(), v.v));
+        let next = self.fresh();
+        self.inst(&format!("{next} = add i64 {len}, 1"));
+        self.inst(&format!("store i64 {next}, ptr {lenp}"));
+        Ok(Val::void())
+    }
+
+    /// The address of `xs[i]` and the element type, after a bounds check that follows the interpreter: the index
+    /// must be an `int`, a negative one counts from the end (`-1` is the last element), and anything outside
+    /// the list stops the program with exit status 1.
+    fn list_elem_addr(&mut self, target: &Expr, index: &Expr, span: Span) -> R<(String, Ty)> {
+        let list = self.expr(target)?;
+        let Ty::List(li) = list.ty else {
+            return unsupported(span, "indexing anything but a list");
+        };
+        let elem = self.list_elem(li);
+        let i = self.expr(index)?;
+        self.need(Ty::I64, &i, index.span)?;
+        self.uses_list = true;
+        let lenp = self.fresh();
+        self.inst(&format!("{lenp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 0", list.v));
+        let len = self.fresh();
+        self.inst(&format!("{len} = load i64, ptr {lenp}"));
+        let neg = self.fresh();
+        self.inst(&format!("{neg} = icmp slt i64 {}, 0", i.v));
+        let adj = self.fresh();
+        self.inst(&format!("{adj} = add i64 {len}, {}", i.v));
+        let at = self.fresh();
+        self.inst(&format!("{at} = select i1 {neg}, i64 {adj}, i64 {}", i.v));
+        let oob = self.fresh();
+        self.inst(&format!("{oob} = icmp uge i64 {at}, {len}"));
+        let bad = self.label("idxbad");
+        let ok = self.label("idxok");
+        self.term(&format!("br i1 {oob}, label %{bad}, label %{ok}"));
+        self.begin(&bad);
+        self.inst(&format!("call void @ubel_trap_index(i64 {}, i64 {len})", i.v));
+        self.term("unreachable");
+        self.begin(&ok);
+        let datap = self.fresh();
+        self.inst(&format!("{datap} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 2", list.v));
+        let data = self.fresh();
+        self.inst(&format!("{data} = load ptr, ptr {datap}"));
+        let addr = self.fresh();
+        self.inst(&format!("{addr} = getelementptr {}, ptr {data}, i64 {at}", elem.ir()));
+        Ok((addr, elem))
+    }
+
     /// Records an LLVM declaration (an intrinsic) to be written once with the other declarations.
     fn declare_intrinsic(&mut self, line: String) {
         self.decls.insert(line);
@@ -2562,7 +2809,7 @@ impl<'a> Emitter<'a> {
             return unsupported(span, "operators on closure values");
         }
         if l.ty.is_ptr() {
-            return unsupported(span, "operators on struct or enum values (compare fields, or `match`, instead)");
+            return unsupported(span, "operators on struct, enum or list values (compare fields or elements, or `match`, instead)");
         }
         if l.ty.is_float() {
             return self.float_binop(op, l, r, span);
@@ -2690,6 +2937,14 @@ impl<'a> Emitter<'a> {
                 }
             }
         }
+        // `List.new()`: an empty list on the GC heap (M3a).
+        if let ExprKind::Field { target, field: "new" } = callee.kind {
+            if let ExprKind::Ident("List") = target.kind {
+                if self.lookup("List").is_none() && !self.struct_ids.contains_key("List") && !self.enum_ids.contains_key("List") {
+                    return self.list_new(e, args, None);
+                }
+            }
+        }
         // `s.len()`, `s.contains(t)`, ...: a method call on a string. A callee that names a declared type
         // (`Color.make()`) keeps the old refusal below.
         if let ExprKind::Field { target, field } = callee.kind {
@@ -2740,7 +2995,7 @@ impl<'a> Emitter<'a> {
                 ArgKind::Positional(x) => x,
                 ArgKind::Named { .. } => return unsupported(a.span, "named arguments"),
             };
-            let v = self.expr(ae)?;
+            let v = self.expr_as(ae, sig.params[i])?;
             self.need(sig.params[i], &v, ae.span)?;
             ops.push(format!("{} {}", sig.params[i].ir(), v.v));
         }
@@ -2771,6 +3026,9 @@ impl<'a> Emitter<'a> {
     /// arguments. A receiver that is not a string keeps the old refusal (`h.run(4)` on a struct field).
     fn str_method(&mut self, e: &Expr, callee: &Expr, target: &Expr, field: &str, args: &[Arg]) -> R<Val> {
         let recv = self.expr(target)?;
+        if let Ty::List(li) = recv.ty {
+            return self.list_method(e, callee, recv, li, field, args);
+        }
         if recv.ty != Ty::Str {
             return unsupported(callee.span, "calling anything but a named function");
         }
@@ -2909,6 +3167,13 @@ impl<'a> Emitter<'a> {
                         return Some(Ty::Enum(eid));
                     }
                     return None;
+                }
+                SemaType::List(elem) => {
+                    let e = self.ty_of_sema(*elem)?;
+                    if !Self::list_elem_ok(e) {
+                        return None;
+                    }
+                    return Some(self.list_ty(e));
                 }
                 SemaType::Function { params, return_type, is_fallible: false, .. } => {
                     let ps: Option<Vec<Ty>> = params.iter().map(|p| self.ty_of_sema(*p)).collect();
@@ -3188,7 +3453,7 @@ impl<'a> Emitter<'a> {
                 ArgKind::Positional(x) => x,
                 ArgKind::Named { .. } => return unsupported(a.span, "named arguments"),
             };
-            let v = self.expr(ae)?;
+            let v = self.expr_as(ae, sig.params[i])?;
             self.need(sig.params[i], &v, ae.span)?;
             ops.push(format!("{} {}", sig.params[i].ir(), v.v));
         }
@@ -3531,7 +3796,7 @@ impl<'a> Emitter<'a> {
                         self.inst(&format!("call void @ubel_print_str(ptr {bytes}, i64 {len})"));
                     }
                     Ty::Void => unreachable!("void values are rejected when collected"),
-                    Ty::Struct(_) | Ty::Enum(_) | Ty::Fn(_) => unreachable!("struct, enum and closure values are rejected when collected"),
+                    Ty::Struct(_) | Ty::Enum(_) | Ty::Fn(_) | Ty::List(_) => unreachable!("struct, enum, closure and list values are rejected when collected"),
                 },
             }
         }

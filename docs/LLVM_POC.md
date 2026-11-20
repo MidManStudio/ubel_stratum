@@ -522,6 +522,40 @@ promotes. Supported: `+ - * / %`, unary minus, the six comparisons, `as`, printi
   `run_equiv.sh` adds `-msse2 -mfpmath=sse` for `-m32`; the driver does not add it by itself, so pass it after `--` when
   building for 32-bit x86. ARM and x86-64 use IEEE single and double directly.
 
+**Lists (M3a, provisional).** `List<T>` works for a `T` that is a number type, `bool`, `string`, a struct, an enum or another
+list, and is *specialised per element type* (the owner's decision of 2026-11-10 for the built-in collections: `Ty::List`
+carries an index into a table of element types, so `List<int>` and `List<Token>` are two types in the emitter, and user
+generics wait for M4). Supported: `List.new()`, `xs.push(v)`, `xs.len()`, `xs.is_empty()`, `xs[i]` and `xs[i] = v` (also
+`xs[i] += v` and `xs[i].field = v`), lists as locals, parameters, results, struct fields, enum payloads, closure captures and
+elements of other lists. The rules, each checked against the interpreter by examples 44 to 48:
+
+- **A list is a reference**, as in the interpreter (`Rc<RefCell<Vec>>`): `let b = a` shares it, so `b.push(x)` is seen
+  through `a`. Natively it is a pointer to a GC object `{ i64 len, i64 cap, ptr data }` (`%ubel.list` in the IR, `ubel_list` in
+  `ubel_rt.h`) whose `data` is a separate GC array of `cap` elements. The header's collector mask has one bit, for `data`; the
+  array is allocated with `ubel_gc_alloc_array` and the element's own pointer mask (1 for a string, struct, enum or list, 0 for
+  a number, which the collector then never scans). The array starts at 4 elements and doubles; the old one is left for the
+  collector. Creating and growing are calls into the runtime; the length read, the bounds check and the stores are inline.
+- **Indexing follows the interpreter:** the index must be an `int`, a negative index counts from the end (`-1` is the last
+  element), and anything else outside the list stops the program with exit status 1 (`ubel_trap_index`; the stderr text
+  differs from the interpreter's, which is not compared).
+- **`List.new()` has no element type of its own.** Sema leaves the type of the call as an unsolved variable (`List<?T8>`) in
+  the table the emitter reads, even where the annotation fixes it. So the emitter takes the element type from the *place the
+  list goes to*: a `let` annotation, a `return` (the function's result type), an assignment, a struct field, an enum payload, a
+  call argument, or a `push` argument. A `List.new()` anywhere else (for example `let xs = List.new()` with no annotation,
+  inferred only from later `push` calls) is refused with a message that says so; 9 of the 187 fixtures hit exactly that.
+- **Arenas.** A list that sema places in an arena (`&arena List<T>`) is refused (lists live on the GC heap so far). Sema does
+  not stop a GC list from being filled with an arena value through `push` (it does through `xs[i] = p`, which is a TIER-004
+  error), and the interpreter would hide the resulting dangling pointer, so the emitter refuses to `push` any value that sema
+  tags as arena-allocated (`u_list_push_arena`). Creating or growing a list is refused in `@tier(low)` and in `@tier(mid)` code
+  outside `with arena`, like building a string.
+- **Not yet:** `for` over a list, `pop`, `first`, `last`, `contains` and the other list methods (`pop`, `first` and `last`
+  give `null` for an empty list in the interpreter, so they need an optional result), printing or comparing a list, array
+  literals (`[1, 2, 3]`), lists of closures, and lists in arenas. Each is refused with a located message and has a `u_list_*`
+  example.
+- **The self-hosted tokenizer compiles.** `self-hosted/tokenizer/tokenizer.ubl` (a `List<int>` in, a `List<Token>` out, a struct
+  with an enum, a string and a `double`, `while` loops) builds natively and equals the interpreter at -O0 and -O2, and under
+  ASan and UBSan with a collection forced on every allocation. Example 48 holds a copy of it and a driver `main`.
+
 **Structs (slice 2).** Plain structs whose fields are `int`, `bool` or another struct:
 literals, field reads, field assignment (plain and compound, nested too), and passing and
 returning them. A struct value is a pointer, matching the interpreter, where structs have
@@ -1029,6 +1063,16 @@ Found while building the struct slice, same status (found, not fixed):
 - A `float` literal is lexed as an f64 and then narrowed to f32 (`FloatLit` in the lexer), which is two roundings; the
   interpreter and the emitter use the same f32, so they agree. Whether that always equals Rust's direct decimal to f32
   parse was not checked.
+- Sema's recorded expression types contain unsolved inference variables: `List.new()` is `List<?T8>` for the emitter even
+  where the annotation fixes it, so a type recorded for an expression can be less than sema knew. A last pass that resolves
+  the variables in `expr_types` (a zonk) would let the emitter read `List<int>` there; 9 of the 187 fixtures are refused only
+  because of it, and the emitter now takes the type from the place the list is stored instead (see Lists).
+- Sema accepts `outer.push(p)` where `p` lives in an arena and `outer` outlives it, but rejects `outer[0] = p` (TIER-004). The
+  interpreter keeps everything alive, so it shows nothing; the emitter refuses the `push`.
+- An unsuffixed integer literal passed to `push` on a sized-integer list is an `int` to the emitter (sema does not give it the
+  element's width the way it does for a `let` annotation), so `is.push(5)` on a `List<i32>` is refused with "expected i32 but the
+  expression is i64"; a suffix (`5i32`) or a typed variable works.
+- The interpreter's `==` on lists is identity (`Rc::ptr_eq`), and `pop`, `first` and `last` of an empty list are `null`.
 - Plain `int` arithmetic in the interpreter goes through `f64`: see "Known differences from the interpreter".
 
 ### Toolchain notes
@@ -1220,6 +1264,19 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-17 (chat 8): **M3a, lists, and the self-hosted tokenizer compiles.** `List<T>` on the GC heap with `List.new()`,
+  `push`, `len`, `is_empty`, indexing with the interpreter's negative-index and bounds rules, and element writes, as described
+  under "Lists"; `ubel_list_new`, `ubel_list_grow` and `ubel_trap_index` in the runtime; `Ty::List` with a table of element
+  types; the expected-type plumbing for `List.new()`; examples 44 to 48, `fail_list_index`, `fail_list_index_neg`,
+  `fail_list_set`, nine `u_list_*` refusals, and two integration tests. Three older refusal examples changed their expected
+  text (`u_array`, `u_enum_eq`, `u_string_list`), because lists are accepted now and they hit the next refusal. Verified on a
+  fresh clone of master with Rust 1.85 and clang 18: `run_equiv.sh` 118 passed, 0 failed at 64-bit and at -m32 (was 101),
+  the cargo tests pass, `ubel build` equals `ubel run` on every supported program; 20 of 21 hand mutants of the list code were
+  caught (the survivor changes the growth from doubling to one more element, which is slower but not wrong); the list examples
+  run clean under ASan and UBSan with the collector forced on every allocation. Coverage: 30 of 196 `ok_` fixtures compile
+  (29 of 187 before; on those 187 the type refusals fell from 35 to 16, and on the 196 they are 17, but most of those fixtures now
+  stop at the next feature: an untyped `List.new()` 9, a list in an arena 3, `for` over a list 2), and the self-hosted tokenizer compiles. Findings: see "Findings
+  about the front end". Not verified: Termux or a phone with lists, arena lists (refused), a Rust other than 1.85.
 - 2026-11-16 (chat 8): **M2b, `float` and `double`.** Types, literals, `+ - * / %`, negation, comparisons, `as` both ways,
   printing and interpolation, and `sqrt floor ceil abs min max`, as described under "Floating point". The printer is a port of
   Rust's Dragon in `runtime/ubel_float.h`; `scripts/float_diff.sh` (with `float_diff_gen.rs` and `harness/float_diff_check.c`)

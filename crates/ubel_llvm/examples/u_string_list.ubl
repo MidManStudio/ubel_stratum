@@ -1,6 +1,6 @@
-// Not supported yet: a string method that returns a list (`chars`, `split`): lists are not in the
-// emitter's subset, so the call is refused as a value of type `List<string>` before the method is looked at.
-// expect-refusal: values of type `List<string>`
+// Not supported yet: a string method that returns a list (`chars`, `split`). Lists exist since M3a, but these methods
+// are not implemented, so the call is refused as an unknown string method.
+// expect-refusal: the method `split` on a string
 fn main() void {
     let s = "a,b,c"
     println(s.split(",").len())

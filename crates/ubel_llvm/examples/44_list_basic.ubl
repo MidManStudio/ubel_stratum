@@ -1,0 +1,108 @@
+// List<T> (M3a, provisional): `List.new()`, `push`, `len`, `is_empty`, indexing with a negative index counting from
+// the end, element writes, lists that grow far past their first array, aliasing (a list is a reference: assigning it
+// shares it), lists as parameters and results, lists of lists, and lists of every element type that works so far. The
+// interpreter is the oracle.
+
+fn sum(xs: List<int>) int {
+    let mut s = 0
+    for i in 0 .. xs.len() {
+        s += xs[i]
+    }
+    return s
+}
+
+fn fill(xs: List<int>, n: int) {
+    for i in 0 .. n {
+        xs.push(i * i)
+    }
+}
+
+fn make(n: int) List<int> {
+    let out: List<int> = List.new()
+    fill(out, n)
+    return out
+}
+
+fn main() void {
+    let xs: List<int> = List.new()
+    println(xs.len(), xs.is_empty())
+    xs.push(10)
+    xs.push(20)
+    xs.push(30)
+    println(xs.len(), xs.is_empty(), xs[0], xs[1], xs[2], xs[-1], xs[-2], xs[-3])
+    xs[1] = 99
+    xs[-1] += 5
+    xs[0] *= 3
+    println(xs[0], xs[1], xs[2], sum(xs))
+
+    let ys = make(1000)
+    println(ys.len(), sum(ys), ys[999], ys[-1], ys[500], ys[0])
+    let alias = ys
+    alias.push(-1)
+    println(ys.len(), alias.len(), ys[-1], alias[-2])
+
+    let nested: List<List<int>> = List.new()
+    for i in 0 .. 5 {
+        let row: List<int> = List.new()
+        for j in 0 .. i + 1 {
+            row.push(i * 10 + j)
+        }
+        nested.push(row)
+    }
+    println(nested.len(), nested[4].len(), nested[4][3], nested[2][-1], sum(nested[3]))
+    nested[1][0] = 777
+    println(nested[1][0], nested[1][1], nested[-1][-1])
+
+    let ds: List<double> = List.new()
+    ds.push(0.1)
+    ds.push(2.5)
+    ds[0] += ds[1]
+    println(ds[0], ds[1], ds.len(), ds[-1] * 2.0)
+    let fl: List<float> = List.new()
+    fl.push(0.1f)
+    fl.push(16777216.0f)
+    fl[1] += 1.0f
+    println(fl[0], fl[1], fl[-1] == 16777216.0f)
+    let bs: List<bool> = List.new()
+    bs.push(true)
+    bs.push(false)
+    bs.push(1 < 2)
+    bs[1] = !bs[0]
+    println(bs[0], bs[1], bs[-1], bs.len())
+    let us: List<u8> = List.new()
+    us.push(200u8)
+    us.push(255u8)
+    us[0] += 100u8
+    println(us[0] as int, us[1] as int, us.len())
+    let is: List<i32> = List.new()
+    let lo: i32 = -2147483647 - 1
+    let hi: i32 = 2147483647
+    is.push(lo)
+    is.push(hi)
+    is.push(5i32)
+    println(is[0] as int, is[1] as int)
+    let big: List<u64> = List.new()
+    big.push(18446744073709551615u64)
+    big.push(1u64)
+    println(big[0] as double, big[1] as int, big.len())
+    let names: List<string> = List.new()
+    names.push("alpha")
+    names.push("be" + "ta")
+    names.push($"gamma{1 + 1}")
+    names[0] = names[0] + "!"
+    println(names[0], names[1], names[-1], names[-1].len(), names.len())
+
+    // growth: many pushes, element values checked after each doubling
+    let g: List<int> = List.new()
+    let mut ok = true
+    for i in 0 .. 5000 {
+        g.push(i * 3)
+        if g[i] != i * 3 {
+            ok = false
+        }
+        if g[0] != 0 {
+            ok = false
+        }
+    }
+    println(ok, g.len(), g[4999], sum(g))
+}

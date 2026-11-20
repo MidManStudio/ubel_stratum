@@ -1,0 +1,15 @@
+// Not supported yet: a list allocated in an arena (sema marks it `&arena List<T>`). Lists live in the GC heap so far.
+// expect-refusal: a list allocated in an arena
+@tier(mid)
+fn count() int {
+    with arena(256) {
+        let xs = List.new()
+        xs.push(1)
+        xs.push(2)
+        return xs.len()
+    }
+}
+
+fn main() void {
+    println(count())
+}

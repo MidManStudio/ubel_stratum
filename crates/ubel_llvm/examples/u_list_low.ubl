@@ -1,0 +1,16 @@
+// Not supported: `push` in a `@tier(low)` function. Growing a list allocates in the GC heap, which LOW must not use.
+// expect-refusal: `push` in `@tier(low)`
+fn make() List<int> {
+    let xs: List<int> = List.new()
+    return xs
+}
+
+@tier(low)
+fn grow(xs: List<int>) int {
+    xs.push(1)
+    return xs.len()
+}
+
+fn main() void {
+    println(grow(make()))
+}

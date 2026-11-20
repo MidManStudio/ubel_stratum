@@ -1,0 +1,12 @@
+// An index past the end stops the program, as in the interpreter: what was printed before must match and both exit
+// with status 1.
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    println(xs[2], xs[-3])
+    println("before")
+    println(xs[3])
+    println("not reached")
+}

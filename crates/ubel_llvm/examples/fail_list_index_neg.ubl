@@ -1,0 +1,11 @@
+// A negative index counts from the end, but -4 on a list of three is still out of range.
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    println(xs[-1], xs[-3])
+    let i = -4
+    println(xs[i])
+    println("not reached")
+}

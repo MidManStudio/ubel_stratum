@@ -1,0 +1,7 @@
+// Not supported yet: printing a list. Print its elements.
+// expect-refusal: printing a list
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    println(xs)
+}

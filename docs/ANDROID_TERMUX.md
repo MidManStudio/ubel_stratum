@@ -10,8 +10,8 @@ halfway: Android limits background child processes, and Termux users report `[Pr
 a long `cargo build` (the usual remedies are in Termux's own documentation and community guides; none was tried here). So the
 better way is to let GitHub build `ubel` for your phone's CPU:
 
-1. On GitHub, in the repository: Actions, **Ubel for Android (Termux, 64-bit and 32-bit ARM)**, Run workflow (the file is
-   `.github/workflows/ubel-android.yml`). It takes a few minutes and makes two artifacts.
+1. On GitHub, in the repository: Actions, **Ubel for Android (Termux, 64-bit and 32-bit ARM)**, Run workflow (the file in the repository is
+   `.github/workflows/ubel-andriod.yml`, spelled that way). It takes a few minutes and makes two artifacts.
 2. Which one? In Termux run `uname -m`. `aarch64` is a 64-bit userspace: download **ubel-android-aarch64**. `armv8l` or `armv7l`
    is a 32-bit userspace, even on a 64-bit CPU (some budget Samsung phones ship that way, and one Termux troubleshooting guide
    lists the Galaxy A13 5G among them, so check your own phone and do not assume): download **ubel-android-armv7**.
@@ -27,7 +27,8 @@ pkg install clang                  # `ubel build` needs it; `ubel run` (the inte
 Paste the whole output of `termux_try.sh` back: it is the first real evidence of how this behaves on a phone. The binaries are
 built for Android 7.0 (API 24) and run on every newer Android. The same workflow also builds the supported examples for both
 targets with the NDK's clang, linked statically, and runs them under QEMU on the runner (bionic, not glibc), comparing them
-with the interpreter. That is not the same as running on a phone, and **neither job has run on a real runner yet**.
+with the interpreter. That is not the same as running on a phone. The owner ran the workflow and then the `ubel` it built in Termux on their phone and
+reported that everything passed (which artifact it was, what `uname -m` printed and the Android version were not recorded).
 
 ## What you need (to build on the phone yourself)
 

@@ -1,5 +1,5 @@
-// Not supported yet: arrays and collections.
-// expect-refusal: type
+// Not supported yet: array literals (`[1, 2, 3]`). A list is built with `List.new()` and `push` (M3a).
+// expect-refusal: array literals
 fn main() void {
     let a = [1, 2, 3]
     println(a.len())

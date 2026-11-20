@@ -1,0 +1,9 @@
+// Not supported yet: `pop`. In the interpreter it gives `null` for an empty list, so its result is an optional (`int?`), a
+// type the emitter does not lower yet.
+// expect-refusal: values of type `int?`
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    xs.pop()
+    println(xs.len())
+}

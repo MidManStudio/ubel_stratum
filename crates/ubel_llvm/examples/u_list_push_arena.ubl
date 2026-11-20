@@ -1,0 +1,24 @@
+// Refused, because the interpreter would hide a dangling pointer: sema accepts pushing a value that lives in an arena into
+// a list that outlives the arena (the interpreter keeps it alive, native code would not), so the emitter refuses it.
+// expect-refusal: pushing a value that lives in an arena into a list
+struct P {
+    x: int
+}
+
+fn make() List<P> {
+    let xs: List<P> = List.new()
+    return xs
+}
+
+@tier(mid)
+fn bad(outer: List<P>) int {
+    with arena(256) {
+        let p = P { x = 1 }
+        outer.push(p)
+    }
+    return outer.len()
+}
+
+fn main() void {
+    println(bad(make()))
+}

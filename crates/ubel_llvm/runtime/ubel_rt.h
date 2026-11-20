@@ -58,6 +58,18 @@ void ubel_put(char *dst, const char *src, int64_t n);
 
 /* Runtime errors the interpreter would report; here they print to stderr and exit(1). */
 void ubel_trap_div_zero(void);
+
+/* Lists (M3a). A list is a GC object { len, cap, data }; `data` is a separate GC array of `cap` elements. The
+ * emitter declares the same layout (%ubel.list) and inlines the length read, the bounds check and the element
+ * stores; only creating a list and growing its array, which allocate, are calls. */
+typedef struct {
+    int64_t len;
+    int64_t cap;
+    void *data;
+} ubel_list;
+ubel_list *ubel_list_new(void);
+void ubel_list_grow(ubel_list *l, uint64_t elem_size, uint64_t elem_ptrmask);
+void ubel_trap_index(int64_t index, int64_t len);
 void ubel_trap_no_return(void);
 
 /* Number of arenas created and not yet destroyed. A correct program ends with 0. */
