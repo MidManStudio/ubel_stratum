@@ -1,0 +1,32 @@
+// tests/fixtures/err_spawn_combined.ubl
+// A realistic program that spawns two tasks, joins them in a loop and keeps a running total, with
+// one call that hands `Task.spawn` two tasks instead of one.
+// Expected: sema FAIL (TYPE-102 once).
+
+struct Job {
+    id: int,
+}
+
+async fn square(n: int) Task<int> {
+    return n * n
+}
+
+async fn describe(job: Job) Task<string> {
+    return $"job {job.id}"
+}
+
+fn main() void {
+    let tasks: List<Task<int>> = List.new()
+    let mut i = 1
+    while i <= 4 {
+        tasks.push(Task.spawn(square(i)))
+        i += 1
+    }
+    let mut total = 0
+    for t in tasks {
+        total += t.join()
+    }
+    println(total)
+    println(Task.spawn(describe(Job { id = 1 })).join())
+    let both = Task.spawn(square(2), square(3))
+}

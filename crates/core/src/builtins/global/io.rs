@@ -2,6 +2,7 @@
 //! Global output functions: `println`, `print`, `log`.
 
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use crate::interpreter::value::{EvalResult, Value};
 
 // ── Output capture ───────────────────────────────────────────────
@@ -15,15 +16,28 @@ use crate::interpreter::value::{EvalResult, Value};
 // option and is correct for both native use and wasm32 (single-threaded).
 // Capture is off by default (`None`), so behaviour is unchanged unless a
 // caller opts in.
+/// Where a thread's output goes while it is captured.
+enum Capture {
+    Off,
+    /// A buffer of this thread alone.
+    Local(String),
+    /// A buffer that the worker threads of a run write to as well, so that the output of all of
+    /// them arrives in one place, in the order it was printed.
+    Shared(CaptureSink),
+}
+
+/// The buffer a run with workers prints into while its output is captured.
+pub type CaptureSink = Arc<Mutex<String>>;
+
 thread_local! {
-    static OUTPUT_CAPTURE: RefCell<Option<String>> = RefCell::new(None);
+    static OUTPUT_CAPTURE: RefCell<Capture> = RefCell::new(Capture::Off);
 }
 
 /// Starts capturing `println`/`print`/`log` output into an in-memory buffer
 /// instead of the real stdout/stderr. Intended for embedding contexts
 /// (the wasm playground) that have no real stdout to write to.
 pub fn start_output_capture() {
-    OUTPUT_CAPTURE.with(|c| *c.borrow_mut() = Some(String::new()));
+    OUTPUT_CAPTURE.with(|c| *c.borrow_mut() = Capture::Local(String::new()));
 }
 
 /// Stops capturing and returns everything captured since the matching
@@ -31,22 +45,61 @@ pub fn start_output_capture() {
 /// never started. `println` and `log` output are interleaved in arrival
 /// order into the one buffer; they are not kept as separate streams.
 pub fn take_captured_output() -> String {
-    OUTPUT_CAPTURE.with(|c| c.borrow_mut().take().unwrap_or_default())
+    OUTPUT_CAPTURE.with(|c| match std::mem::replace(&mut *c.borrow_mut(), Capture::Off) {
+        Capture::Off          => String::new(),
+        Capture::Local(text)  => text,
+        Capture::Shared(sink) => std::mem::take(&mut *sink.lock().unwrap()),
+    })
+}
+
+/// Before worker threads start: if this thread is capturing, move the capture into a buffer the
+/// workers can write to as well, and return it. `None` when output is not being captured.
+pub fn share_capture_sink() -> Option<CaptureSink> {
+    OUTPUT_CAPTURE.with(|c| {
+        let mut slot = c.borrow_mut();
+        match std::mem::replace(&mut *slot, Capture::Off) {
+            Capture::Off => None,
+            Capture::Local(text) => {
+                let sink = Arc::new(Mutex::new(text));
+                *slot = Capture::Shared(sink.clone());
+                Some(sink)
+            }
+            Capture::Shared(sink) => {
+                *slot = Capture::Shared(sink.clone());
+                Some(sink)
+            }
+        }
+    })
+}
+
+/// On a worker thread: print into the buffer of the run that started it.
+pub fn attach_capture_sink(sink: Option<CaptureSink>) {
+    OUTPUT_CAPTURE.with(|c| {
+        *c.borrow_mut() = match sink {
+            Some(sink) => Capture::Shared(sink),
+            None       => Capture::Off,
+        };
+    });
+}
+
+/// After the worker threads have ended: take the shared buffer back as this thread's own.
+pub fn detach_capture_sink() {
+    OUTPUT_CAPTURE.with(|c| {
+        let mut slot = c.borrow_mut();
+        if let Capture::Shared(sink) = std::mem::replace(&mut *slot, Capture::Off) {
+            *slot = Capture::Local(std::mem::take(&mut *sink.lock().unwrap()));
+        }
+    });
 }
 
 /// Appends `s` to the capture buffer if one is active. Returns `true` if
 /// it was captured (caller must not also write to a real stream), `false`
 /// if capture is off (caller falls back to its normal native stream).
 fn try_capture(s: &str) -> bool {
-    OUTPUT_CAPTURE.with(|c| {
-        let mut slot = c.borrow_mut();
-        match slot.as_mut() {
-            Some(buf) => {
-                buf.push_str(s);
-                true
-            }
-            None => false,
-        }
+    OUTPUT_CAPTURE.with(|c| match &mut *c.borrow_mut() {
+        Capture::Off          => false,
+        Capture::Local(buf)   => { buf.push_str(s); true }
+        Capture::Shared(sink) => { sink.lock().unwrap().push_str(s); true }
     })
 }
 

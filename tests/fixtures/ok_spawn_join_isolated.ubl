@@ -1,0 +1,30 @@
+// tests/fixtures/ok_spawn_join_isolated.ubl
+// `Task.spawn(t)` hands a task to the worker threads and gives the same task back, running.
+// It is joined with `.join()` from ordinary code or awaited in async code, and `.join()` on a
+// task that was never spawned runs it in place.
+// Expected: sema OK, interpret OK.
+
+async fn double(n: int) Task<int> {
+    return n * 2
+}
+
+fn main() void {
+    let spawned = Task.spawn(double(21))
+    assert(spawned.join() == 42, "a spawned task joins to its result")
+
+    let cold = double(5)
+    assert(cold.join() == 10, "join on a task that was never spawned runs it in place")
+
+    let tasks: List<Task<int>> = List.new()
+    let mut i = 1
+    while i <= 8 {
+        tasks.push(Task.spawn(double(i)))
+        i += 1
+    }
+    let mut sum = 0
+    for t in tasks {
+        sum += t.join()
+    }
+    assert(sum == 72, "eight tasks, joined in order, add up")
+    println("spawn join ok")
+}

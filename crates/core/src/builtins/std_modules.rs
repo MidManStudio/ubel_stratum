@@ -21,6 +21,7 @@ pub const STD_ROOT: &str = "std";
 pub static STD_MODULES: &[(&str, &[&str])] = &[
     ("collections", &["List", "Dictionary", "Set", "Queue", "Stack", "InlineList"]),
     ("memory",      &["Pool", "Unique", "Shared", "SyncShared"]),
+    ("task",        &["Task"]),
     ("io",          &["println", "print", "log"]),
     ("debug",       &["assert", "panic", "typeof"]),
     ("math",        &["Math", "sqrt", "abs", "min", "max", "floor", "ceil", "range"]),
@@ -95,6 +96,13 @@ mod tests {
         assert_eq!(resolve_std_member(&["std", "collections"]), None, "a module is not a member");
         assert_eq!(resolve_std_member(&["game", "collections", "List"]), None, "not under std");
         assert_eq!(resolve_std_member(&["std", "collections", "List", "x"]), None, "too long");
+    }
+
+    #[test]
+    fn task_is_the_only_member_of_std_task() {
+        assert_eq!(resolve_std_member(&["std", "task", "Task"]), Some("Task"));
+        assert_eq!(resolve_std_member(&["std", "memory", "Task"]), None, "right name, wrong module");
+        assert_eq!(std_module_members(&["std", "task"]), Some(&["Task"][..]));
     }
 
     #[test]

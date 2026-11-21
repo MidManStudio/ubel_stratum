@@ -160,6 +160,13 @@ fn return_reads_a_value_for_every_expression_start() {
 }
 
 #[test]
+fn return_reads_a_value_that_starts_with_task_spawn() {
+    // `Task` starts an expression only before a `.`, and `return` has to see that.
+    let src = "async fn job() Task<int> {\n    return 4\n}\nfn f() int {\n    return Task.spawn(job()).join()\n}\nfn main() void {\n    println(f())\n}\n";
+    assert_eq!(out(src), "4\n");
+}
+
+#[test]
 fn a_bare_return_still_returns_nothing() {
     let src = "fn f() void {\n    return\n}\nfn main() void {\n    f()\n    println(1)\n}\n";
     assert_eq!(out(src), "1\n");

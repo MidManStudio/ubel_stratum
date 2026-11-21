@@ -11,6 +11,7 @@ pub mod expr;
 pub mod stmt;
 pub mod pattern;
 pub mod user_ops;
+pub mod spawn;
 pub mod display;
 
 #[cfg(test)]
@@ -20,6 +21,10 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::arena::AstArena;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use crate::ast::expressions::Lambda;
+use crate::interpreter::pool::{PoolShared, TaskHook};
 use crate::ast::common::{Span, TierAnnotation};
 use crate::error_management::errors::{OPERATOR_TRAITS, operator_method_of, operator_trait_arity};
 use crate::ast::literals::IntSuffix;
@@ -120,7 +125,27 @@ pub struct Interpreter<'ast> {
     /// The arena used to parse the program.  Kept here so interpolated-string
     /// expression holes (`$"Hello {expr}"`) can be parsed at runtime via
     /// `crate::parser::parse_expr`.
-    pub(crate) arena:        &'ast AstArena,
+    pub(crate) _arena:       PhantomData<&'ast AstArena>,
+    /// How many functions the pre-declare pass registered (the builtins, the program's
+    /// functions and methods). A `Value::Function` below this number names the same
+    /// function in every interpreter built from the same program; a higher one is a
+    /// lambda that exists only in the interpreter that evaluated it.
+    pub(crate) declared_functions: usize,
+    /// The worker threads of this run, when the program spawns. A worker holds it too, so a task
+    /// can spawn.
+    pub(crate) pool: Option<Arc<PoolShared>>,
+    pub(crate) worker_count: Option<usize>,
+    /// True in an interpreter that runs on a worker thread. Only a worker runs a task it waits
+    /// for, so that a task never runs against the statics of the thread that started the pool.
+    pub(crate) is_worker: bool,
+    pub(crate) task_hook: Option<TaskHook>,
+    /// The program being run, to find an `async { }` block again by its place in the source.
+    pub(crate) program: Option<&'ast Program<'ast>>,
+    pub(crate) lambda_table: Option<HashMap<Span, &'ast Lambda<'ast>>>,
+    /// Where in the source each lambda of this interpreter came from.
+    pub(crate) lambda_origin: HashMap<FunctionId, Span>,
+    /// The scope of the program's top-level names, as it was when `main` started.
+    pub(crate) module_scope: Environment,
     /// Ambient capacity for the innermost enclosing `with pool<T>(count)
     /// { }` block, pushed/popped by `StmtKind::With`'s execution
     /// (MEMORY_MODEL.md §11). `Pool.new()` has no generic argument of
@@ -188,7 +213,13 @@ pub struct Interpreter<'ast> {
 }
 
 impl<'ast> Interpreter<'ast> {
-    pub fn new(arena: &'ast AstArena) -> Self {
+    pub fn new(_arena: &'ast AstArena) -> Self {
+        Self::new_detached()
+    }
+
+    /// An interpreter that holds no reference to the AST arena. The arena is not used while a
+    /// program runs, and a worker thread has no arena of its own to point to.
+    pub fn new_detached() -> Self {
         let mut interp = Interpreter {
             env:          Environment::new(),
             functions:    Vec::new(),
@@ -196,7 +227,16 @@ impl<'ast> Interpreter<'ast> {
             enum_table:   HashMap::new(),
             struct_derives: HashMap::new(),
             struct_field_order: HashMap::new(),
-            arena,
+            _arena: PhantomData,
+            declared_functions: 0,
+            pool: None,
+            worker_count: None,
+            is_worker: false,
+            task_hook: None,
+            program: None,
+            lambda_table: None,
+            lambda_origin: HashMap::new(),
+            module_scope: Environment::new(),
             pool_capacity_stack: Vec::new(),
             int_literal_types: HashMap::new(),
             statics: HashMap::new(),
@@ -465,7 +505,9 @@ impl<'ast> Interpreter<'ast> {
         }
     }
 
-    pub fn run_program(&mut self, program: &'ast Program<'ast>) -> Result<(), String> {
+    /// The pre-declare pass: registers every item of the program and returns the ids of the
+    /// top-level functions and methods, whose closures are filled in afterwards.
+    fn register_items(&mut self, program: &'ast Program<'ast>) -> Vec<FunctionId> {
         self.register_import_aliases(program);
         // Pre-declare pass: register everything before running any body so
         // forward references and mutual recursion work.
@@ -589,6 +631,12 @@ impl<'ast> Interpreter<'ast> {
                 _ => {}
             }
         }
+        top_level_fns
+    }
+
+    pub fn run_program(&mut self, program: &'ast Program<'ast>) -> Result<(), String> {
+        let top_level_fns = self.register_items(program);
+        self.declared_functions = self.functions.len();
 
         // `register_fn`/`register_method` snapshot `self.env` for the
         // closure at the moment each item is registered — which, mid-loop,
@@ -670,6 +718,17 @@ impl<'ast> Interpreter<'ast> {
             }
         }
 
+        self.module_scope = self.env.snapshot();
+        self.program = Some(program);
+        if Self::program_spawns(program) {
+            self.run_main_with_pool(program)
+        } else {
+            self.run_main()
+        }
+    }
+
+    /// Call `main` (awaiting it if it is async) and report how it ended.
+    pub(super) fn run_main(&mut self) -> Result<(), String> {
         let main_val = self.env.get("main").cloned()
             .ok_or_else(|| "no `main` function found".to_string())?;
 
@@ -722,6 +781,7 @@ impl<'ast> Interpreter<'ast> {
         match state {
             crate::interpreter::value::TaskState::Cold { func, receiver: Some(r), args } => self.run_method(func, r, &args),
             crate::interpreter::value::TaskState::Cold { func, receiver: None, args }    => self.run_function(func, &args),
+            crate::interpreter::value::TaskState::Spawned(slot) => self.join_slot(slot),
             crate::interpreter::value::TaskState::Awaited => Err(Signal::Panic(
                 "a task can be awaited only once, and this one already was".to_string())),
         }

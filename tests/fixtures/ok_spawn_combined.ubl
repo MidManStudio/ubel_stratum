@@ -1,0 +1,89 @@
+// tests/fixtures/ok_spawn_combined.ubl
+// `Task.spawn` beside the features around it: a `using` block that cleans up after tasks that
+// were joined inside it, a task that fails and a task that spawns another, an `async { }` block
+// that takes the names it uses, an async method, and a struct and a dictionary crossing both ways.
+// Expected: sema OK, interpret OK.
+
+struct Meter {
+    held: int,
+}
+
+struct Lease {
+    id: int,
+    meter: Meter,
+}
+
+impl Dispose for Lease {
+    fn dispose(self) void {
+        self.meter.held -= 1
+    }
+}
+
+struct Counter {
+    n: int,
+}
+
+extend Counter {
+    async fn plus(self, k: int) Task<int> {
+        self.n += k
+        return self.n
+    }
+}
+
+async fn checked(n: int) Task<int!> {
+    if n < 0 {
+        fail "negative"
+    }
+    return n + 1
+}
+
+async fn leaf(n: int) Task<int> {
+    return n * 10
+}
+
+async fn middle(n: int) Task<int> {
+    let inner = Task.spawn(leaf(n))
+    let v = await inner
+    return v + 1
+}
+
+async fn tally(scores: Dictionary<string, int>) Task<int> {
+    scores.set("extra", 5)
+    return scores.len()
+}
+
+fn run(n: int) int! {
+    let t = Task.spawn(checked(n))
+    return t.join()?
+}
+
+fn main() void {
+    let meter = Meter { held = 1 }
+    using let lease = Lease { id = 1, meter = meter } {
+        let base = 100
+        let block = Task.spawn(async { base + 1 })
+        assert(block.join() == 101, "an async block takes the names it uses")
+    }
+    assert(meter.held == 0, "the lease was given back after the tasks")
+
+    try {
+        assert(run(4)? == 5, "a task that returns")
+        run(-1)?
+        assert(false, "a failure in a task reaches the question mark")
+    } catch (e) {
+        println("failure arrived")
+    }
+
+    let total = Task.spawn(middle(1)).join() + Task.spawn(middle(2)).join()
+    assert(total == 32, "a task that spawns another and awaits it")
+
+    let c = Counter { n = 10 }
+    assert(Task.spawn(c.plus(5)).join() == 15, "an async method runs on a copy of its receiver")
+    assert(c.n == 10, "the receiver itself is untouched")
+
+    let scores: Dictionary<string, int> = Dictionary.new()
+    scores.set("ada", 1)
+    assert(Task.spawn(tally(scores)).join() == 2, "a dictionary crosses and changes inside the task")
+    assert(scores.len() == 1, "and not outside it")
+    println("spawn combined ok")
+}

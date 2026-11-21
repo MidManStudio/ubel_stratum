@@ -392,6 +392,7 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 tier:     crate::ast::common::TierAnnotation::High,
                 is_async: false,
             });
+            interp.lambda_origin.insert(id, lambda.span);
             // `async { ... }` is a cold task over that closure, not the function itself.
             if lambda.is_async_block {
                 Ok(interp.cold_task(id, None, &[]))
@@ -979,6 +980,14 @@ fn write_lvalue<'ast>(
             // if the name is neither.
             if !interp.env.set(name, value.clone()) {
                 if let Some(slot) = interp.statics.get_mut(*name) {
+                    // A static is one copy per worker. A write would be seen by this worker
+                    // alone, and by whichever tasks it runs after this one, so it is refused
+                    // until a shared value can carry the change (AS4).
+                    if interp.is_worker {
+                        return Err(Signal::Panic(format!(
+                            "a task cannot write the static `{name}`: each worker has its own copy of it"
+                        )));
+                    }
                     *slot = value;
                 } else {
                     interp.env.define(name, value);
@@ -1163,6 +1172,13 @@ fn eval_call_with_receiver<'ast>(
         // into `constructors.rs`/`resolve_namespace_member` like
         // `List.new()` etc.
         let canon_name = interp.canonical_type(type_name);
+        if canon_name == "Task" && method_name == "spawn" {
+            let args = eval_args(interp, raw_args)?;
+            return match <[Value; 1]>::try_from(args) {
+                Ok([task]) => interp.spawn_task(task),
+                Err(_)     => Err(Signal::Panic("`Task.spawn` takes one task".into())),
+            };
+        }
         if canon_name == "Pool" && method_name == "new" {
             let cap = interp.pool_capacity_stack.last().copied().ok_or_else(|| {
                 Signal::Panic(
@@ -1215,6 +1231,12 @@ fn eval_call_with_receiver<'ast>(
     // Case 2 & 3: evaluate the receiver, then dispatch.
     let receiver = eval_expr(interp, recv_expr)?;
     let args     = eval_args(interp, raw_args)?;
+
+    // `task.join()`: await from code that is not async. A task that has not been taken by a worker
+    // runs here, one that has is waited for.
+    if method_name == "join" && args.is_empty() && matches!(receiver, Value::Task(_)) {
+        return interp.await_task(receiver);
+    }
 
     // A call sema resolved THROUGH A TRAIT (a bound, or `Self` in a default
     // method) runs the trait's method for the receiver's type, never an

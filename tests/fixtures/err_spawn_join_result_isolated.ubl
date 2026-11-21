@@ -1,0 +1,12 @@
+// tests/fixtures/err_spawn_join_result_isolated.ubl
+// `.join()` gives the result of the task, so joining a `Task<int>` into a `string` is a type
+// mismatch.
+// Expected: sema FAIL (TYPE-101 once).
+
+async fn double(n: int) Task<int> {
+    return n * 2
+}
+
+fn main() void {
+    let text: string = Task.spawn(double(2)).join()
+}

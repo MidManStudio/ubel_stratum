@@ -35,6 +35,8 @@
 //! LOW: called like any other function; borrow-check enforcement is Phase 4.
 
 pub mod value;
+pub mod send;
+pub mod pool;
 pub mod env;
 pub mod eval;
 

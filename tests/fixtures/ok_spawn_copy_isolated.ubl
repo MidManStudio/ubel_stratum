@@ -1,0 +1,44 @@
+// tests/fixtures/ok_spawn_copy_isolated.ubl
+// A value that goes into a task is copied: a change made in the task is not seen by the code
+// that spawned it. What was shared inside the copy stays shared, and two separate lists stay
+// separate.
+// Expected: sema OK, interpret OK.
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+async fn grow(xs: List<int>) Task<int> {
+    xs.push(99)
+    return xs.len()
+}
+
+async fn through_two_names(pair: (List<int>, List<int>)) Task<int> {
+    pair[0].push(7)
+    return pair[1].len()
+}
+
+async fn shifted(p: Point) Task<Point> {
+    p.x += 10
+    return Point { x = p.x, y = p.y }
+}
+
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    assert(Task.spawn(grow(xs)).join() == 2, "the task changed its own copy")
+    assert(xs.len() == 1, "the spawner's list is untouched")
+
+    let one: List<int> = List.new()
+    assert(Task.spawn(through_two_names((one, one))).join() == 1, "one list reached twice is still one list")
+    let a: List<int> = List.new()
+    let b: List<int> = List.new()
+    assert(Task.spawn(through_two_names((a, b))).join() == 0, "two separate lists stay separate")
+
+    let p = Point { x = 1, y = 2 }
+    let moved = Task.spawn(shifted(p)).join()
+    assert(moved.x == 11, "the result is a value of the task")
+    assert(p.x == 1, "the struct that was sent is untouched")
+    println("spawn copy ok")
+}

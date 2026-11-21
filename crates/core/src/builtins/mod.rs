@@ -100,7 +100,7 @@ pub struct BuiltinSignature {
 /// `eval_call_with_receiver` before that table is ever consulted.
 pub const BUILTIN_NAMESPACES: &[&str] = &[
     "Math", "List", "Dictionary", "Queue", "Stack", "Pool", "InlineList",
-    "Unique", "Shared", "SyncShared",
+    "Unique", "Shared", "SyncShared", "Task",
 ];
 
 pub fn is_builtin_namespace(name: &str) -> bool {
@@ -165,6 +165,7 @@ pub fn namespace_member_names(namespace: &str) -> &'static [&'static str] {
         "Unique"      => &["new"],
         "Shared"      => &["new"],
         "SyncShared"  => &["new"],
+        "Task"        => &["spawn"],
         _ => &[],
     }
     }

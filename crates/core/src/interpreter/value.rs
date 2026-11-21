@@ -23,6 +23,9 @@ pub type FunctionId = usize;
 pub enum TaskState {
     /// Not started: the function to run, its receiver (for a method) and its arguments.
     Cold { func: FunctionId, receiver: Option<Value>, args: Vec<Value> },
+    /// Handed to the workers with `Task.spawn`. The slot is where its outcome is left. Awaiting or
+    /// joining it waits for that outcome, and counts as the one await.
+    Spawned(std::sync::Arc<crate::interpreter::pool::TaskSlot>),
     /// Already awaited. A second `await` of the same task is an error.
     Awaited,
 }

@@ -1,0 +1,7 @@
+// tests/fixtures/err_spawn_not_a_task_isolated.ubl
+// `Task.spawn` takes a task. An `int` is a type mismatch.
+// Expected: sema FAIL (TYPE-101 once).
+
+fn main() void {
+    let started = Task.spawn(5)
+}

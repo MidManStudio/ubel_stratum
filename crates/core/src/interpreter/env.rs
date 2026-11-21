@@ -45,6 +45,17 @@ impl Environment {
     }
 
     /// Look up a name, walking outward from the innermost scope.
+    /// A binding made inside a function: the innermost one with this name in any scope but the
+    /// first, which holds the program's top-level names.
+    pub(crate) fn local_get(&self, name: &str) -> Option<&Value> {
+        for scope in self.scopes.iter().skip(1).rev() {
+            if let Some(v) = scope.get(name) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
     pub fn get(&self, name: &str) -> Option<&Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(v) = scope.get(name) {

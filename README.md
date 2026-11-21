@@ -18,14 +18,14 @@ everywhere, ownership everywhere, or manual management everywhere. Ubel
 Stratum lets each **function** choose, and the compiler checks that the
 choices never collide.
 
-| Tier | Annotation | Memory | `await` | Use case |
-|------|-----------|--------|---------|----------|
-| HIGH | `@tier(high)` (default) | Garbage collected | yes | Business logic, I/O |
-| MID  | `@tier(mid)` | Arena allocated | no | Parsers, hot paths |
-| LOW  | `@tier(low)` | Ownership + borrow checker, no collector | no | Systems code, FFI, packets |
+| Tier | Annotation | Memory | Use case |
+|------|-----------|--------|----------|
+| HIGH | `@tier(high)` (default) | Garbage collected | Business logic, I/O |
+| MID  | `@tier(mid)` | Arena allocated | Parsers, hot paths |
+| LOW  | `@tier(low)` | Ownership + borrow checker, no collector | Systems code, FFI, packets |
 
 A function with no annotation is HIGH. You opt *down* for performance; you
-never opt *up* for convenience.
+never opt *up* for convenience. `async` and `await` work in all three tiers.
 
 ---
 
@@ -38,6 +38,8 @@ Early development. What exists today:
 | Front end: lexer, parser, name resolution, type inference, generics, traits, tier enforcement | **Working** |
 | LOW-tier safety: borrow, move and lifetime checking | **Working**, intra-function, with documented scope limits ([`docs/OUTLIVES_RULES.md`](docs/OUTLIVES_RULES.md), [`docs/MEMORY_MODEL.md`](docs/MEMORY_MODEL.md) §9) |
 | Tree-walking interpreter | **Working**; the reference for the language's behaviour |
+| Async and concurrency | `async fn`, `await`, `Task<T>`, `async { }` blocks, `using` with `Dispose`, and `Task.spawn` on a pool of worker threads, where a value that goes into a task is copied: **Working** in the interpreter. The sharing rule, locks, channels, atomics, scopes, cancellation and an executor an engine can replace are **designed, not built** ([`docs/ASYNC_SYNC_DESIGN.md`](docs/ASYNC_SYNC_DESIGN.md)) |
+| Modules | `summon` of the standard names, with `as` renames: **Working**. Loading other files is **designed, not built** ([`docs/MODULE_DESIGN.md`](docs/MODULE_DESIGN.md)) |
 | `ubel` command line (`check`, `run`, `build`) | **Working** ([`docs/ubel_stratum_cli.md`](docs/ubel_stratum_cli.md)) |
 | `ubel-lsp` language server | **Stub**: publishes diagnostics only ([`docs/ubel_stratum_lsp.md`](docs/ubel_stratum_lsp.md)) |
 | Browser playground and docs site | **Working** (`web/`, see [`docs/SITE_DOCS.md`](docs/SITE_DOCS.md)) |
@@ -169,6 +171,53 @@ fn total_area<T: Shape>(a: T, b: T) int {
 }
 ```
 
+### Cleanup and tasks
+
+A `using` block calls the `dispose` of what it binds on every way out of the
+block. `Task.spawn` hands a task to a pool of worker threads and gives the
+same task back, running; `join()` (or `await`, in async code) waits for the
+result.
+
+```ubl
+struct Connection {
+    name: string,
+}
+
+impl Dispose for Connection {
+    fn dispose(self) void {
+        println($"closing {self.name}")
+    }
+}
+
+async fn fetch(id: int) Task<int> {
+    return id * 2
+}
+
+fn main() void {
+    using let conn = Connection { name = "db" } {
+        let a = Task.spawn(fetch(1))     // runs on a worker thread
+        let b = Task.spawn(fetch(2))
+        println(a.join() + b.join())
+    }                                    // `dispose` runs here, however the block is left
+}
+```
+
+An `async { }` block is a task too, and it takes the names it uses:
+
+```ubl
+fn main() {
+    let base = 10
+    let t = Task.spawn(async { base * 2 })
+    println(t.join())
+}
+```
+
+What goes into a task is **copied**: a change made inside a task is not seen
+by the code that spawned it, and a value that cannot be copied (a `Shared`, a
+closure, another task) is refused with an error that names it. The browser
+playground has no threads, so `Task.spawn` reports an error there. How tasks
+will share data safely is the next piece of design work.
+
 ### Errors have stable codes
 
 ```text
@@ -200,9 +249,9 @@ real call matrix and escape checking:
 | LOW | MID | no |
 
 Arena and pool references cannot leave their block, `with arena` is MID-only,
-`await` is HIGH-only, and collections cannot be built inside LOW (LOW's memory
-model is the ownership wrappers `Unique<T>`, `Shared<T>`, `SyncShared<T>` and
-the borrow checker). The full model, the three patterns for crossing MID to
+and collections cannot be built inside LOW (LOW's memory model is the
+ownership wrappers `Unique<T>`, `Shared<T>`, `SyncShared<T>` and the borrow
+checker). The full model, the three patterns for crossing MID to
 HIGH safely (callback, iterator, view), and what is and is not enforced yet:
 [`web/site/src/tier-model.md`](web/site/src/tier-model.md) and
 [`docs/MEMORY_MODEL.md`](docs/MEMORY_MODEL.md).
@@ -219,18 +268,29 @@ free CI runners. On 1.75:
 
 1. the checked-in `Cargo.lock` is lockfile format 4, which Cargo 1.75 cannot
    read: delete it and run `cargo generate-lockfile`;
-2. pin the dependencies whose newer releases need a newer compiler:
+2. pin the dependencies whose newer releases need a newer compiler (a
+   current Rust needs none of this):
 
 ```bash
-cargo update -p owo-colors  --precise 4.0.0
-cargo update -p backtrace   --precise 0.3.69
-cargo update -p proptest    --precise 1.4.0
-cargo update -p tempfile    --precise 3.14.0
-cargo update -p clap        --precise 4.4.18
-cargo update -p rayon       --precise 1.10.0
-cargo update -p rayon-core  --precise 1.12.1
-cargo update -p half        --precise 2.4.1
+cargo update -p owo-colors      --precise 4.0.0
+cargo update -p backtrace       --precise 0.3.69
+cargo update -p proptest        --precise 1.4.0
+cargo update -p tempfile        --precise 3.14.0
+cargo update -p clap            --precise 4.4.18
+cargo update -p rayon           --precise 1.10.0
+cargo update -p rayon-core      --precise 1.12.1
+cargo update -p half            --precise 2.4.1
+cargo update -p textwrap        --precise 0.16.0
+cargo update -p time            --precise 0.3.36
+cargo update -p url             --precise 2.5.0
+cargo update -p tracing-appender --precise 0.2.3
+cargo update -p assert_cmd      --precise 2.0.16
+cargo update -p powerfmt        --precise 0.2.0
+cargo update -p tokio-util      --precise 0.7.13
+cargo update -p tokio           --precise 1.53.3
 ```
+
+Do not commit the regenerated `Cargo.lock` from such a setup.
 
 LALRPOP is **not** required: `crates/parser` is an inactive reference
 implementation (the live parser is the hand-written recursive-descent + Pratt
@@ -254,7 +314,7 @@ built explicitly.
 
 ```bash
 cargo build --workspace --all-targets
-cargo test  --workspace --lib --bins
+cargo test  --workspace --all-targets --no-fail-fast   # add -j 1 on one core and little memory
 cargo bench                                # core and rd_parser have benches/
 ```
 
@@ -277,15 +337,20 @@ cargo build --manifest-path crates/wasm_playground/Cargo.toml \
 
 ## Testing
 
-Three layers, each catching different bugs.
+Four layers, each catching different bugs.
 
 1. **Unit tests** in the source files (`#[cfg(test)]`), run with
    `cargo test --workspace --lib --bins`.
-2. **The fixture sweep**, `tests/fixtures/*.ubl`: real programs driven through
+2. **Integration tests**, `crates/*/tests/`: one file for each language
+   feature, pinning behaviour a whole program cannot show, such as the exact
+   order of output, which values a task cannot be sent, or the code and count
+   of each diagnostic. `cargo test --workspace --all-targets` runs them with
+   the unit tests.
+3. **The fixture sweep**, `tests/fixtures/*.ubl`: real programs driven through
    lex, parse, sema and the interpreter. `ok_*.ubl` must pass every stage;
    `err_*.ubl` must fail, at the stage its header comment names. Run it with
    `cargo run -p ubel_stratum_rd --example pipeline -- tests/fixtures`.
-3. **The CI dashboards.** Every push renders the sweep as a Job Summary and on
+4. **The CI dashboards.** Every push renders the sweep as a Job Summary and on
    the site's results page, stage by stage, so an expected `err_*` failure is
    never confused with a regression.
 
@@ -306,6 +371,13 @@ documented example cannot go stale.
   ([`ubel_stratum.md`](docs/ubel_stratum.md), grammar in
   [`ubel.ebnf`](docs/ubel.ebnf)), memory model, traits, generics, enums,
   formatting, diagnostics rules, LLVM status, and the CLI and LSP notes.
+- **Design records** for work that is decided before it is built, with the
+  choices, what each one costs and the order of delivery:
+  [`ASYNC_SYNC_DESIGN.md`](docs/ASYNC_SYNC_DESIGN.md) (async, threads, sharing),
+  [`MODULE_DESIGN.md`](docs/MODULE_DESIGN.md) (modules and packages),
+  [`TRAITS_DESIGN.md`](docs/TRAITS_DESIGN.md) and
+  [`LLVM_ROADMAP.md`](docs/LLVM_ROADMAP.md). Ideas that are parked, with what
+  was found about them, are in [`PARKED_IDEAS.md`](docs/PARKED_IDEAS.md).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to work on the project.
 
 ## Repository layout
@@ -319,6 +391,8 @@ documented example cannot go stale.
 | `crates/wasm_playground` | the browser build (own workspace) |
 | `crates/parser` | inactive LALRPOP reference parser |
 | `tests/fixtures` | the `ok_*` / `err_*` fixture programs |
+| `docs/` | engineering docs and design records |
+| `scripts/` | the doc-example checker, the grammar-page sync and the CI report builders |
 | `web/` | landing page, docs site, playground, dashboard |
 | `self-hosted/` | self-hosting work: a tokenizer written in Ubel |
 | `examples/` | `arena_demo`, `basic`, `tier_demo` |

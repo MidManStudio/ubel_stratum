@@ -221,6 +221,13 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         TokenType::InterpolatedString(parts) => parse_interp(p, parts, lo),
         TokenType::SelfKw       => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::SelfExpr, span: lo })) }
         TokenType::Ident(name)  => parse_ident_expr(p, name, lo, stage_head),
+        // `Task.spawn(..)`: `Task` is a reserved word for parse_type.rs's benefit, and in
+        // expression position it is the name of a static object, as `List` is in `List.new()`.
+        // Only before a `.`: a `Task` anywhere else in an expression is still an error.
+        TokenType::Task if matches!(p.cursor.peek_nth(1), TokenType::Dot) => {
+            let name = p.cursor.peek().to_string();
+            parse_ident_expr(p, name, lo, stage_head)
+        }
         // Built-in collection type names (List, Dictionary, Set, Queue,
         // Stack) are dedicated keyword tokens for parse_type.rs's benefit,
         // but they're also ordinary names in expression position —

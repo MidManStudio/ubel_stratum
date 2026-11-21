@@ -379,6 +379,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     /// statement (`return 3.0 * r` returned void). The table test in
     /// `tests/call_and_return_parsing.rs` pins the full set.
     pub(crate) fn can_start_expr(&self) -> bool {
+        // `Task.spawn(..)`: `Task` starts an expression only before a `.`.
+        if matches!(self.cursor.peek(), TokenType::Task) {
+            return matches!(self.cursor.peek_nth(1), TokenType::Dot);
+        }
         matches!(self.cursor.peek(),
             TokenType::Ident(_)  | TokenType::IntLit(_)   | TokenType::FloatLit(_) |
             TokenType::DoubleLit(_) | TokenType::TypedIntLit(_, _) |
