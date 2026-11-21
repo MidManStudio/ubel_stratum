@@ -222,6 +222,7 @@ pub fn infer<'ast>(
     let mut icx = InferCtx::new(ctx, errors);
     icx.collect_signatures(program);
     icx.infer_bodies(program);
+    icx.zonk_expr_types();
 }
 
 // ── Unifier ───────────────────────────────────────────────────────
@@ -6468,6 +6469,100 @@ impl<'a> InferCtx<'a> {
     fn finish_body_checks(&mut self) {
         self.finish_int_literals();
         self.check_obligations();
+    }
+
+    /// Resolve every inference variable inside a recorded type, all the way down (a "zonk"). `apply` resolves only the
+    /// outermost variable, and until every body has been checked `List.new()` is `List<?T>` even where an annotation or
+    /// a later `push` fixes `?T`. A variable nothing constrained stays a variable.
+    fn zonk(&mut self, ty: TypeId, depth: u32) -> TypeId {
+        let ty = self.apply(ty);
+        if depth > 64 {
+            return ty; // a variable bound to a type that contains it: stop instead of looping
+        }
+        let d = depth + 1;
+        let t = self.ctx.types.get(ty).clone();
+        match t {
+            SemaType::List(e)       => self.zonk_wrap(e, d, SemaType::List),
+            SemaType::Set(e)        => self.zonk_wrap(e, d, SemaType::Set),
+            SemaType::Queue(e)      => self.zonk_wrap(e, d, SemaType::Queue),
+            SemaType::Stack(e)      => self.zonk_wrap(e, d, SemaType::Stack),
+            SemaType::Slice(e)      => self.zonk_wrap(e, d, SemaType::Slice),
+            SemaType::Pool(e)       => self.zonk_wrap(e, d, SemaType::Pool),
+            SemaType::Handle(e)     => self.zonk_wrap(e, d, SemaType::Handle),
+            SemaType::Fallible(e)   => self.zonk_wrap(e, d, SemaType::Fallible),
+            SemaType::Task(e)       => self.zonk_wrap(e, d, SemaType::Task),
+            SemaType::Optional(e)   => self.zonk_wrap(e, d, SemaType::Optional),
+            SemaType::GcRef(e)      => self.zonk_wrap(e, d, SemaType::GcRef),
+            SemaType::InlineList(e) => self.zonk_wrap(e, d, SemaType::InlineList),
+            SemaType::Linqerizer(e) => self.zonk_wrap(e, d, SemaType::Linqerizer),
+            SemaType::Unique(e)     => self.zonk_wrap(e, d, SemaType::Unique),
+            SemaType::Shared(e)     => self.zonk_wrap(e, d, SemaType::Shared),
+            SemaType::SyncShared(e) => self.zonk_wrap(e, d, SemaType::SyncShared),
+            SemaType::Dyn { trait_def, args } => {
+                let args: Vec<TypeId> = args.iter().map(|t| self.zonk(*t, d)).collect();
+                self.ctx.types.insert(SemaType::Dyn { trait_def, args })
+            }
+            SemaType::Reference { mutable, lifetime, inner } => {
+                let inner = self.zonk(inner, d);
+                self.ctx.types.insert(SemaType::Reference { mutable, lifetime, inner })
+            }
+            SemaType::Dictionary(k, v) => {
+                let k = self.zonk(k, d);
+                let v = self.zonk(v, d);
+                self.ctx.types.insert(SemaType::Dictionary(k, v))
+            }
+            SemaType::Tuple(ts) => {
+                let ts: Vec<TypeId> = ts.iter().map(|t| self.zonk(*t, d)).collect();
+                self.ctx.types.insert(SemaType::Tuple(ts))
+            }
+            SemaType::Array { len, elem } => {
+                let elem = self.zonk(elem, d);
+                self.ctx.types.insert(SemaType::Array { len, elem })
+            }
+            SemaType::ArenaRef { arena, mutable, inner } => {
+                let inner = self.zonk(inner, d);
+                self.ctx.types.insert(SemaType::ArenaRef { arena, mutable, inner })
+            }
+            SemaType::PoolRef { pool, mutable, inner } => {
+                let inner = self.zonk(inner, d);
+                self.ctx.types.insert(SemaType::PoolRef { pool, mutable, inner })
+            }
+            SemaType::OwnedRef { mutable, inner } => {
+                let inner = self.zonk(inner, d);
+                self.ctx.types.insert(SemaType::OwnedRef { mutable, inner })
+            }
+            SemaType::Function { params, return_type, is_fallible, generic_arity } => {
+                let params: Vec<TypeId> = params.iter().map(|p| self.zonk(*p, d)).collect();
+                let return_type = self.zonk(return_type, d);
+                self.ctx.types.insert(SemaType::Function { params, return_type, is_fallible, generic_arity })
+            }
+            SemaType::Named { def, args } => {
+                let args: Vec<TypeId> = args.iter().map(|t| self.zonk(*t, d)).collect();
+                self.ctx.types.insert(SemaType::Named { def, args })
+            }
+            // Primitives, Var (nothing bound it), Null, Unknown, Void, Param: nothing to resolve.
+            _ => ty,
+        }
+    }
+
+    fn zonk_wrap(&mut self, e: TypeId, d: u32, make: fn(TypeId) -> SemaType) -> TypeId {
+        let e = self.zonk(e, d);
+        self.ctx.types.insert(make(e))
+    }
+
+    /// Run once, after every body has been checked: replace each recorded expression type by its fully resolved form,
+    /// so a reader of `expr_types` (the native backend, the language server) sees `List<int>` where the call was
+    /// recorded as `List<?T>`. The entries are visited in source order so the order the types are interned in does
+    /// not depend on the hash map.
+    fn zonk_expr_types(&mut self) {
+        let mut entries: Vec<(Span, TypeId)> = self.ctx.expr_types.iter().map(|(s, t)| (*s, *t)).collect();
+        entries.sort_by_key(|(s, _)| (s.start, s.end));
+        for (span, ty) in entries {
+            let z = self.zonk(ty, 0);
+            if z != ty {
+                self.ctx.expr_types.insert(span, z);
+            }
+        }
     }
 
     fn finish_int_literals(&mut self) {

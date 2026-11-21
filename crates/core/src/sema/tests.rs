@@ -1062,3 +1062,42 @@ fn test_sema_discard_param_type_is_enforced_at_call_site() {
         }
     }
 }
+
+
+// -- Inference variables in expr_types are resolved at the end of inference --
+
+#[test]
+fn test_sema_expr_types_have_their_inference_variables_resolved() {
+    // fn foo() { let xs: List<int> = List.new() }
+    // While the call is checked it is `List<?T>`; the annotation fixes `?T` only afterwards. The type recorded for
+    // the call must be `List<int>` when inference is over (the native backend reads these types).
+    let arena = AstArena::new();
+    const CALL_SPAN: Span = Span { start: 1, end: 1, line: 0, column: 0 };
+    const LET_SPAN:  Span = Span { start: 2, end: 2, line: 0, column: 0 };
+
+    let call = builtin_ctor_call(&arena, "List", CALL_SPAN);
+    let let_xs = Stmt {
+        kind: StmtKind::Let {
+            mutable: false,
+            binding: BindingTarget::Ident(arena.alloc_str("xs")),
+            ty:      Some(arena.alloc(Type { kind: TypeKind::List(Some(int_type(&arena))), span: Z })),
+            value:   call,
+        },
+        span: LET_SPAN,
+    };
+    let stmts = arena.alloc_slice_copy(&[let_xs]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+
+    let prog = prog_with(&arena, &[Item::Function(f)]);
+    let ctx  = sema::analyse(&prog, &arena, String::new())
+        .expect("sema should accept an annotated List.new()");
+
+    let ty_id = ctx.expr_type(CALL_SPAN).expect("List.new() should have an inferred type");
+    match ctx.types.get(ty_id) {
+        SemaType::List(elem) => match ctx.types.get(*elem) {
+            SemaType::Int => {}
+            other => panic!("expected List<int> with its element resolved, got an element of {:?}", other),
+        },
+        other => panic!("expected SemaType::List, got {:?}", other),
+    }
+}
