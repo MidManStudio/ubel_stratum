@@ -50,7 +50,7 @@ use ubel_stratum::ast::{
     EnumDecl, EnumVariantPayload, FieldInit, FunctionDecl, IfBranchBody, IfExpr, InterpolationPart, Item, Literal, ParamKind, Program,
     SizeExpr, Span, Stmt, StmtKind, StructDecl, StructMember, TierAnnotation, TypeKind, UnaryOp,
 };
-use ubel_stratum::ast::expressions::{Lambda, LambdaBody, MatchArm, MatchArmBody};
+use ubel_stratum::ast::expressions::{Lambda, LambdaBody, MatchArm, MatchArmBody, OrElseFallback};
 use ubel_stratum::ast::patterns::{EnumPatternPayload, PatternKind};
 use ubel_stratum::lexer::IntSuffix;
 use ubel_stratum::sema::{SemaContext, SemaType, TypeId};
@@ -190,6 +190,13 @@ enum Ty {
     /// `List<T>` (M3a): a pointer to a GC list object. The payload indexes `Emitter::list_tys`, which holds the
     /// element type (lists are specialised per element type, decided 2026-11-10).
     List(usize),
+    /// `T?` (M3b): a pointer, null meaning "no value". For a `T` that is itself a pointer (string, struct, enum, list)
+    /// it is that pointer; for a number or `bool` it points to a GC box holding the value. The payload indexes
+    /// `Emitter::opt_tys`, which holds the `T`.
+    Opt(usize),
+    /// The literal `null` before its context gives it an optional type: only `==` / `!=` against an optional,
+    /// printing, and a place of optional type (`expr_as`) accept it.
+    Null,
 }
 
 /// The shape of a function type: parameter types and result.
@@ -205,7 +212,7 @@ impl Ty {
             Ty::I64 => "i64",
             Ty::I1 => "i1",
             Ty::Void => "void",
-            Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) | Ty::List(_) => "ptr",
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) | Ty::List(_) | Ty::Opt(_) | Ty::Null => "ptr",
             Ty::Int(k) => k.ir(),
             Ty::F64 => "double",
             Ty::F32 => "float",
@@ -227,7 +234,7 @@ impl Ty {
 
     /// Values that are pointers to objects, and so need a collector mask bit.
     fn is_ptr(self) -> bool {
-        matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) | Ty::List(_))
+        matches!(self, Ty::Struct(_) | Ty::Enum(_) | Ty::Str | Ty::Fn(_) | Ty::List(_) | Ty::Opt(_))
     }
 }
 
@@ -415,6 +422,8 @@ struct Emitter<'a> {
     fn_tys: RefCell<Vec<FnTy>>,
     /// The element type of each list type (`Ty::List(i)` is a list of `list_tys[i]`).
     list_tys: RefCell<Vec<Ty>>,
+    /// The `T` of each optional type (`Ty::Opt(i)` is a `T?` with `T` = `opt_tys[i]`).
+    opt_tys: RefCell<Vec<Ty>>,
     /// Set when a list is used: the list type and the runtime's list functions are declared.
     uses_list: bool,
     /// Closures emitted so far, for unique names.
@@ -519,6 +528,7 @@ impl<'a> Emitter<'a> {
             arena_scan: BTreeSet::new(),
             fn_tys: RefCell::new(Vec::new()),
             list_tys: RefCell::new(Vec::new()),
+            opt_tys: RefCell::new(Vec::new()),
             uses_list: false,
             lam_n: 0,
             ret_infer: false,
@@ -600,6 +610,7 @@ impl<'a> Emitter<'a> {
             out.push_str("%ubel.list = type { i64, i64, ptr }\n");
             out.push_str("declare ptr  @ubel_list_new()\n");
             out.push_str("declare void @ubel_list_grow(ptr, i64, i64)\n");
+            out.push_str("declare ptr  @ubel_list_snapshot(ptr, i64, i64)\n");
             out.push_str("declare void @ubel_trap_index(i64, i64)\n\n");
         }
         if !self.decls.is_empty() {
@@ -833,6 +844,13 @@ impl<'a> Emitter<'a> {
     fn need(&self, want: Ty, got: &Val, span: Span) -> R<()> {
         if got.ty == want {
             Ok(())
+        } else if matches!(got.ty, Ty::Opt(i) if self.opt_inner(i) == want) {
+            unsupported(
+                span,
+                "an optional value where a plain value is expected (unwrap it first with `or return`, `or break` or `or continue`)",
+            )
+        } else if got.ty == Ty::Null {
+            unsupported(span, "`null` where the type is not an optional")
         } else {
             Err(CompileError::at(
                 span,
@@ -841,21 +859,57 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// A value that goes INTO a string that is built (an interpolated string used as a value): numbers, bool and
+    /// strings. Lists and optionals can be printed directly (`println(xs)`) but are not converted to strings yet.
     fn need_printable(&self, got: &Val, span: Span) -> R<()> {
         self.need_value(got, span)?;
         match got.ty {
             Ty::Struct(_) => return unsupported(span, "printing a struct value (print its fields)"),
             Ty::Enum(_) => return unsupported(span, "printing an enum value (match on it and print the payload)"),
             Ty::Fn(_) => return unsupported(span, "printing a closure"),
-            Ty::List(_) => return unsupported(span, "printing a list (print its elements)"),
+            Ty::List(_) => {
+                return unsupported(span, "a list inside a string that is built (print it directly: `println(xs)`)")
+            }
+            Ty::Opt(_) => {
+                return unsupported(span, "an optional inside a string that is built (print it directly: `println(x)`)")
+            }
             _ => {}
         }
         Ok(())
     }
 
+    /// A value that is printed directly by `print` / `println` (also from inside an interpolated string they print):
+    /// numbers, bool, strings, `null`, and lists and optionals of those.
+    fn need_print_item(&self, got: &Val, span: Span) -> R<()> {
+        if got.ty == Ty::Null {
+            return Ok(());
+        }
+        self.need_value(got, span)?;
+        match self.unprintable(got.ty) {
+            Some(what) => unsupported(span, what),
+            None => Ok(()),
+        }
+    }
+
+    /// Why a value of this type cannot be printed yet; `None` when it can.
+    fn unprintable(&self, ty: Ty) -> Option<&'static str> {
+        match ty {
+            Ty::Struct(_) => Some("printing a struct value (print its fields)"),
+            Ty::Enum(_) => Some("printing an enum value (match on it and print the payload)"),
+            Ty::Fn(_) => Some("printing a closure"),
+            Ty::List(li) => self
+                .unprintable(self.list_elem(li))
+                .map(|_| "printing a list of structs, enums or closures (print its elements)"),
+            Ty::Opt(oi) => self.unprintable(self.opt_inner(oi)).map(|_| "printing an optional struct, enum or closure"),
+            _ => None,
+        }
+    }
+
     fn need_value(&self, got: &Val, span: Span) -> R<()> {
         if got.ty == Ty::Void {
             Err(CompileError::at(span, "this expression has no value"))
+        } else if got.ty == Ty::Null {
+            unsupported(span, "`null` where its optional type is not known (write the type where it is stored: `let x: int? = null`)")
         } else {
             Ok(())
         }
@@ -889,6 +943,13 @@ impl<'a> Emitter<'a> {
                 Ok(self.list_ty(elem))
             }
             TypeKind::List(None) => unsupported(t.span, "a list type without an element type"),
+            TypeKind::Optional(inner) => {
+                let it = self.ty_of_type(inner)?;
+                if !Self::opt_inner_ok(it) {
+                    return unsupported(t.span, "an optional of this type (numbers, bool, strings, structs, enums and lists so far)");
+                }
+                Ok(self.opt_ty(it))
+            }
             TypeKind::Function(ft) => {
                 if ft.is_fallible {
                     return unsupported(t.span, "fallible function types");
@@ -994,6 +1055,9 @@ impl<'a> Emitter<'a> {
                         if ty == Ty::Void {
                             return unsupported(f.span, "`void` fields");
                         }
+                        if matches!(ty, Ty::Opt(_)) {
+                            return unsupported(f.span, "an optional struct field (`T?`; optionals live in locals, parameters and results so far)");
+                        }
                         fields.push(FieldInfo { name: f.name.to_string(), ty });
                     }
                     StructMember::Method(m) => return unsupported(m.span, "struct methods"),
@@ -1021,6 +1085,9 @@ impl<'a> Emitter<'a> {
                             let ty = self.ty_of_type(t)?;
                             if ty == Ty::Void {
                                 return unsupported(t.span, "`void` payloads");
+                            }
+                            if matches!(ty, Ty::Opt(_)) {
+                                return unsupported(t.span, "an optional enum payload (`T?`; optionals live in locals, parameters and results so far)");
                             }
                             fs.push(ty);
                         }
@@ -1108,7 +1175,9 @@ impl<'a> Emitter<'a> {
                     | SemaType::Bool
                     | SemaType::Void
                     | SemaType::Str
+                    | SemaType::Null
                     | SemaType::Var(_) => return Ok(()),
+                    SemaType::Optional(inner) => id = *inner,
                     SemaType::Unknown if own_type_is_authoritative => return Ok(()),
                     SemaType::Function { is_fallible: false, .. } => return Ok(()),
                     SemaType::GcRef(inner) => id = *inner,
@@ -1319,6 +1388,12 @@ impl<'a> Emitter<'a> {
                     None => self.expr(value)?,
                 };
                 self.need_value(&v, value.span)?;
+                // An annotation is otherwise not checked here, but an optional must not slip into a plain place.
+                if let Some(w) = want {
+                    if v.ty != w && matches!(v.ty, Ty::Opt(_)) {
+                        self.need(w, &v, value.span)?;
+                    }
+                }
                 let slot = self.declare(name, v.ty);
                 if mutable {
                     self.mark_mutable(name);
@@ -1448,7 +1523,7 @@ impl<'a> Emitter<'a> {
         let (inclusive, lo_e, hi_e) = match iter.kind {
             ExprKind::BinOp { op: BinOp::Range, lhs, rhs } => (false, lhs, rhs),
             ExprKind::BinOp { op: BinOp::RangeIncl, lhs, rhs } => (true, lhs, rhs),
-            _ => return unsupported(iter.span, "`for` over anything but an integer range"),
+            _ => return self.for_list(span, name, iter, body),
         };
         let lo = self.expr(lo_e)?;
         let hi = self.expr(hi_e)?;
@@ -1660,7 +1735,8 @@ impl<'a> Emitter<'a> {
             ExprKind::Lit(Literal::Double(d)) => Ok(Val { v: float_const(d), ty: Ty::F64 }),
             // The lexer already rounded a `float` literal to f32; the interpreter holds that same f32.
             ExprKind::Lit(Literal::Float(f)) => Ok(Val { v: float_const(f as f64), ty: Ty::F32 }),
-            ExprKind::Lit(_) => unsupported(e.span, "this literal as a value (only int, float, bool and string literals so far)"),
+            ExprKind::Lit(Literal::Null) => Ok(Val { v: "null".to_string(), ty: Ty::Null }),
+            ExprKind::Lit(_) => unsupported(e.span, "this literal as a value (only int, float, bool, string and null literals so far)"),
             ExprKind::Ident(name) => {
                 let local = match self.lookup(name) {
                     Some(l) => l,
@@ -1807,6 +1883,7 @@ impl<'a> Emitter<'a> {
                 self.inst(&format!("{t} = load {}, ptr {addr}", ty.ir()));
                 Ok(Val { v: t, ty })
             }
+            ExprKind::OrElse { expr: inner, fallback } => self.or_else(e, inner, fallback),
             ref other => unsupported(e.span, expr_kind_name(other)),
         }
     }
@@ -1814,6 +1891,24 @@ impl<'a> Emitter<'a> {
     /// Address of `obj.field`: evaluates `obj` (a pointer) and indexes into the struct.
     fn field_addr(&mut self, obj: &Expr, field: &str, span: Span) -> R<(String, Ty)> {
         let o = self.expr(obj)?;
+        // A field through an optional struct stops the program when the value is null, like the interpreter
+        // ("cannot access field on null", exit status 1).
+        let o = match o.ty {
+            Ty::Opt(oi) if matches!(self.opt_inner(oi), Ty::Struct(_)) => {
+                let inner = self.opt_inner(oi);
+                let isnull = self.opt_is_null(&o.v);
+                let bad = self.label("nullfield");
+                let ok = self.label("fieldok");
+                self.term(&format!("br i1 {isnull}, label %{bad}, label %{ok}"));
+                self.begin(&bad);
+                let (msg, len) = self.string_const(&format!("cannot access field '{field}' on null"));
+                self.inst(&format!("call void @ubel_panic(ptr {msg}, i64 {len})"));
+                self.term("unreachable");
+                self.begin(&ok);
+                Val { v: o.v, ty: inner }
+            }
+            _ => o,
+        };
         let sid = match o.ty {
             Ty::Struct(i) => i,
             _ => return unsupported(span, "field access on anything but a struct"),
@@ -2455,6 +2550,21 @@ impl<'a> Emitter<'a> {
     /// Evaluates `e` for a place that wants a value of type `want`. Only `List.new()` looks at it: its element type
     /// comes from the annotation, parameter, field, element or result type it is stored in.
     fn expr_as(&mut self, e: &Expr, want: Ty) -> R<Val> {
+        // A place of optional type takes `null`, a value of the inner type (wrapped) or an optional as it is.
+        if let Ty::Opt(oi) = want {
+            let inner = self.opt_inner(oi);
+            let v = self.expr_as(e, inner)?;
+            if v.ty == want {
+                return Ok(v);
+            }
+            if v.ty == Ty::Null {
+                return Ok(Val { v: v.v, ty: want });
+            }
+            if v.ty == inner {
+                return self.opt_wrap(v, want, e.span);
+            }
+            return Ok(v); // the caller's `need` reports the mismatch
+        }
         if let (Ty::List(_), ExprKind::Call { args, .. }) = (want, e.kind) {
             if self.is_list_new_call(e) {
                 return self.list_new(e, args, Some(want));
@@ -2470,6 +2580,391 @@ impl<'a> Emitter<'a> {
         let ExprKind::Ident("List") = target.kind else { return false };
         self.lookup("List").is_none() && !self.struct_ids.contains_key("List") && !self.enum_ids.contains_key("List")
     }
+
+    // ── optionals and the rest of the list methods (M3b) ──────────
+
+    /// Intern an optional type: equal inner types give equal `Ty::Opt` indexes.
+    fn opt_ty(&self, inner: Ty) -> Ty {
+        let mut tys = self.opt_tys.borrow_mut();
+        if let Some(i) = tys.iter().position(|t| *t == inner) {
+            return Ty::Opt(i);
+        }
+        tys.push(inner);
+        Ty::Opt(tys.len() - 1)
+    }
+
+    fn opt_inner(&self, idx: usize) -> Ty {
+        self.opt_tys.borrow()[idx]
+    }
+
+    /// What a `T?` may wrap so far: numbers, bool, strings, structs, enums and lists (not closures, not `void`, not
+    /// another optional).
+    fn opt_inner_ok(inner: Ty) -> bool {
+        matches!(inner, Ty::I1 | Ty::I64 | Ty::Int(_) | Ty::F64 | Ty::F32 | Ty::Str | Ty::Struct(_) | Ty::Enum(_) | Ty::List(_))
+    }
+
+    /// Boxing a number or bool for an optional allocates in the GC heap: LOW must not, and MID code outside
+    /// `with arena` has no decided place to allocate (the same rule as for lists).
+    fn box_alloc_allowed(&self, span: Span, what: &str) -> R<()> {
+        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+        match self.cur_tier {
+            TierAnnotation::Low => unsupported(
+                span,
+                format!("{what} in `@tier(low)` (its value is boxed in the GC heap, which LOW must not use)"),
+            ),
+            TierAnnotation::Mid if !in_arena => unsupported(
+                span,
+                format!("{what} in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    /// `p == null` as an i1.
+    fn opt_is_null(&mut self, p: &str) -> String {
+        let t = self.fresh();
+        self.inst(&format!("{t} = icmp eq ptr {p}, null"));
+        t
+    }
+
+    /// The value inside an optional that is known not to be null.
+    fn opt_load(&mut self, v: &Val, inner: Ty) -> Val {
+        if inner.is_ptr() {
+            return Val { v: v.v.clone(), ty: inner };
+        }
+        let t = self.fresh();
+        self.inst(&format!("{t} = load {}, ptr {}", inner.ir(), v.v));
+        Val { v: t, ty: inner }
+    }
+
+    /// A value of the inner type as an optional: the pointer itself when the value is a pointer, otherwise a GC box.
+    fn opt_wrap(&mut self, v: Val, opt: Ty, span: Span) -> R<Val> {
+        if v.ty.is_ptr() {
+            return Ok(Val { v: v.v, ty: opt });
+        }
+        self.box_alloc_allowed(span, "an optional number or bool")?;
+        let size = format!("ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64)", v.ty.ir());
+        let p = self.alloc_obj(None, &size, "0", "an optional's value");
+        self.inst(&format!("store {} {}, ptr {p}", v.ty.ir(), v.v));
+        Ok(Val { v: p, ty: opt })
+    }
+
+    /// `==` and `!=` where an operand is an optional or `null`: against `null`, against another optional of the same
+    /// type (equal when both are null, or both hold equal values) and against a plain value of the inner type (equal
+    /// when it is not null and holds that value), like the interpreter's `Value` equality.
+    fn opt_binop(&mut self, op: BinOp, l: &Val, r: &Val, span: Span) -> R<Val> {
+        if !matches!(op, BinOp::Eq | BinOp::Ne) {
+            return unsupported(
+                span,
+                "this operator on an optional value (only `==` and `!=`; unwrap it first with `or return`, `or break` or `or continue`)",
+            );
+        }
+        let eq = match (l.ty, r.ty) {
+            (Ty::Null, Ty::Null) => "true".to_string(),
+            (Ty::Opt(_), Ty::Null) => self.opt_is_null(&l.v),
+            (Ty::Null, Ty::Opt(_)) => self.opt_is_null(&r.v),
+            (Ty::Opt(a), Ty::Opt(b)) => {
+                if a != b {
+                    return Err(CompileError::at(span, "the operands of this operator have different types"));
+                }
+                let inner = self.opt_inner(a);
+                let res = self.alloca(Ty::I1, "oeq");
+                let ln = self.opt_is_null(&l.v);
+                let rn = self.opt_is_null(&r.v);
+                let either = self.fresh();
+                self.inst(&format!("{either} = or i1 {ln}, {rn}"));
+                let both = self.fresh();
+                self.inst(&format!("{both} = and i1 {ln}, {rn}"));
+                let edge = self.label("oeq.edge");
+                let val = self.label("oeq.val");
+                let end = self.label("oeq.end");
+                self.term(&format!("br i1 {either}, label %{edge}, label %{val}"));
+                self.begin(&edge);
+                self.inst(&format!("store i1 {both}, ptr {res}"));
+                self.term(&format!("br label %{end}"));
+                self.begin(&val);
+                let lu = self.opt_load(l, inner);
+                let ru = self.opt_load(r, inner);
+                let c = self.binop(BinOp::Eq, &lu, &ru, span)?;
+                self.inst(&format!("store i1 {}, ptr {res}", c.v));
+                self.term(&format!("br label %{end}"));
+                self.begin(&end);
+                let t = self.fresh();
+                self.inst(&format!("{t} = load i1, ptr {res}"));
+                t
+            }
+            (Ty::Opt(a), _) => self.opt_eq_value(l, a, r, span)?,
+            (_, Ty::Opt(a)) => self.opt_eq_value(r, a, l, span)?,
+            _ => return unsupported(span, "`null` compared with a value that is not an optional"),
+        };
+        if op == BinOp::Eq {
+            return Ok(Val { v: eq, ty: Ty::I1 });
+        }
+        let t = self.fresh();
+        self.inst(&format!("{t} = xor i1 {eq}, true"));
+        Ok(Val { v: t, ty: Ty::I1 })
+    }
+
+    /// An optional against a plain value: false when the optional is null, otherwise the values compared.
+    fn opt_eq_value(&mut self, opt: &Val, oi: usize, other: &Val, span: Span) -> R<String> {
+        let inner = self.opt_inner(oi);
+        if other.ty != inner {
+            return Err(CompileError::at(span, "the operands of this operator have different types"));
+        }
+        let res = self.alloca(Ty::I1, "oev");
+        let isnull = self.opt_is_null(&opt.v);
+        let nl = self.label("oev.null");
+        let vl = self.label("oev.val");
+        let end = self.label("oev.end");
+        self.term(&format!("br i1 {isnull}, label %{nl}, label %{vl}"));
+        self.begin(&nl);
+        self.inst(&format!("store i1 false, ptr {res}"));
+        self.term(&format!("br label %{end}"));
+        self.begin(&vl);
+        let u = self.opt_load(opt, inner);
+        let c = self.binop(BinOp::Eq, &u, other, span)?;
+        self.inst(&format!("store i1 {}, ptr {res}", c.v));
+        self.term(&format!("br label %{end}"));
+        self.begin(&end);
+        let t = self.fresh();
+        self.inst(&format!("{t} = load i1, ptr {res}"));
+        Ok(t)
+    }
+
+    /// `x or return`, `x or return v`, `x or break`, `x or continue` on an optional: when it is null the fallback
+    /// leaves; otherwise the value is the optional's contents.
+    fn or_else(&mut self, e: &Expr, inner: &Expr, fallback: OrElseFallback) -> R<Val> {
+        let v = self.expr(inner)?;
+        let Ty::Opt(oi) = v.ty else {
+            return unsupported(e.span, "`or` with a fallback on anything but an optional value");
+        };
+        let payload = self.opt_inner(oi);
+        let isnull = self.opt_is_null(&v.v);
+        let fb = self.label("or.fallback");
+        let ok = self.label("or.ok");
+        self.term(&format!("br i1 {isnull}, label %{fb}, label %{ok}"));
+        self.begin(&fb);
+        match fallback {
+            OrElseFallback::Return(val) => {
+                let rv = match val {
+                    Some(x) => Some(if self.ret_infer { self.expr(x)? } else { self.expr_as(x, self.ret)? }),
+                    None => None,
+                };
+                self.do_return(rv, e.span)?;
+            }
+            OrElseFallback::Break => {
+                let ctx = self.loops.last().cloned().ok_or_else(|| CompileError::at(e.span, "`break` outside a loop"))?;
+                self.destroy_arenas_from(ctx.arena_depth);
+                self.term(&format!("br label %{}", ctx.brk));
+            }
+            OrElseFallback::Continue => {
+                let ctx = self.loops.last().cloned().ok_or_else(|| CompileError::at(e.span, "`continue` outside a loop"))?;
+                self.destroy_arenas_from(ctx.arena_depth);
+                self.term(&format!("br label %{}", ctx.cont));
+            }
+            OrElseFallback::Expr(_) => return unsupported(e.span, "`or` with a default expression"),
+        }
+        self.begin(&ok);
+        Ok(self.opt_load(&v, payload))
+    }
+
+    /// `xs.pop()`, `xs.first()` and `xs.last()`: the element as an optional, null for an empty list (sema types
+    /// them `T?`). `pop` also removes the element, and clears the vacated slot when it holds a pointer so the
+    /// collector does not keep the object alive.
+    fn list_take(&mut self, e: &Expr, callee: &Expr, list: Val, elem: Ty, field: &str, args: &[Arg]) -> R<Val> {
+        if !args.is_empty() {
+            return Err(CompileError::at(e.span, "wrong number of arguments"));
+        }
+        if !Self::opt_inner_ok(elem) {
+            return unsupported(callee.span, format!("`{field}` on a list of this element type"));
+        }
+        if !elem.is_ptr() {
+            self.box_alloc_allowed(callee.span, &format!("`{field}` on a list of numbers or bools (the optional result is a GC box)"))?;
+        }
+        let opt = self.opt_ty(elem);
+        self.uses_list = true;
+        let lenp = self.fresh();
+        self.inst(&format!("{lenp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 0", list.v));
+        let len = self.fresh();
+        self.inst(&format!("{len} = load i64, ptr {lenp}"));
+        let res = self.alloca(opt, "take");
+        let empty = self.fresh();
+        self.inst(&format!("{empty} = icmp eq i64 {len}, 0"));
+        let none_l = self.label("take.none");
+        let some_l = self.label("take.some");
+        let end_l = self.label("take.end");
+        self.term(&format!("br i1 {empty}, label %{none_l}, label %{some_l}"));
+        self.begin(&none_l);
+        self.inst(&format!("store ptr null, ptr {res}"));
+        self.term(&format!("br label %{end_l}"));
+        self.begin(&some_l);
+        let idx = if field == "first" {
+            "0".to_string()
+        } else {
+            let last = self.fresh();
+            self.inst(&format!("{last} = sub i64 {len}, 1"));
+            last
+        };
+        let datap = self.fresh();
+        self.inst(&format!("{datap} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 2", list.v));
+        let data = self.fresh();
+        self.inst(&format!("{data} = load ptr, ptr {datap}"));
+        let addr = self.fresh();
+        self.inst(&format!("{addr} = getelementptr {}, ptr {data}, i64 {idx}", elem.ir()));
+        let x = self.fresh();
+        self.inst(&format!("{x} = load {}, ptr {addr}", elem.ir()));
+        if field == "pop" {
+            self.inst(&format!("store i64 {idx}, ptr {lenp}"));
+            if elem.is_ptr() {
+                self.inst(&format!("store ptr null, ptr {addr}"));
+            }
+        }
+        let ov = self.opt_wrap(Val { v: x, ty: elem }, opt, callee.span)?;
+        self.inst(&format!("store ptr {}, ptr {res}", ov.v));
+        self.term(&format!("br label %{end_l}"));
+        self.begin(&end_l);
+        let t = self.fresh();
+        self.inst(&format!("{t} = load ptr, ptr {res}"));
+        Ok(Val { v: t, ty: opt })
+    }
+
+    /// `xs.contains(v)` for numbers, bool and strings: a scan with the same `==` the language uses on them. Structs,
+    /// enums and lists are refused (the interpreter's equality for those depends on `@derive` and user operators).
+    fn list_contains(&mut self, e: &Expr, list: Val, elem: Ty, args: &[Arg]) -> R<Val> {
+        if args.len() != 1 {
+            return Err(CompileError::at(e.span, "wrong number of arguments"));
+        }
+        let ae = match args[0].kind {
+            ArgKind::Positional(x) => x,
+            ArgKind::Named { .. } => return unsupported(args[0].span, "named arguments"),
+        };
+        if elem.is_ptr() && elem != Ty::Str {
+            return unsupported(e.span, "`contains` on a list of structs, enums or lists (their equality is not lowered yet)");
+        }
+        let v = self.expr_as(ae, elem)?;
+        self.need_value(&v, ae.span)?;
+        self.need(elem, &v, ae.span)?;
+        self.uses_list = true;
+        let lenp = self.fresh();
+        self.inst(&format!("{lenp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 0", list.v));
+        let len = self.fresh();
+        self.inst(&format!("{len} = load i64, ptr {lenp}"));
+        let datap = self.fresh();
+        self.inst(&format!("{datap} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 2", list.v));
+        let data = self.fresh();
+        self.inst(&format!("{data} = load ptr, ptr {datap}"));
+        let res = self.alloca(Ty::I1, "has");
+        self.inst(&format!("store i1 false, ptr {res}"));
+        let idx = self.alloca(Ty::I64, "has.i");
+        self.inst(&format!("store i64 0, ptr {idx}"));
+        let cond = self.label("has.cond");
+        let body = self.label("has.body");
+        let found = self.label("has.found");
+        let next = self.label("has.next");
+        let done = self.label("has.done");
+        self.term(&format!("br label %{cond}"));
+        self.begin(&cond);
+        let i = self.fresh();
+        self.inst(&format!("{i} = load i64, ptr {idx}"));
+        let c = self.fresh();
+        self.inst(&format!("{c} = icmp slt i64 {i}, {len}"));
+        self.term(&format!("br i1 {c}, label %{body}, label %{done}"));
+        self.begin(&body);
+        let addr = self.fresh();
+        self.inst(&format!("{addr} = getelementptr {}, ptr {data}, i64 {i}", elem.ir()));
+        let x = self.fresh();
+        self.inst(&format!("{x} = load {}, ptr {addr}", elem.ir()));
+        let same = self.binop(BinOp::Eq, &Val { v: x, ty: elem }, &v, e.span)?;
+        self.term(&format!("br i1 {}, label %{found}, label %{next}", same.v));
+        self.begin(&found);
+        self.inst(&format!("store i1 true, ptr {res}"));
+        self.term(&format!("br label %{done}"));
+        self.begin(&next);
+        let i2 = self.fresh();
+        self.inst(&format!("{i2} = add i64 {i}, 1"));
+        self.inst(&format!("store i64 {i2}, ptr {idx}"));
+        self.term(&format!("br label %{cond}"));
+        self.begin(&done);
+        let t = self.fresh();
+        self.inst(&format!("{t} = load i1, ptr {res}"));
+        Ok(Val { v: t, ty: Ty::I1 })
+    }
+
+    /// `for x in xs`: iterates a COPY of the elements taken when the loop starts, like the interpreter (a push or
+    /// an element write in the body is not seen by the loop). The copy is a GC array held in a stack slot, which
+    /// is cleared when the loop ends. Allocating it follows the list rule: not in LOW, not in MID outside an arena.
+    fn for_list(&mut self, span: Span, name: &str, iter: &Expr, body: &Block) -> R<()> {
+        let list = self.expr(iter)?;
+        let Ty::List(li) = list.ty else {
+            return unsupported(iter.span, "`for` over anything but an integer range or a list");
+        };
+        let elem = self.list_elem(li);
+        self.list_alloc_allowed(span, "`for` over a list (it iterates a GC copy of the elements)")?;
+        self.uses_list = true;
+        let size = format!("ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64)", elem.ir());
+        let mask = if elem.is_ptr() { 1 } else { 0 };
+        let lenp = self.fresh();
+        self.inst(&format!("{lenp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 0", list.v));
+        let len = self.fresh();
+        self.inst(&format!("{len} = load i64, ptr {lenp}"));
+        let snap = self.fresh();
+        self.inst(&format!("{snap} = call ptr @ubel_list_snapshot(ptr {}, i64 {size}, i64 {mask})", list.v));
+        let snap_slot = self.alloca(Ty::List(li), "for.snap");
+        self.inst(&format!("store ptr {snap}, ptr {snap_slot}"));
+        let counter = self.alloca(Ty::I64, "for.i");
+        let limit = self.alloca(Ty::I64, "for.n");
+        self.inst(&format!("store i64 0, ptr {counter}"));
+        self.inst(&format!("store i64 {len}, ptr {limit}"));
+
+        let cond_l = self.label("for.cond");
+        let body_l = self.label("for.body");
+        let inc_l = self.label("for.inc");
+        let end_l = self.label("for.end");
+        self.term(&format!("br label %{cond_l}"));
+        self.begin(&cond_l);
+        let i = self.fresh();
+        self.inst(&format!("{i} = load i64, ptr {counter}"));
+        let n = self.fresh();
+        self.inst(&format!("{n} = load i64, ptr {limit}"));
+        let c = self.fresh();
+        self.inst(&format!("{c} = icmp slt i64 {i}, {n}"));
+        self.term(&format!("br i1 {c}, label %{body_l}, label %{end_l}"));
+
+        self.begin(&body_l);
+        self.loops.push(LoopCtx { cont: inc_l.clone(), brk: end_l.clone(), arena_depth: self.arenas.len() });
+        self.scopes.push(HashMap::new());
+        let slot = self.declare(name, elem);
+        self.mark_mutable(name);
+        let sp = self.fresh();
+        self.inst(&format!("{sp} = load ptr, ptr {snap_slot}"));
+        let cur = self.fresh();
+        self.inst(&format!("{cur} = load i64, ptr {counter}"));
+        let addr = self.fresh();
+        self.inst(&format!("{addr} = getelementptr {}, ptr {sp}, i64 {cur}", elem.ir()));
+        let x = self.fresh();
+        self.inst(&format!("{x} = load {}, ptr {addr}", elem.ir()));
+        self.inst(&format!("store {} {x}, ptr {slot}", elem.ir()));
+        for st in body.stmts {
+            self.stmt(st)?;
+        }
+        self.scopes.pop();
+        self.loops.pop();
+        if !self.terminated {
+            self.term(&format!("br label %{inc_l}"));
+        }
+
+        self.begin(&inc_l);
+        let cur2 = self.fresh();
+        self.inst(&format!("{cur2} = load i64, ptr {counter}"));
+        let next = self.fresh();
+        self.inst(&format!("{next} = add i64 {cur2}, 1"));
+        self.inst(&format!("store i64 {next}, ptr {counter}"));
+        self.term(&format!("br label %{cond_l}"));
+        self.begin(&end_l);
+        self.inst(&format!("store ptr null, ptr {snap_slot}"));
+        Ok(())
+    }
+
 
     /// Intern a list type: equal element types give equal `Ty::List` indexes (so `need` can compare them).
     fn list_ty(&self, elem: Ty) -> Ty {
@@ -2556,7 +3051,12 @@ impl<'a> Emitter<'a> {
                 Ok(Val { v: z, ty: Ty::I1 })
             }
             "push" => self.list_push(e, callee, recv, elem, args),
-            _ => unsupported(callee.span, format!("the method `{field}` on a list (only `len`, `is_empty` and `push` so far)")),
+            "pop" | "first" | "last" => self.list_take(e, callee, recv, elem, field, args),
+            "contains" => self.list_contains(e, recv, elem, args),
+            _ => unsupported(
+                callee.span,
+                format!("the method `{field}` on a list (only `len`, `is_empty`, `push`, `pop`, `first`, `last` and `contains` so far)"),
+            ),
         }
     }
 
@@ -2772,6 +3272,9 @@ impl<'a> Emitter<'a> {
     }
 
     fn binop(&mut self, op: BinOp, l: &Val, r: &Val, span: Span) -> R<Val> {
+        if matches!(l.ty, Ty::Opt(_) | Ty::Null) || matches!(r.ty, Ty::Opt(_) | Ty::Null) {
+            return self.opt_binop(op, l, r, span);
+        }
         if l.ty != r.ty || l.ty == Ty::Void {
             return Err(CompileError::at(span, "the operands of this operator have different types"));
         }
@@ -3175,6 +3678,13 @@ impl<'a> Emitter<'a> {
                     }
                     return Some(self.list_ty(e));
                 }
+                SemaType::Optional(inner) => {
+                    let it = self.ty_of_sema(*inner)?;
+                    if !Self::opt_inner_ok(it) {
+                        return None;
+                    }
+                    return Some(self.opt_ty(it));
+                }
                 SemaType::Function { params, return_type, is_fallible: false, .. } => {
                     let ps: Option<Vec<Ty>> = params.iter().map(|p| self.ty_of_sema(*p)).collect();
                     let ret = self.ty_of_sema(*return_type)?;
@@ -3236,6 +3746,9 @@ impl<'a> Emitter<'a> {
                 span,
                 format!("a closure that captures `{name}`, which can change (declared `mut`, a `for` variable or a `:=` binding): a capture is a copy of the value taken when the closure is created"),
             );
+        }
+        if matches!(found.ty, Ty::Opt(_)) {
+            return unsupported(span, format!("a closure that captures `{name}`, an optional (`T?`; optionals live in locals, parameters and results so far)"));
         }
         let idx = self.captures.last().map_or(0, |c| c.len());
         let slot = self.alloca(found.ty, name);
@@ -3774,33 +4287,104 @@ impl<'a> Emitter<'a> {
         for item in items {
             match item {
                 PItem::Text(t) => self.print_str(&t),
-                PItem::Val(v) => match v.ty {
-                    Ty::I64 => self.inst(&format!("call void @ubel_print_i64(i64 {})", v.v)),
-                    Ty::F64 => self.inst(&format!("call void @ubel_print_f64(double {})", v.v)),
-                    Ty::F32 => self.inst(&format!("call void @ubel_print_f32(float {})", v.v)),
-                    Ty::Int(IntTy::U64) => self.inst(&format!("call void @ubel_print_u64(i64 {})", v.v)),
-                    Ty::Int(_) => {
-                        let w = self.widen_i64(&v);
-                        self.inst(&format!("call void @ubel_print_i64(i64 {w})"));
-                    }
-                    Ty::I1 => {
-                        let z = self.fresh();
-                        self.inst(&format!("{z} = zext i1 {} to i32", v.v));
-                        self.inst(&format!("call void @ubel_print_bool(i32 {z})"));
-                    }
-                    Ty::Str => {
-                        let len = self.fresh();
-                        self.inst(&format!("{len} = load i64, ptr {}", v.v));
-                        let bytes = self.fresh();
-                        self.inst(&format!("{bytes} = getelementptr inbounds i8, ptr {}, i64 8", v.v));
-                        self.inst(&format!("call void @ubel_print_str(ptr {bytes}, i64 {len})"));
-                    }
-                    Ty::Void => unreachable!("void values are rejected when collected"),
-                    Ty::Struct(_) | Ty::Enum(_) | Ty::Fn(_) | Ty::List(_) => unreachable!("struct, enum, closure and list values are rejected when collected"),
-                },
+                PItem::Val(v) => self.print_val(&v)?,
             }
         }
         Ok(Val::void())
+    }
+
+    /// Print one evaluated value. Numbers, bool and strings as before; `null` as `null`; an optional as `null` or its
+    /// value; a list as `[a, b, c]` with its elements printed the same way (strings are not quoted), like the
+    /// interpreter's `Display`. Nothing here allocates, so it is allowed in every tier.
+    fn print_val(&mut self, v: &Val) -> R<()> {
+        match v.ty {
+            Ty::I64 => self.inst(&format!("call void @ubel_print_i64(i64 {})", v.v)),
+            Ty::F64 => self.inst(&format!("call void @ubel_print_f64(double {})", v.v)),
+            Ty::F32 => self.inst(&format!("call void @ubel_print_f32(float {})", v.v)),
+            Ty::Int(IntTy::U64) => self.inst(&format!("call void @ubel_print_u64(i64 {})", v.v)),
+            Ty::Int(_) => {
+                let w = self.widen_i64(v);
+                self.inst(&format!("call void @ubel_print_i64(i64 {w})"));
+            }
+            Ty::I1 => {
+                let z = self.fresh();
+                self.inst(&format!("{z} = zext i1 {} to i32", v.v));
+                self.inst(&format!("call void @ubel_print_bool(i32 {z})"));
+            }
+            Ty::Str => {
+                let len = self.fresh();
+                self.inst(&format!("{len} = load i64, ptr {}", v.v));
+                let bytes = self.fresh();
+                self.inst(&format!("{bytes} = getelementptr inbounds i8, ptr {}, i64 8", v.v));
+                self.inst(&format!("call void @ubel_print_str(ptr {bytes}, i64 {len})"));
+            }
+            Ty::Null => self.print_str("null"),
+            Ty::Opt(oi) => {
+                let inner = self.opt_inner(oi);
+                let isnull = self.opt_is_null(&v.v);
+                let nl = self.label("pnull");
+                let vl = self.label("pval");
+                let end = self.label("pend");
+                self.term(&format!("br i1 {isnull}, label %{nl}, label %{vl}"));
+                self.begin(&nl);
+                self.print_str("null");
+                self.term(&format!("br label %{end}"));
+                self.begin(&vl);
+                let u = self.opt_load(v, inner);
+                self.print_val(&u)?;
+                self.term(&format!("br label %{end}"));
+                self.begin(&end);
+            }
+            Ty::List(li) => {
+                let elem = self.list_elem(li);
+                self.uses_list = true;
+                let lenp = self.fresh();
+                self.inst(&format!("{lenp} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 0", v.v));
+                let len = self.fresh();
+                self.inst(&format!("{len} = load i64, ptr {lenp}"));
+                let datap = self.fresh();
+                self.inst(&format!("{datap} = getelementptr inbounds %ubel.list, ptr {}, i32 0, i32 2", v.v));
+                let data = self.fresh();
+                self.inst(&format!("{data} = load ptr, ptr {datap}"));
+                let idx = self.alloca(Ty::I64, "pl.i");
+                self.inst(&format!("store i64 0, ptr {idx}"));
+                self.print_str("[");
+                let cond = self.label("pl.cond");
+                let body = self.label("pl.body");
+                let sep = self.label("pl.sep");
+                let el = self.label("pl.el");
+                let end = self.label("pl.end");
+                self.term(&format!("br label %{cond}"));
+                self.begin(&cond);
+                let i = self.fresh();
+                self.inst(&format!("{i} = load i64, ptr {idx}"));
+                let c = self.fresh();
+                self.inst(&format!("{c} = icmp slt i64 {i}, {len}"));
+                self.term(&format!("br i1 {c}, label %{body}, label %{end}"));
+                self.begin(&body);
+                let first = self.fresh();
+                self.inst(&format!("{first} = icmp eq i64 {i}, 0"));
+                self.term(&format!("br i1 {first}, label %{el}, label %{sep}"));
+                self.begin(&sep);
+                self.print_str(", ");
+                self.term(&format!("br label %{el}"));
+                self.begin(&el);
+                let addr = self.fresh();
+                self.inst(&format!("{addr} = getelementptr {}, ptr {data}, i64 {i}", elem.ir()));
+                let x = self.fresh();
+                self.inst(&format!("{x} = load {}, ptr {addr}", elem.ir()));
+                self.print_val(&Val { v: x, ty: elem })?;
+                let next = self.fresh();
+                self.inst(&format!("{next} = add i64 {i}, 1"));
+                self.inst(&format!("store i64 {next}, ptr {idx}"));
+                self.term(&format!("br label %{cond}"));
+                self.begin(&end);
+                self.print_str("]");
+            }
+            Ty::Void => unreachable!("void values are rejected when collected"),
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Fn(_) => unreachable!("struct, enum and closure values are rejected when collected"),
+        }
+        Ok(())
     }
 
     fn print_items(&mut self, e: &Expr, out: &mut Vec<PItem>) -> R<()> {
@@ -3816,7 +4400,7 @@ impl<'a> Emitter<'a> {
                         InterpolationPart::Text(t) => out.push(PItem::Text(t.to_string())),
                         InterpolationPart::Expr { expr, spec: None } => {
                             let v = self.expr(expr)?;
-                            self.need_printable(&v, expr.span)?;
+                            self.need_print_item(&v, expr.span)?;
                             out.push(PItem::Val(v));
                         }
                         InterpolationPart::Expr { expr, spec: Some(_) } => {
@@ -3828,7 +4412,7 @@ impl<'a> Emitter<'a> {
             }
             _ => {
                 let v = self.expr(e)?;
-                self.need_printable(&v, e.span)?;
+                self.need_print_item(&v, e.span)?;
                 out.push(PItem::Val(v));
                 Ok(())
             }

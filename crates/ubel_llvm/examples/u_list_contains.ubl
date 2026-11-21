@@ -1,7 +1,13 @@
-// Not supported yet: list methods other than `len`, `is_empty` and `push` (M3b has `contains`, `first`, `last` and more).
-// expect-refusal: the method `contains` on a list
+// Not supported yet: `contains` on a list of structs. The interpreter's equality for structs depends on `@derive`
+// and user-defined operators, which the emitter does not lower.
+// expect-refusal: `contains` on a list of structs, enums or lists
+struct P {
+    id: int
+}
+
 fn main() void {
-    let xs: List<int> = List.new()
-    xs.push(1)
-    println(xs.contains(1))
+    let xs: List<P> = List.new()
+    let p = P { id = 1 }
+    xs.push(p)
+    println(xs.contains(p))
 }

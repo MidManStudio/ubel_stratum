@@ -69,6 +69,7 @@ typedef struct {
 } ubel_list;
 ubel_list *ubel_list_new(void);
 void ubel_list_grow(ubel_list *l, uint64_t elem_size, uint64_t elem_ptrmask);
+void *ubel_list_snapshot(ubel_list *l, uint64_t elem_size, uint64_t elem_ptrmask);
 void ubel_trap_index(int64_t index, int64_t len);
 void ubel_trap_no_return(void);
 

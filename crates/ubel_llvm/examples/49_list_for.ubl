@@ -1,0 +1,117 @@
+// `for x in xs` over a list (M3b). The interpreter iterates a COPY of the elements taken when the loop starts, so
+// a push or an element write in the body is not seen by the loop; this checks that, with break and continue,
+// nesting, an empty list, and numbers, bools, strings, structs and nested lists as elements.
+
+struct P {
+    id:   int
+    name: string
+}
+
+fn sum(xs: List<int>) int {
+    let mut t = 0
+    for x in xs {
+        t += x
+    }
+    return t
+}
+
+fn main() void {
+    let xs: List<int> = List.new()
+    for i in 1 .. 6 {
+        xs.push(i * 10)
+    }
+    println(sum(xs))
+
+    // the loop does not see what the body pushes or writes
+    let ys: List<int> = List.new()
+    ys.push(1)
+    ys.push(2)
+    ys.push(3)
+    for y in ys {
+        println(y)
+        if y == 1 {
+            ys.push(10)
+            ys[1] = 99
+        }
+    }
+    println(ys.len(), ys[1], ys[3])
+
+    // break and continue
+    let mut seen = 0
+    for x in xs {
+        if x == 20 {
+            continue
+        }
+        if x == 40 {
+            break
+        }
+        seen += x
+    }
+    println(seen)
+
+    // empty list
+    let none: List<int> = List.new()
+    let mut n = 0
+    for x in none {
+        n += 1
+    }
+    println(n)
+
+    // strings, bools, doubles
+    let ss: List<string> = List.new()
+    ss.push("a")
+    ss.push("bc")
+    ss.push("")
+    let mut joined = ""
+    for s in ss {
+        joined = joined + s + "-"
+    }
+    println(joined, joined.len())
+    let bs: List<bool> = List.new()
+    bs.push(true)
+    bs.push(false)
+    bs.push(true)
+    let mut trues = 0
+    for b in bs {
+        if b {
+            trues += 1
+        }
+    }
+    println(trues)
+    let ds: List<double> = List.new()
+    ds.push(1.5)
+    ds.push(2.25)
+    let mut dsum = 0.0
+    for d in ds {
+        dsum += d
+    }
+    println(dsum)
+
+    // structs share their objects with the copy
+    let ps: List<P> = List.new()
+    ps.push(P { id = 1, name = "one" })
+    ps.push(P { id = 2, name = "two" })
+    let mut ids = 0
+    for p in ps {
+        ids += p.id
+        println(p.name)
+    }
+    println(ids)
+
+    // nested loops over lists, lists of lists
+    let grid: List<List<int>> = List.new()
+    for r in 0 .. 3 {
+        let row: List<int> = List.new()
+        for c in 0 .. 3 {
+            row.push(r * 3 + c)
+        }
+        grid.push(row)
+    }
+    let mut total = 0
+    for row in grid {
+        for v in row {
+            total += v
+        }
+    }
+    println(total)
+}

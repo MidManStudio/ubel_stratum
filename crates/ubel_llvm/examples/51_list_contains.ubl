@@ -1,0 +1,46 @@
+// `xs.contains(v)` (M3b) for numbers, bools and strings, found and not found, first and last position, on an
+// empty list, and a NaN that never equals itself.
+
+fn main() void {
+    let xs: List<int> = List.new()
+    println(xs.contains(1))
+    xs.push(5)
+    xs.push(-3)
+    xs.push(9)
+    println(xs.contains(5), xs.contains(-3), xs.contains(9), xs.contains(4), xs.contains(0))
+
+    let ss: List<string> = List.new()
+    ss.push("alpha")
+    ss.push("")
+    ss.push("beta")
+    println(ss.contains("alpha"), ss.contains(""), ss.contains("beta"), ss.contains("gamma"), ss.contains("Alpha"))
+    let key = "be" + "ta"
+    println(ss.contains(key))
+
+    let bs: List<bool> = List.new()
+    bs.push(true)
+    println(bs.contains(true), bs.contains(false))
+    bs.push(false)
+    println(bs.contains(false))
+
+    let ds: List<double> = List.new()
+    ds.push(1.5)
+    ds.push(0.0)
+    println(ds.contains(1.5), ds.contains(0.0), ds.contains(-0.0), ds.contains(2.5))
+    let nan = sqrt(-1.0)
+    ds.push(nan)
+    println(ds.contains(nan), ds.contains(1.5))
+
+    let us: List<u8> = List.new()
+    us.push(200u8)
+    println(us.contains(200u8), us.contains(100u8))
+
+    // the answer drives control flow
+    let mut hits = 0
+    for i in 0 .. 12 {
+        if xs.contains(i) {
+            hits += 1
+        }
+    }
+    println(hits)
+}

@@ -1,7 +1,11 @@
-// Not supported yet: printing a list. Print its elements.
-// expect-refusal: printing a list
+// Not supported yet: printing a list of structs. Print the fields of its elements.
+// expect-refusal: printing a list of structs, enums or closures
+struct P {
+    id: int
+}
+
 fn main() void {
-    let xs: List<int> = List.new()
-    xs.push(1)
+    let xs: List<P> = List.new()
+    xs.push(P { id = 1 })
     println(xs)
 }

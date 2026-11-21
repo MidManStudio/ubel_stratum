@@ -1,0 +1,150 @@
+// Optionals from lists (M3b): `pop`, `first` and `last` give `T?` (null for an empty list). Covers `== null`,
+// `!= null`, `== value`, optional against optional, printing, optional parameters and results, wrapping a plain
+// value, `or return` / `or break` / `or continue`, and a field read through an optional struct.
+
+struct P {
+    id:   int
+    name: string
+}
+
+fn first_of(xs: List<int>) int? {
+    return xs.first()
+}
+
+fn find_p(ps: List<P>, id: int) P? {
+    for p in ps {
+        if p.id == id {
+            return p
+        }
+    }
+    return null
+}
+
+fn name_len(ps: List<P>) int {
+    let p = ps.first() or return 0
+    return p.name.len()
+}
+
+fn show(label: string, x: int?) void {
+    println(label, x, x == null)
+}
+
+fn two(xs: List<int>) int {
+    let a = xs.pop() or return -1
+    let b = xs.pop() or return -2
+    return a * 100 + b
+}
+
+fn main() void {
+    let xs: List<int> = List.new()
+    println(xs.first(), xs.last(), xs.pop())
+    println(first_of(xs) == null, first_of(xs) != null)
+    xs.push(7)
+    xs.push(8)
+    xs.push(9)
+    println(xs.first(), xs.last(), xs.len())
+    println(xs.pop(), xs.pop(), xs.len())
+    println(first_of(xs), xs.first() == 7, xs.first() == 8, xs.first() != 7, xs.last() == null)
+
+    // optional locals
+    let mut n: int? = null
+    println(n == null, n != null, n)
+    n = 5
+    println(n == 5, n == 6, n != 5, n != null, n)
+    n = xs.pop()
+    println(n, xs.len(), xs.pop())
+    n = null
+    println(n)
+
+    // optional against optional
+    let a: int? = 3
+    let b: int? = 3
+    let c: int? = null
+    let d: int? = null
+    println(a == b, a != b, a == c, c == a, c == d, c != d, a == xs.first())
+
+    // optional parameters
+    show("null", null)
+    show("four", 4)
+    xs.push(21)
+    show("first", xs.first())
+    let none: List<int> = List.new()
+    show("empty", none.first())
+
+    // or return / or break / or continue
+    let ys: List<int> = List.new()
+    println(two(ys))
+    ys.push(1)
+    println(two(ys))
+    ys.push(2)
+    ys.push(3)
+    println(two(ys))
+    let zs: List<int> = List.new()
+    for i in 0 .. 5 {
+        zs.push(i * i)
+    }
+    let mut got = 0
+    loop {
+        let v = zs.pop() or break
+        got += v
+    }
+    println(got, zs.len())
+    let ws: List<int> = List.new()
+    ws.push(1)
+    let mut passes = 0
+    let mut visits = 0
+    for i in 0 .. 3 {
+        visits += 1
+        let v = ws.pop() or continue
+        passes += v + i
+        visits += 10
+    }
+    println(passes, visits, ws.len())
+
+    // strings, bools, doubles, sized integers
+    let ss: List<string> = List.new()
+    println(ss.first(), ss.first() == null, ss.first() == "x")
+    ss.push("x")
+    ss.push("")
+    println(ss.first(), ss.last(), ss.first() == "x", ss.last() == "", ss.last() == null, ss.last() != "x")
+    println(ss.pop(), ss.pop(), ss.pop())
+    let bs: List<bool> = List.new()
+    bs.push(false)
+    println(bs.first(), bs.first() == false, bs.first() == true, bs.first() == null)
+    let ds: List<double> = List.new()
+    ds.push(0.5)
+    println(ds.last(), ds.last() == 0.5, ds.pop(), ds.pop())
+    let is: List<i32> = List.new()
+    is.push(-5i32)
+    println(is.first(), is.first() == -5i32, is.first() != null)
+    let us: List<u64> = List.new()
+    us.push(18446744073709551615u64)
+    println(us.last(), us.pop(), us.pop())
+
+    // lists inside optionals
+    let grid: List<List<int>> = List.new()
+    println(grid.first(), grid.pop())
+    let row: List<int> = List.new()
+    row.push(1)
+    row.push(2)
+    grid.push(row)
+    println(grid.first(), grid.last() == null)
+    println(grid.pop(), grid.len())
+
+    // structs: a field through an optional, a null check first
+    let ps: List<P> = List.new()
+    ps.push(P { id = 1, name = "one" })
+    ps.push(P { id = 2, name = "two" })
+    println(find_p(ps, 2).name, find_p(ps, 1).id)
+    let q = find_p(ps, 3)
+    if q == null {
+        println("no such id")
+    }
+    let r = find_p(ps, 1)
+    if r != null {
+        println(r.name)
+    }
+    println(ps.last().name, ps.pop().id, ps.len(), ps.first() == null)
+    println(name_len(ps))
+    println("done")
+}

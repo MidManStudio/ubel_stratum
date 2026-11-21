@@ -1,0 +1,9 @@
+// Not supported yet: an optional where a plain value is expected (sema accepts `T?` into a `T` place; the
+// interpreter then holds null in an `int` variable). Unwrap with `or return`, `or break` or `or continue`.
+// expect-refusal: an optional value where a plain value is expected
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(4)
+    let v: int = xs.first()
+    println(v)
+}

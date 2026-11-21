@@ -457,6 +457,15 @@ void ubel_list_grow(ubel_list *l, uint64_t elem_size, uint64_t elem_ptrmask) {
     l->cap = ncap;
 }
 
+/* A copy of the first `len` elements, for `for x in xs`: the interpreter iterates a snapshot, so a push or an
+ * element write in the loop body must not be seen by the loop. NULL for an empty list. */
+void *ubel_list_snapshot(ubel_list *l, uint64_t elem_size, uint64_t elem_ptrmask) {
+    if (l->len <= 0) return NULL;
+    void *data = ubel_gc_alloc_array(elem_size, (uint64_t)l->len, elem_ptrmask);
+    memcpy(data, l->data, (size_t)l->len * (size_t)elem_size);
+    return data;
+}
+
 void ubel_trap_index(int64_t index, int64_t len) {
     char buf[96];
     int n = snprintf(buf, sizeof buf, "list index %lld out of bounds (len %lld)", (long long)index, (long long)len);

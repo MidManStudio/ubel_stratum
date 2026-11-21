@@ -1,0 +1,82 @@
+// Optionals and loop copies under allocation pressure (M3b). Boxed optional numbers are allocated by pop/first/last,
+// and `for x in xs` keeps its own copy of the elements: here the copy is the only thing keeping popped nodes alive
+// while the body allocates. Run with GC_STRESS in the suite as well. The interpreter is the oracle.
+
+struct Node {
+    id:    int
+    label: string
+}
+
+fn nodes(n: int) int {
+    let ps: List<Node> = List.new()
+    for i in 0 .. n {
+        ps.push(Node { id = i, label = $"node{i}" })
+    }
+    let mut total = 0
+    for p in ps {
+        let gone = ps.pop()
+        let tmp: List<string> = List.new()
+        for k in 0 .. 5 {
+            tmp.push($"t{k}-{p.id}")
+        }
+        total += p.label.len() + tmp.len() + p.id
+        if gone == null {
+            total += 1000
+        }
+    }
+    return total + ps.len()
+}
+
+fn boxes(n: int) int {
+    let xs: List<int> = List.new()
+    let ds: List<double> = List.new()
+    let mut total = 0
+    for i in 0 .. n {
+        xs.push(i)
+        ds.push(i as double * 0.5)
+        let a = xs.last()
+        let b = ds.first()
+        if a != null and b == 0.0 {
+            total += 1
+        }
+        if i % 3 == 2 {
+            let v = xs.pop() or continue
+            let w = ds.pop() or continue
+            total += v + (w as int)
+        }
+    }
+    return total + xs.len() + ds.len()
+}
+
+fn words(n: int) string {
+    let ws: List<string> = List.new()
+    for i in 0 .. n {
+        ws.push($"w{i}")
+    }
+    let mut out = ""
+    loop {
+        let w = ws.pop() or break
+        out = w
+    }
+    return out + $"/{ws.first() == null}"
+}
+
+fn main() void {
+    println(nodes(120))
+    println(boxes(200))
+    println(words(40))
+    let rows: List<List<int>> = List.new()
+    for r in 0 .. 30 {
+        let row: List<int> = List.new()
+        for c in 0 .. 4 {
+            row.push(r * c)
+        }
+        rows.push(row)
+    }
+    let mut t = 0
+    for row in rows {
+        let last = row.pop() or continue
+        t += last + row.len()
+    }
+    println(t, rows.first(), rows.last())
+}

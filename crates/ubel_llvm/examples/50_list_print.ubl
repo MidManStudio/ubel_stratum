@@ -1,0 +1,72 @@
+// Printing lists (M3b): `[a, b, c]`, strings unquoted, doubles as `{}`, nested lists, empty lists, inside a
+// multi-argument println and inside an interpolated string that println prints.
+
+fn main() void {
+    let xs: List<int> = List.new()
+    println(xs)
+    xs.push(1)
+    println(xs)
+    xs.push(-20)
+    xs.push(300)
+    println(xs)
+    println("xs =", xs, xs.len())
+    println($"interpolated: {xs} and {xs.len()}")
+
+    let ss: List<string> = List.new()
+    ss.push("a")
+    ss.push("b c")
+    ss.push("")
+    ss.push("d")
+    println(ss)
+
+    let bs: List<bool> = List.new()
+    bs.push(true)
+    bs.push(false)
+    println(bs)
+
+    let ds: List<double> = List.new()
+    ds.push(1.5)
+    ds.push(2.0)
+    ds.push(0.1)
+    ds.push(-3.25e10)
+    println(ds)
+
+    let fs: List<float> = List.new()
+    fs.push(1.5f)
+    fs.push(0.1f)
+    println(fs)
+
+    let is: List<i32> = List.new()
+    is.push(5i32)
+    is.push(-7i32)
+    println(is)
+    let us: List<u64> = List.new()
+    us.push(18446744073709551615u64)
+    println(us)
+    let bytes: List<u8> = List.new()
+    bytes.push(255u8)
+    bytes.push(0u8)
+    println(bytes)
+
+    let grid: List<List<int>> = List.new()
+    println(grid)
+    for r in 0 .. 3 {
+        let row: List<int> = List.new()
+        for c in 0 .. r {
+            row.push(r + c)
+        }
+        grid.push(row)
+    }
+    println(grid)
+
+    let words: List<List<string>> = List.new()
+    let w: List<string> = List.new()
+    w.push("x")
+    w.push("y")
+    words.push(w)
+    words.push(List.new())
+    println(words)
+    print(xs)
+    print(ss)
+    println()
+}

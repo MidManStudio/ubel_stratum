@@ -1,0 +1,9 @@
+// Not supported yet: list methods beyond `len`, `is_empty`, `push`, `pop`, `first`, `last` and `contains`.
+// expect-refusal: the method `reverse` on a list
+fn main() void {
+    let xs: List<int> = List.new()
+    xs.push(1)
+    xs.push(2)
+    xs.reverse()
+    println(xs.len())
+}

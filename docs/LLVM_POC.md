@@ -548,13 +548,54 @@ elements of other lists. The rules, each checked against the interpreter by exam
   error), and the interpreter would hide the resulting dangling pointer, so the emitter refuses to `push` any value that sema
   tags as arena-allocated (`u_list_push_arena`). Creating or growing a list is refused in `@tier(low)` and in `@tier(mid)` code
   outside `with arena`, like building a string.
-- **Not yet:** `for` over a list, `pop`, `first`, `last`, `contains` and the other list methods (`pop`, `first` and `last`
-  give `null` for an empty list in the interpreter, so they need an optional result), printing or comparing a list, array
-  literals (`[1, 2, 3]`), lists of closures, and lists in arenas. Each is refused with a located message and has a `u_list_*`
-  example.
+- **Not yet:** the other list methods (`reverse`, `get`, `set`, `find` and so on), comparing lists (`==` is identity in the
+  interpreter), array literals (`[1, 2, 3]`), lists of closures, lists in arenas, and `contains` on lists of structs, enums or
+  lists. Each is refused with a located message and has a `u_list_*` example. `for`, `pop`, `first`, `last`, `contains` on
+  numbers, bools and strings, and printing came with M3b (next).
 - **The self-hosted tokenizer compiles.** `self-hosted/tokenizer/tokenizer.ubl` (a `List<int>` in, a `List<Token>` out, a struct
   with an enum, a string and a `double`, `while` loops) builds natively and equals the interpreter at -O0 and -O2, and under
   ASan and UBSan with a collection forced on every allocation. Example 48 holds a copy of it and a driver `main`.
+
+**Lists, M3b (provisional).** Four more things work, each checked against the interpreter by examples 49 to 53:
+
+- **`for x in xs`** iterates a **copy** of the elements taken when the loop starts, because that is what the interpreter does (it
+  iterates a snapshot): a `push` or an element write in the body is not seen by the loop (example 49 prints `1 2 3` for a body
+  that writes `xs[1] = 99`). Natively the copy is a GC array from `ubel_list_snapshot` (null for an empty list), held in a stack
+  slot that is cleared when the loop ends, so the collector sees it while the loop runs and does not keep it afterwards; string,
+  struct and list elements are shared with the list, not copied. `break` and `continue` work; the binding is a plain name (no
+  destructuring). The copy is an allocation per loop, so it follows the list rule: refused in `@tier(low)` and in `@tier(mid)`
+  outside `with arena` (`u_list_for`). Skipping the copy when the body cannot change the list is an optimization not done here.
+- **`xs.contains(v)`** for numbers, bool and strings: a scan with the language's own `==` (floats compare as ordered, so a NaN is
+  never found). Structs, enums and lists are refused (`u_list_contains`): the interpreter's equality for those depends on
+  `@derive` and user-defined operators, which the emitter does not lower.
+- **Printing a list** (`println(xs)`, `print(xs)`, and inside an interpolated string that `println` prints) gives `[a, b, c]` like
+  the interpreter's `Display`: strings are not quoted, floats print as Rust's `{}`, lists nest, an empty list is `[]`. Printing
+  allocates nothing, so it is allowed in every tier. A list or optional inside a string that is *built* (an interpolated string
+  used as a value) is refused for now, and a list of structs or enums cannot be printed (`u_list_print`).
+- **`pop`, `first`, `last`** return `T?` (next). `pop` also removes the element, and clears the vacated slot when it is a pointer
+  so the collector does not keep the object alive (no output shows that; it is not covered by a test).
+
+**Optionals (M3b, provisional).** Sema types `pop`, `first` and `last` as `T?` (the table in `builtins/instance/list_methods.rs`
+says `Elem`, but the checker wraps it, and `p + 1` on the result is a sema error); the interpreter returns `null` for an empty
+list. `Ty::Opt(i)` is the emitter's `T?`, with `Emitter::opt_tys[i]` the `T`. **Layout (my choice, not yet the owner's): a pointer,
+null for "no value".** For a `T` that is already a pointer (string, struct, enum, list) it is that pointer, so nothing is
+allocated. For a number or `bool` it points to a GC box holding the value, so `pop`, `first` and `last` on a number list allocate
+(16 bytes, the collector's smallest object), and that is refused in `@tier(low)` and in `@tier(mid)` outside `with arena`
+(`u_opt_low`). Because an optional is a pointer, the collector's masks and the closure ABI needed no change. Optionals live in
+locals, parameters, results and temporaries only: an optional struct field, enum payload or closure capture, an optional closure,
+and a list of optionals are refused (`u_list_pop`, `u_opt_capture`), because the arena-scanning rules for a GC box stored in an
+arena object were not worked out. A by-value pair `{ i1, T }` would avoid the allocation but needs those rules; open.
+
+What an optional can do: be written as a type (`int?`, also as a parameter or result); take `null`, a value of its type (wrapped) or
+another optional wherever a `let` annotation, a return, an assignment, a call argument or a struct field names the type; be
+compared with `==` and `!=` against `null`, against a plain value of its type (false when null) and against another optional of
+the same type (equal when both are null or both hold equal values; numbers, bool and strings), as the interpreter's `Value`
+equality does; be printed (`null` or the value, also inside a list); be unwrapped by `x or return`, `x or return v`, `x or break`
+and `x or continue` (control flow only: `a or 0` is the boolean `or`, not a default); and have a field read through it
+(`find(ps, 2).name`), which stops the program with exit status 1 when it is null, like the interpreter (`fail_opt_field`). Refused
+with a message: an optional where a plain value is expected (`let v: int = xs.first()`, or an argument of type `int`; sema accepts
+it and the interpreter then holds `null` in an `int`; `u_opt_coerce`), any operator but `==` and `!=` on an optional, `match` on
+one, optional chaining (`?.`), and a `null` whose optional type is not known where it is written.
 
 **Structs (slice 2).** Plain structs whose fields are `int`, `bool` or another struct:
 literals, field reads, field assignment (plain and compound, nested too), and passing and
@@ -1074,6 +1115,17 @@ Found while building the struct slice, same status (found, not fixed):
   expression is i64"; a suffix (`5i32`) or a typed variable works.
 - The interpreter's `==` on lists is identity (`Rc::ptr_eq`), and `pop`, `first` and `last` of an empty list are `null`.
 - Plain `int` arithmetic in the interpreter goes through `f64`: see "Known differences from the interpreter".
+- (M3b) `for x in xs` in the interpreter iterates a snapshot of the list (`value_to_iter_vec`), so pushes and element writes in
+  the body are not seen by the loop; the emitter copies the elements to match (see Lists, M3b).
+- (M3b) Sema gives `pop`, `first` and `last` the type `T?`, while the builtin table in `list_methods.rs` says `Elem`; the other list
+  methods were not examined. Sema accepts a `T?` where a `T` is wanted (`let v: int = xs.first()`), and the interpreter then keeps
+  `null` in the `int` variable (it prints `null`); the emitter refuses that.
+- (M3b) `a or 0` is the boolean `or` (sema: "expected bool, found int"); the unwrap forms are `or return`, `or return v`, `or break`
+  and `or continue`. `or return` followed by a line break appears to take the NEXT line as its return value: with
+  `let p = xs.first() or return` and `println(p.name)` on the next line, the emitter reported `p` as unknown on that line, which is
+  what that parse gives. Write `or return` with a value, or put a block boundary after it.
+- (M3b) A field read through a null optional is a runtime error in the interpreter ("cannot access field 'x' on null", exit status
+  1); the emitter stops with the same status and prints the message to stderr, which the suite does not compare.
 
 ### Toolchain notes
 
@@ -1264,6 +1316,21 @@ orientation, not measurement.
 
 ## Log
 
+- 2026-11-20 (chat 9): **M3b, `for` over a list, `contains`, printing lists, and optionals (`pop`, `first`, `last`).** As described
+  under "Lists, M3b" and "Optionals": `Ty::Opt` and `Ty::Null`, `or return` / `or break` / `or continue`, `==` and `!=` on
+  optionals, a field read through an optional struct, `ubel_list_snapshot` in the runtime, examples 49 to 53 (53 is the
+  allocation-pressure one), `fail_opt_field`, four new refusals (`u_opt_coerce`, `u_opt_capture`, `u_opt_low`, `u_list_reverse`)
+  and four older ones re-aimed at what is still refused (`u_list_for`, `u_list_pop`, `u_list_contains`, `u_list_print`, whose
+  first features are supported now), and two integration tests. Checked on master `0f0167c` with Rust 1.85 and clang 18: the
+  cargo tests pass (6 unit and 18 integration in `ubel_llvm`, 10 and 14 in the CLI), `run_equiv.sh` 128 passed, 0 failed at 64-bit and at -m32 (was 118), `run_ubel_build.sh` with the committed
+  tables passes (67 supported programs equal `ubel run`, 54 intentional refusals, 31 of the 196 `ok_` fixtures build, 165 are
+  refused), and the list and optional examples (46, 48 to 53) run clean under ASan and UBSan with the collector forced on every
+  allocation. 25 hand mutants of the M3b code and the snapshot function: 22 caught; the survivors are a no-op control, `pop` not
+  clearing the vacated slot (the collector keeps the object a little longer; no output shows it) and a box size of 1 byte
+  (equivalent here: the collector rounds every request up to 16 bytes and a box is at most 8). The first round found a test
+  hole (no example took the `or continue` path), fixed in example 52 and then caught. Mutants were run at -O0 only. Not
+  verified: a real runner, Termux or a phone with lists and optionals, a Rust other than 1.85, optionals in arenas (refused),
+  `-O2` under the mutants. Findings: see "Findings about the front end".
 - 2026-11-17 (chat 8): **M3a, lists, and the self-hosted tokenizer compiles.** `List<T>` on the GC heap with `List.new()`,
   `push`, `len`, `is_empty`, indexing with the interpreter's negative-index and bounds rules, and element writes, as described
   under "Lists"; `ubel_list_new`, `ubel_list_grow` and `ubel_trap_index` in the runtime; `Ty::List` with a table of element

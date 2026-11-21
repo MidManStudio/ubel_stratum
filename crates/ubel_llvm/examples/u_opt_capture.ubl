@@ -1,0 +1,9 @@
+// Not supported yet: a closure that captures an optional.
+// expect-refusal: a closure that captures `n`, an optional
+fn main() void {
+    let xs: List<int> = List.new()
+    let n = xs.first()
+    let f = fn(x: int) x + 1
+    let g = fn(x: bool) x == (n == null)
+    println(f(1), g(true))
+}

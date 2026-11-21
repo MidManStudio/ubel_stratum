@@ -1,9 +1,21 @@
-// Not supported yet: `for` over a list (M3b). Index it with a range instead.
-// expect-refusal: `for` over anything but an integer range
-fn main() void {
+// Not supported: `for` over a list in a `@tier(low)` function. The loop iterates a GC copy of the elements, which LOW
+// must not allocate.
+// expect-refusal: `for` over a list
+fn make() List<int> {
     let xs: List<int> = List.new()
     xs.push(1)
+    return xs
+}
+
+@tier(low)
+fn total(xs: List<int>) int {
+    let mut t = 0
     for x in xs {
-        println(x)
+        t += x
     }
+    return t
+}
+
+fn main() void {
+    println(total(make()))
 }

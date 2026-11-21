@@ -1,0 +1,13 @@
+// A field read through an optional struct that is null stops the program with exit status 1, like the
+// interpreter ("cannot access field on null"); what was printed before stays printed.
+struct P {
+    id: int
+}
+
+fn main() void {
+    let ps: List<P> = List.new()
+    println("before")
+    println(ps.first() == null)
+    println(ps.first().id)
+    println("after")
+}

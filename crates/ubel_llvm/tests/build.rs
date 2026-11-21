@@ -218,6 +218,46 @@ fn a_list_index_out_of_range_stops_like_the_interpreter() {
 }
 
 #[test]
+fn list_loops_printing_and_optionals_match_the_interpreter() {
+    if !have_cc() {
+        return;
+    }
+    let scratch = Scratch::new("m3b");
+    // 49 is `for` over a list (a copy of the elements), 50 printing lists, 51 `contains`, 52 the optionals from `pop`,
+    // `first` and `last`, and 53 the same under allocation pressure.
+    for name in ["49_list_for", "50_list_print", "51_list_contains", "52_optional", "53_optional_gc"] {
+        let source = example(name);
+        let want = ubel_llvm::interpret(&source);
+        assert!(want.error.is_none(), "{name}: the interpreter failed: {:?}", want.error);
+        assert!(!want.output.is_empty(), "{name}: the interpreter printed nothing, the comparison would be empty");
+        let mut o = scratch.opts(name);
+        o.opt = OptLevel::O0;
+        let built = driver::build(&source, &o).unwrap_or_else(|e| panic!("{name}: build failed: {e}"));
+        let out = run(&built.output);
+        assert!(out.status.success(), "{name}: the native program failed: {}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want.output, "{name}: output differs from the interpreter");
+    }
+}
+
+#[test]
+fn a_field_through_a_null_optional_stops_like_the_interpreter() {
+    if !have_cc() {
+        return;
+    }
+    let scratch = Scratch::new("optfield");
+    let name = "fail_opt_field";
+    let source = example(name);
+    let want = ubel_llvm::interpret(&source);
+    assert!(want.error.is_some(), "{name} is expected to fail in the interpreter");
+    let mut o = scratch.opts(name);
+    o.opt = OptLevel::O0;
+    let built = driver::build(&source, &o).expect("it builds");
+    let out = run(&built.output);
+    assert_eq!(out.status.code(), Some(1), "{name}: the native program should exit with status 1");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want.output, "{name}: output before the failure differs");
+}
+
+#[test]
 fn front_end_and_emitter_errors_come_before_the_compiler_is_looked_for() {
     // The compiler named here does not exist. If it were looked up first, every one of these
     // would be reported as a missing compiler, which would blame the wrong thing.
