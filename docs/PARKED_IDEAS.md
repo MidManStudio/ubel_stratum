@@ -617,6 +617,23 @@ parked because the right behavior is a design choice, not because it is hard.
 - A `let mut` binding that is assigned inside the block is cleaned up with the value it started
   with. The replacement is not cleaned up.
 
+## Found while building AS3a (verified by execution, parked)
+
+- A static that holds a collection is a private copy in each worker. A task that changes its
+  contents (`LOG.push(..)`) changes only the copy of the worker it runs on, and a later task on the
+  same worker sees the change. Assigning to the static is refused; changing what it holds is not
+  noticed. A shared value (AS4) is the fix.
+- A `const` whose value is a closure is not copied to the workers, so a task that uses it fails with
+  an undefined name. A function declared in the program is fine.
+- An `async { }` block carries every name it mentions that is bound around it, found by name
+  without scoping, so a name the block declares itself can pull in an outer value of the same name
+  that is then not used. If that value cannot be sent (a `Shared`), the spawn fails for a value the
+  block never touches.
+- The function-table entry made for an `async { }` block that runs on a worker is removed when the
+  block ends, but only if no function was added after it. A block that creates a closure keeps its
+  entry, so a worker that runs many such blocks grows its table.
+- `Task.spawn` is refused in a run with no workers. The browser playground has none.
+
 ## Built
 
 **Unsuffixed integer literals: full context-driven typing (Rust style).**

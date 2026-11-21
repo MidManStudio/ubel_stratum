@@ -178,7 +178,7 @@ source named.
   `summon`, as today.
 - `summon std.*` is checked against a table of the names the compiler provides, grouped as
   `std.collections` (`List`, `Dictionary`, `Set`, `Queue`, `Stack`, `InlineList`), `std.memory`
-  (`Pool`, `Unique`, `Shared`, `SyncShared`), `std.io` (`println`, `print`, `log`), `std.debug`
+  (`Pool`, `Unique`, `Shared`, `SyncShared`), `std.task` (`Task`), `std.io` (`println`, `print`, `log`), `std.debug`
   (`assert`, `panic`, `typeof`), `std.math` (`Math`, `sqrt`, `abs`, `min`, `max`, `floor`, `ceil`,
   `range`) and `std.convert` (`to_string`, `to_int`, `to_float`, `to_double`). An unknown path is
   `NAME-003`. The checked form stays optional for builtins. A test fails when a builtin is added

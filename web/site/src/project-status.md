@@ -206,7 +206,9 @@ verified safe.
   state machines, a compile-time rule decides what may be shared between tasks, and the usual
   locks, atomics and channels ship. The async core has landed (2026-11-17): `async fn` with a
   `Task<T>` result, cold tasks, `await`, async blocks and every tier, all without threads. The `using` cleanup has landed too (2026-11-18): a `using` block calls the
-  `dispose` of each bound value whose type implements `Dispose`. Next: threads in the interpreter
+  `dispose` of each bound value whose type implements `Dispose`. Tasks run on real threads too
+  (2026-11-19): `Task.spawn` hands a task to a pool of workers, values are copied at the boundary, and
+  `join()` waits. Next: the sharing rule and the lock types
 - Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a
   module is a file named by its path, cycles between modules are allowed, everything is private
   unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.

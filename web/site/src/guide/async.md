@@ -121,7 +121,45 @@ Other rules:
   ([Keywords](../reference/keywords-and-operators.md)).
 - The native backend does not build async code yet.
 
-## The decided design (the async core is built, threads are not)
+## Running tasks on other threads
+
+`Task.spawn(task)` hands a task to a pool of worker threads and gives the same task back, now
+running. Wait for it with `await` in async code, or with `.join()` anywhere. Both give the result
+of the task, and a task is awaited or joined once.
+
+<!-- ubel-test: run -->
+```ubel
+async fn double(n: int) Task<int> {
+    return n * 2
+}
+
+fn main() void {
+    let a = Task.spawn(double(1))
+    let b = Task.spawn(double(2))
+    println(a.join() + b.join())
+}
+```
+
+```text
+6
+```
+
+A program that never writes `Task.spawn` starts no threads, and `.join()` on a task that was never
+spawned runs it right there. An `async { }` block can be spawned too, and it takes the names it
+uses from the code around it.
+
+What goes into a task is **copied**. A change made inside a task is not seen by the code that
+spawned it, what was shared inside the copy stays shared, and the result comes back as a copy. A
+value that cannot be copied is refused, when the program runs, with an error that names it: a
+`Shared`, a `SyncShared`, a task, a `Pool` or a closure. A function declared in the program can be
+sent. A task sees the constants and statics as they were when the pool started, and it cannot
+write a static.
+
+A panic in a task reaches the one that awaits it, with its message, and a `fail` arrives as a
+failure. The pool has one worker fewer than the machine has logical cores, and at least one. There
+are no threads in the browser playground, so `Task.spawn` reports an error there.
+
+## The decided design (the async core and real threads are built, sharing is not)
 
 The record is `docs/ASYNC_SYNC_DESIGN.md`. In brief, the decisions are:
 
@@ -147,7 +185,7 @@ The record is `docs/ASYNC_SYNC_DESIGN.md`. In brief, the decisions are:
 - **The playground.** The browser build has no threads, so starting parallel
   work there is an error.
 
-The async core and the `using` cleanup are built (see
-[Generics and traits](./generics-traits.md#cleanup-with-using-and-dispose)). Delivery continues with
-threads in the interpreter and the sharing rule. [Project Status](../project-status.md) tracks it, and this guide
+The async core, the `using` cleanup and tasks on real threads are built (see
+[Generics and traits](./generics-traits.md#cleanup-with-using-and-dispose) for `using`). Delivery
+continues with the sharing rule, the lock types and the executor an engine can replace. [Project Status](../project-status.md) tracks it, and this guide
 grows as those land.

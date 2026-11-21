@@ -709,6 +709,16 @@ trait impl, is `PARSE-004` ("async methods in a trait are not supported yet") un
 methods are built. Whether an `await` sits inside an async function or block (`TYPE-143`) and
 whether an async function declares a `Task<T>` (`TYPE-144`) are type inference's rules.
 
+### 5.7d `Task` before a `.`
+
+`Task` is a reserved word, for the benefit of type syntax (`Task<T>`). In expression position it is
+also the name of a static object, as `List` is in `List.new()`, so that `Task.spawn(t)` parses. The
+parser takes `Task` as a name only when the next token is a `.`: `parse_prefix` routes it through
+`parse_ident_expr` as it does the collection keywords, and `Parser::can_start_expr` answers the same
+way, so that `return Task.spawn(t).join()` reads a value (`tests/call_and_return_parsing.rs`). A
+`Task` anywhere else in an expression is still an error. What `Task.spawn` and `join` mean is type
+inference's rule and the interpreter's; the parser reads an ordinary call.
+
 ### 5.8 `{` after a bare identifier — Struct Literal vs Block
 
 Found via exploratory testing (nested `while` loops doing a diagonal

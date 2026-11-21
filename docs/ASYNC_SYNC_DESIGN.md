@@ -92,7 +92,52 @@ those choices cost.
   cleaned up at the end, `fail` is accepted in a function that is not fallible (so a `dispose` can
   fail at run time), and the native backend reports `using` as unsupported.
 
-## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17, `using` when AS1 landed, 2026-11-18)
+### AS3a decisions (2026-11-19)
+
+- Decided with the user: the interpreter keeps `Rc` inside each task, with a deep copy at the task
+  boundary and a thread-safe backing for the shared payloads of later slices (item 1 of section 5,
+  as recommended). The default pool has one worker fewer than the logical cores, at least one, with
+  no pin or affinity settings, and an engine that pins threads brings its own executor (item 3, as
+  recommended). `Task.spawn(t)` returns the same `Task<T>`, now running, which is awaited or joined
+  with `join()` from synchronous code, and `join()` on a task that was never spawned runs it in
+  place (item 7, as recommended). AS3 is sliced in two: AS3a is built, AS3b is the executor
+  interface, a replaceable pool, the park hook and the worker-count setting. `Send` and `Sync` are
+  explicit opt-in impls (item 6, **against the recommendation**, built in AS4, cost in section 3).
+- Settled without a question:
+  - A program that mentions `Task.spawn` runs inside a thread scope that holds the workers, and each
+    worker owns an interpreter built from the same program, so a declared function has the same id
+    in all of them. A program that never mentions `Task.spawn` starts no thread. Where there are no
+    threads (`wasm32`, or a worker count of zero) `Task.spawn` is a run-time error that says so. A
+    worker has a 128 MiB stack.
+  - The copy at the boundary moved from AS4 to AS3a, because nothing can be passed to a task
+    without it. It keeps what was shared inside one copy shared and rebuilds a cycle as a cycle. A
+    value that is not plain data (`Shared`, `SyncShared`, a task, a `Pool`, a handle, a query, a
+    closure) cannot be sent and is a run-time error that names its kind, until AS4 makes it a
+    compile-time one. A function declared in the program can be sent, a lambda cannot.
+  - An `async { }` block carries the names it mentions that are bound in the code around it, found
+    by name, which can be more than it uses. Constants and functions of the program are not
+    copied, because every worker has them.
+  - A task is awaited at most once, and `await` and `join` are the same thing for it. A worker that
+    awaits a task that no worker has taken yet runs it itself, so a worker never waits for a thread
+    that waits for it. The thread that started the pool only waits, so no task runs against the
+    statics of the program.
+  - A task that fails hands its failure value to the one that awaits it, and a panic arrives with
+    its message. A task whose result cannot be sent panics with a message that says so.
+  - A task sees the constants and statics as they were when the pool started. A write to a static
+    from a task is a run-time error. The contents of a collection held in a static are a private
+    copy in each worker, so a change to them is seen only by that worker, by later tasks on it too.
+    A constant whose value cannot be sent (a closure) is not there in a task.
+  - What a worker prints goes to the same output as the rest of the run, also when the output is
+    captured.
+  - `Task` is a builtin namespace, so the table behind `summon std.*` has to place it: it is the only
+    member of a new `std.task` module. That grouping is a first cut (`docs/MODULE_DESIGN.md`, open
+    questions), so it can move while no program depends on it. The locks and channels of AS5 are
+    expected in `std.sync`.
+- Known gaps, recorded in `docs/PARKED_IDEAS.md`: the entries a task makes in the function table
+  are removed only when nothing was added after them, a scope or lock that outlives one `await` is
+  not there yet (AS5, AS6), and the native backend has no threads.
+
+## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17, `using` when AS1 landed, 2026-11-18, threads when AS3a landed, 2026-11-19)
 
 Each line was confirmed by running a program through `ubel check` or `ubel run`, or by reading
 the source named.
@@ -119,7 +164,7 @@ the source named.
 
 **Synchronization and sharing**
 
-- No `Mutex`, `Channel`, `spawn`, `Thread` or `Atomic` exists (`NAME-001` for each).
+- `Task.spawn` and `join` exist (AS3a, 2026-11-19). No `Mutex`, `Channel`, `Thread` or `Atomic` does (`NAME-001` for each).
 - `SyncShared.new` is LOW-only (`TIER-014` in other tiers). `SyncShared` is backed by the same
   `Rc<RefCell<Value>>` as `Shared`; `docs/MEMORY_MODEL.md` already records that it is "not
   actually `Arc<Mutex<_>>` yet".
@@ -130,14 +175,17 @@ the source named.
 
 **Interpreter structure** (`crates/core/src/interpreter/`)
 
-- Collections sit behind `Rc<RefCell<..>>`, so `Value` is not `Send`.
+- Collections sit behind `Rc<RefCell<..>>`, so `Value` is not `Send`. A value crosses to another
+  thread as a `Sent` (`interpreter/send.rs`), plain data with no `Rc`.
 - `Interpreter<'ast>` is one mutable struct: the current `env` (replaced by a clone of the
   closure's environment on every call), the `functions` table (it grows at run time, because each
-  lambda evaluated allocates an entry), `statics`, and `pool_capacity_stack`.
+  lambda evaluated allocates an entry), `statics`, and `pool_capacity_stack`. Each worker thread owns an interpreter of its own
+  (`interpreter/eval/spawn.rs`).
 - The AST is read-only at run time. Interpolation holes are parsed at parse time, and the
   `arena` field of the interpreter is not used while a program runs.
 - The only global state is the thread-local `OUTPUT_CAPTURE` (output capture for tests and the
-  playground) and an atomic logger flag. A spawned thread would not see the capture.
+  playground) and an atomic logger flag. A run with workers moves the capture into a buffer that
+  the workers share, so what a worker prints is captured too.
 
 **Native backend** (`crates/ubel_llvm`, from another chat)
 
@@ -342,6 +390,16 @@ set out to close, and it stays open for user types. The guard types of AS5 imple
 themselves, so a lock guard is not exposed to it. If the trap shows up in practice, a warning for a
 `using` binding whose type has a method named `dispose` but no `Dispose` impl is cheap to add.
 
+**AS4, `Send` and `Sync` are explicit opt-in impls.** The recommendation was marker traits derived
+structurally from the fields. As decided, a struct or enum that crosses into a task needs an
+`impl Send` of its own, and forgetting it is a compile error, so the table of section 2.3 (which says
+"of sendable parts") is rewritten at AS4. The built-in types (`List`, `Dictionary`, tuples, arrays,
+closures) still need compiler rules that depend on their parts, because conditional impls on built-in
+types are not built (`TYPE-129`). It is open whether an `impl Send` is checked against the fields or
+trusted. A checked one adds only the opt-in. A trusted one lets a struct that holds a `Shared<T>` be
+declared sendable, which is a data race the compiler cannot see. A generic library can still write
+`T: Send` as a bound.
+
 ---
 
 ## 4. What was checked against outside work
@@ -406,6 +464,7 @@ a recommendation.
    boundary. Recommended: (b). It models the native design (per-task heaps, copies at the
    boundary) and makes a program that relied on accidental sharing fail in the interpreter
    instead of racing in native code. (a) stays the fallback because it is mechanical and cheap.
+   *Decided 2026-11-19:* (b), as recommended. Built in AS3a.
 2. **Signature and typing of async functions and failed tasks.** *Signature decided 2026-11-17:*
    `async fn f() Task<T>` with a body that returns `T`, and a bare `async fn run()` for no result,
    which means `Task<void>` (against the recommendation of an explicit `Task<void>`). *Failure
@@ -416,7 +475,9 @@ a recommendation.
    `Task<User>!` (`TYPE-144`).
 3. **Executor interface shape.** The methods in 2.8, the default worker count (recommended:
    logical cores minus one, at least one), thread names and affinity for engines that pin
-   threads.
+   threads. *Decided 2026-11-19:* logical cores minus one, at least one, and no pin or affinity
+   settings on the default pool. An engine that pins threads brings its own executor. The
+   interface itself is AS3b.
 4. **Awaiting a task more than once.** *Decided 2026-11-17:* a task is awaited at most once. A second
    await is a run-time error in every tier. The compile-time error where the move checker can see
    it is not built: the move checker tracks only LOW-tier `Unique` locals, so it needs a pass over
@@ -425,9 +486,14 @@ a recommendation.
    `fn dispose(self) void`.
 6. **Marker traits.** Whether `Send` and `Sync` are written in bounds of generic library code.
    Recommended: compiler-known marker traits, derived structurally, writable as bounds.
+   *Decided 2026-11-19, against the recommendation:* `Send` and `Sync` are explicit opt-in impls, so
+   nothing is sendable until a type says so. Built in AS4. Cost: section 3. Still open for AS4:
+   whether the compiler checks an impl against the fields or trusts it.
 7. **Names.** `Task.spawn`, `Task.scope`, `Task.cancelled`, the async-aware lock type, the
    ordering names. `Task.spawn` needs the parser to accept `Task` followed by `.` in expression
-   position.
+   position. *`Task.spawn` and `join` decided 2026-11-19 and built in AS3a:* `Task.spawn(t)` returns
+   the same `Task<T>`, running, `join()` waits for it, and the parser accepts `Task` before a `.`.
+   `Task.scope`, `Task.cancelled`, the lock type and the ordering names stay open.
 8. **Diagnostics.** Codes for: a value that is not sendable, a lock guard live across `await`,
    an awaited-twice task, `spawn` where threads do not exist, a captured panic that was never
    awaited. Allocated in `DIAGNOSTICS_RULES.md` at the slice that introduces each.
@@ -461,8 +527,9 @@ for traits.
 | **AS0** | This document and the public status page. | none |
 | **AS1** | **Done 2026-11-18.** `using` cleanup: the `Dispose` trait, run on every exit path (`return`, `break`, `continue`, `?`, failure, panic), reverse order for several bindings. The cleanup runs for a bound value whose type implements `Dispose`, and a binding of any other type is accepted and has none (**against the recommendation**, which was a type check). Cancellation arrives with AS6. Useful on its own. | AS0 |
 | **AS2** | **Done 2026-11-17.** Async core in sema and the interpreter: `async fn` typing, cold `Task<T>`, `await` that runs a task inline, tier rules opened. No threads yet. | AS0 |
-| **AS3** | Threads in the interpreter: the state split, the pool, `Task.spawn`, join, the executor interface, the park hook. | AS2 |
-| **AS4** | The sendable rule: marker traits, the sema pass, copy at the boundary, a real `SyncShared`, `TIER-014` lifted for it. | AS3 |
+| **AS3a** | **Done 2026-11-19.** Threads in the interpreter: a worker interpreter on each thread, the copy at the task boundary (moved here from AS4), the pool, `Task.spawn`, `join`. | AS2 |
+| **AS3b** | The executor interface, a replaceable pool, the park hook, the worker-count setting. | AS3a |
+| **AS4** | The sendable rule: explicit `Send` and `Sync` impls, the sema pass, a real `SyncShared`, `TIER-014` lifted for it. | AS3 |
 | **AS5** | The lock types, `Condvar`, `Semaphore`, `Barrier`, `Atomic`, `Channel`, parking through the executor, the guard rules and the async-aware lock. | AS1, AS3, AS4 |
 | **AS6** | Scopes, cancellation, failure capture. | AS1, AS3, AS5 |
 | **AS7** | `async` methods in traits and boxed `dyn` calls. | AS2 |

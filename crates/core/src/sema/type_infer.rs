@@ -5455,6 +5455,18 @@ impl<'a> InferCtx<'a> {
                     }
                 }
 
+                // AS3a, docs/ASYNC_SYNC_DESIGN.md: `Task.spawn(task)` hands a task to the worker
+                // threads and gives the same task back, running. It is valid in every tier.
+                if let ExprKind::Field { target, field } = callee.kind {
+                    if field == "spawn" {
+                        if let ExprKind::Ident(ns) = target.kind {
+                            if self.builtin_ns_name(target.span, ns) == "Task" {
+                                return self.infer_task_spawn(args, expr.span);
+                            }
+                        }
+                    }
+                }
+
                 // `Trait.method(value, ..)`: the explicit trait-qualified call.
                 if let ExprKind::Field { target, field } = callee.kind {
                     if let ExprKind::Ident(ns) = target.kind {
@@ -5557,6 +5569,29 @@ impl<'a> InferCtx<'a> {
                                     return self.maybe_arena_ref(inst.return_type);
                                 }
                             }
+                        }
+                    }
+                }
+
+                // AS3a: `task.join()` awaits a task from code that is not async, and gives its
+                // result. Valid in every tier, and the only method a task has.
+                if let ExprKind::Field { target, field } = callee.kind {
+                    if field == "join" {
+                        let receiver_ty = self.ctx.expr_type(target.span)
+                            .map(|ty| { let ty = self.default_if_int_lit(ty); self.apply(ty) });
+                        let inner = receiver_ty.and_then(|rt| match self.ctx.types.get(rt) {
+                            SemaType::Task(inner) => Some(*inner),
+                            _ => None,
+                        });
+                        if let Some(inner) = inner {
+                            if !args.is_empty() {
+                                self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                                    expected: 0,
+                                    found:    args.len(),
+                                    span:     expr.span,
+                                });
+                            }
+                            return inner;
                         }
                     }
                 }
@@ -7224,6 +7259,42 @@ impl<'a> InferCtx<'a> {
     }
 
     // ── Type unwrapping helpers ───────────────────────────────────
+
+    /// `Task.spawn(task)`: the type of the call is the type of the task it is given.
+    fn infer_task_spawn<'ast>(&mut self, args: &'ast [Arg<'ast>], span: Span) -> TypeId {
+        if args.len() != 1 {
+            self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                expected: 1,
+                found:    args.len(),
+                span,
+            });
+            return self.unknown();
+        }
+        let arg_ty = match &args[0].kind {
+            ArgKind::Positional(e)       => self.infer_expr(e),
+            ArgKind::Named { value, .. } => self.infer_expr(value),
+        };
+        let arg_ty = self.default_if_int_lit(arg_ty);
+        let resolved = self.apply(arg_ty);
+        match self.ctx.types.get(resolved) {
+            SemaType::Task(_) => resolved,
+            SemaType::Var(_) => {
+                let inner = self.fresh_var();
+                let task  = self.ctx.types.intern(SemaType::Task(inner));
+                self.unify(resolved, task, span);
+                task
+            }
+            _ => {
+                self.errors.add_type_error(TypeError::TypeMismatch {
+                    expected:   "Task<T>".to_string(),
+                    found:      self.display_type(arg_ty),
+                    span,
+                    because_of: None,
+                });
+                TypeId::ERROR
+            }
+        }
+    }
 
     fn unwrap_task(&mut self, ty: TypeId, span: Span) -> TypeId {
         let ty = self.default_if_int_lit(ty);
