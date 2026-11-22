@@ -1,0 +1,55 @@
+// spectral-norm: the spectral norm of an infinite matrix, approximated with a @N@ x @N@ one and ten
+// rounds of power iteration. Prints the result times 1e9, truncated to an integer. Same algorithm as the
+// Computer Language Benchmarks Game problem of this name, written for this repo.
+
+fn a(i: int, j: int) double {
+    return 1.0 / (((i + j) * (i + j + 1) / 2 + i + 1) as double)
+}
+
+fn mul_av(n: int, v: List<double>, av: List<double>) void {
+    for i in 0 .. n {
+        let mut s = 0.0
+        for j in 0 .. n {
+            s += a(i, j) * v[j]
+        }
+        av[i] = s
+    }
+}
+
+fn mul_atv(n: int, v: List<double>, atv: List<double>) void {
+    for i in 0 .. n {
+        let mut s = 0.0
+        for j in 0 .. n {
+            s += a(j, i) * v[j]
+        }
+        atv[i] = s
+    }
+}
+
+fn mul_atav(n: int, v: List<double>, out: List<double>, tmp: List<double>) void {
+    mul_av(n, v, tmp)
+    mul_atv(n, tmp, out)
+}
+
+fn main() void {
+    let n = @N@
+    let u: List<double> = List.new()
+    let v: List<double> = List.new()
+    let tmp: List<double> = List.new()
+    for i in 0 .. n {
+        u.push(1.0)
+        v.push(0.0)
+        tmp.push(0.0)
+    }
+    for r in 0 .. 10 {
+        mul_atav(n, u, v, tmp)
+        mul_atav(n, v, u, tmp)
+    }
+    let mut vbv = 0.0
+    let mut vv = 0.0
+    for i in 0 .. n {
+        vbv += u[i] * v[i]
+        vv += v[i] * v[i]
+    }
+    println((sqrt(vbv / vv) * 1000000000.0) as int)
+}

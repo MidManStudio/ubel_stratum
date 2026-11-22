@@ -1297,6 +1297,38 @@ impl<'a> Emitter<'a> {
                     continue;
                 }
             }
+            if i + 1 == n && self.ret != Ty::Void && !self.ret_infer {
+                // `match` and `if` written as statements in tail position give the function's value, like the
+                // interpreter: `fn f(x: int) int { if x > 0 { x } else { 0 - x } }`. Arms and branches that `return`
+                // keep working (they leave no value to return here).
+                match s.kind {
+                    StmtKind::Match { scrutinee, arms } => {
+                        let v = self.match_lower(scrutinee, arms, s.span, true)?;
+                        if v.ty != Ty::Void && v.ty != self.ret {
+                            return Err(CompileError::at(s.span, "the arms of this `match` give a different type than the function returns"));
+                        }
+                        if v.ty == self.ret {
+                            self.do_return(Some(v), s.span)?;
+                        }
+                        continue;
+                    }
+                    StmtKind::If(ife) if Self::tail_shaped(s) => {
+                        let v = self.if_value(ife, s.span)?;
+                        if v.ty != self.ret {
+                            return Err(CompileError::at(s.span, "the branches of this `if` give a different type than the function returns"));
+                        }
+                        self.do_return(Some(v), s.span)?;
+                        continue;
+                    }
+                    StmtKind::If(ife) if ife.else_body.is_none() && Self::gives_value_without_else(ife) => {
+                        return unsupported(
+                            s.span,
+                            "a function whose last statement is an `if` without `else` that gives a value (add the `else`, or `return` the value)",
+                        );
+                    }
+                    _ => {}
+                }
+            }
             if i + 1 == n && self.ret != Ty::Void {
                 if let StmtKind::Expr(e) = s.kind {
                     if let ExprKind::Match(m) = e.kind {
@@ -1625,6 +1657,47 @@ impl<'a> Emitter<'a> {
     /// The slot's type is taken from the first branch value (sema leaves the type of
     /// an `if` expression as an unresolved variable in some contexts), and every other
     /// branch must agree. The slot is an `alloca`, which always goes in the entry block.
+    /// How an `if` statement in tail position ends. `Some(true)`: it is a value (it has an `else`, every branch ends in
+    /// an expression, in another such `if`, or in a `return`, and at least one gives a value). `Some(false)`: it has
+    /// an `else` and every branch only leaves. `None`: anything else (no `else`, a branch ending in another kind of
+    /// statement), which stays a plain statement.
+    fn tail_shape(ife: &IfExpr) -> Option<bool> {
+        let els = ife.else_body?;
+        let mut any_value = Self::branch_shape(ife.then_body)?;
+        for el in ife.elif_branches {
+            any_value |= Self::branch_shape(el.body)?;
+        }
+        any_value |= Self::branch_shape(els)?;
+        Some(any_value)
+    }
+
+    /// `Some(true)`: the branch gives a value; `Some(false)`: it only leaves; `None`: neither.
+    fn branch_shape(b: IfBranchBody) -> Option<bool> {
+        match b {
+            IfBranchBody::Expr(_) => Some(true),
+            IfBranchBody::Block(bl) => match bl.stmts.last()?.kind {
+                StmtKind::Expr(_) => Some(true),
+                StmtKind::Return(_) => Some(false),
+                StmtKind::If(inner) => Self::tail_shape(inner),
+                _ => None,
+            },
+        }
+    }
+
+    /// An `if` without `else` with a branch that ends in an expression, which would be the function's value on that
+    /// path only.
+    fn gives_value_without_else(ife: &IfExpr) -> bool {
+        let ends_in_expr = |b: IfBranchBody| match b {
+            IfBranchBody::Expr(_) => true,
+            IfBranchBody::Block(bl) => matches!(bl.stmts.last().map(|l| l.kind), Some(StmtKind::Expr(_))),
+        };
+        ends_in_expr(ife.then_body) || ife.elif_branches.iter().any(|el| ends_in_expr(el.body))
+    }
+
+    fn tail_shaped(s: &Stmt) -> bool {
+        matches!(s.kind, StmtKind::If(ife) if Self::tail_shape(ife) == Some(true))
+    }
+
     fn if_value(&mut self, ife: &IfExpr, span: Span) -> R<Val> {
         if ife.else_body.is_none() {
             return unsupported(span, "an `if` expression without `else`");
@@ -1699,6 +1772,24 @@ impl<'a> Emitter<'a> {
                             let v = self.expr(e)?;
                             self.store_branch_value(v, slot, e.span)?;
                             continue;
+                        }
+                        if let StmtKind::Return(_) = s.kind {
+                            self.stmt(s)?; // this branch leaves: it gives no value
+                            continue;
+                        }
+                        if let StmtKind::If(inner) = s.kind {
+                            match Self::tail_shape(inner) {
+                                Some(true) => {
+                                    let v = self.if_value(inner, s.span)?;
+                                    self.store_branch_value(v, slot, s.span)?;
+                                    continue;
+                                }
+                                Some(false) => {
+                                    self.stmt(s)?; // every branch of it leaves
+                                    continue;
+                                }
+                                None => {}
+                            }
                         }
                         return unsupported(s.span, "a branch of an `if` expression that does not end in a value");
                     }

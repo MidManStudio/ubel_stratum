@@ -1,0 +1,14 @@
+// Not supported: a function whose last statement is an `if` without `else` where only an `elif` branch gives a value
+// (the `then` branch returns). Same reason as u_tail_if_no_else: native code could only trap on the other path.
+// expect-refusal: a function whose last statement is an `if` without `else`
+fn pick(x: int) int {
+    if x > 0 {
+        return 1
+    } elif x < 0 - 5 {
+        2
+    }
+}
+
+fn main() void {
+    println(pick(5))
+}

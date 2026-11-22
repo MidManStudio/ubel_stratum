@@ -1,0 +1,11 @@
+// Not supported: a function whose last statement is an `if` without `else` that gives a value. Sema accepts it (the
+// interpreter returns the value when the condition holds); native code could only trap on the other path. Add the
+// `else`, or `return` the value.
+// expect-refusal: a function whose last statement is an `if` without `else`
+fn pick(x: int) int {
+    if x > 0 { 1 }
+}
+
+fn main() void {
+    println(pick(5))
+}

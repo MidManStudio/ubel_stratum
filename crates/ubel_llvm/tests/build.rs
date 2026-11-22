@@ -240,6 +240,27 @@ fn list_loops_printing_and_optionals_match_the_interpreter() {
 }
 
 #[test]
+fn a_functions_last_statement_can_be_its_value() {
+    if !have_cc() {
+        return;
+    }
+    let scratch = Scratch::new("tail");
+    // `if` and `match` as the last statement give the function's value (they used to compile and then stop with
+    // "reached its end without returning"); forms with an explicit `return` keep working.
+    let name = "54_tail_value";
+    let source = example(name);
+    let want = ubel_llvm::interpret(&source);
+    assert!(want.error.is_none(), "{name}: the interpreter failed: {:?}", want.error);
+    assert!(!want.output.is_empty(), "{name}: the interpreter printed nothing, the comparison would be empty");
+    let mut o = scratch.opts(name);
+    o.opt = OptLevel::O0;
+    let built = driver::build(&source, &o).unwrap_or_else(|e| panic!("{name}: build failed: {e}"));
+    let out = run(&built.output);
+    assert!(out.status.success(), "{name}: the native program failed: {}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want.output, "{name}: output differs from the interpreter");
+}
+
+#[test]
 fn a_field_through_a_null_optional_stops_like_the_interpreter() {
     if !have_cc() {
         return;

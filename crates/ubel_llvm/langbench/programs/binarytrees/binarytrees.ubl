@@ -1,0 +1,48 @@
+// binary-trees (allocation): build and check many complete binary trees of growing depth, keeping one
+// long-lived tree alive. Here every tree lives on the garbage-collected heap (the default tier).
+// Same algorithm as the Computer Language Benchmarks Game problem of this name, written for this repo.
+
+enum Tree {
+    Empty
+    Node(Tree, Tree)
+}
+
+fn make(depth: int) Tree {
+    if depth == 0 {
+        return Tree.Node(Tree.Empty, Tree.Empty)
+    }
+    return Tree.Node(make(depth - 1), make(depth - 1))
+}
+
+fn check(t: Tree) int {
+    match t {
+        Tree.Empty => 0
+        Tree.Node(l, r) => 1 + check(l) + check(r)
+    }
+}
+
+fn main() void {
+    let n = @N@
+    let min_depth = 4
+    let mut max_depth = min_depth + 2
+    if n > max_depth {
+        max_depth = n
+    }
+    let stretch = max_depth + 1
+    println($"stretch tree of depth {stretch} check: {check(make(stretch))}")
+    let long_lived = make(max_depth)
+    let mut d = min_depth
+    while d <= max_depth {
+        let mut iterations = 1
+        for k in 0 .. (max_depth - d + min_depth) {
+            iterations = iterations * 2
+        }
+        let mut total = 0
+        for i in 0 .. iterations {
+            total += check(make(d))
+        }
+        println($"{iterations} trees of depth {d} check: {total}")
+        d += 2
+    }
+    println($"long lived tree of depth {max_depth} check: {check(long_lived)}")
+}

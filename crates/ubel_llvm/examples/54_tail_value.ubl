@@ -1,0 +1,180 @@
+// A function's last statement as its value, like the interpreter: a plain expression, an `if` with `else` (also
+// `else if`, also nested), and a `match` on an enum or a string, with expression arms, block arms and arms that
+// `return`. Native code used to compile these and trap when the function ended ("reached its end without returning").
+// The forms with an explicit `return` must keep working.
+
+enum Shape {
+    Dot
+    Circle(int)
+    Rect(int, int)
+}
+
+fn plain(x: int) int {
+    x * 2 + 1
+}
+
+fn abs(x: int) int {
+    if x < 0 { 0 - x } else { x }
+}
+
+fn sign(x: int) int {
+    if x < 0 {
+        0 - 1
+    } elif x == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+fn nested(a: int, b: int) int {
+    if a > 0 {
+        if b > 0 { 1 } else { 2 }
+    } else {
+        if b > 0 { 3 } else { 4 }
+    }
+}
+
+fn blocks(x: int) int {
+    if x > 10 {
+        let y = x - 10
+        y * 3
+    } else {
+        let z = x + 10
+        z
+    }
+}
+
+fn area(s: Shape) int {
+    match s {
+        Shape.Dot => 0
+        Shape.Circle(r) => 3 * r * r
+        Shape.Rect(w, h) => w * h
+    }
+}
+
+fn perimeter(s: Shape) int {
+    match s {
+        Shape.Dot => 0
+        Shape.Circle(r) => {
+            let d = 2 * r
+            d * 3
+        }
+        Shape.Rect(w, h) => 2 * (w + h)
+    }
+}
+
+fn returning(s: Shape) int {
+    match s {
+        Shape.Dot => return 100
+        Shape.Circle(r) => return r
+        Shape.Rect(w, h) => return w + h
+    }
+}
+
+fn mixed(s: Shape) int {
+    match s {
+        Shape.Dot => return 7
+        Shape.Circle(r) => r + 1000
+        Shape.Rect(w, h) => w * 1000 + h
+    }
+}
+
+fn word(s: string) int {
+    match s {
+        "one" => 1
+        "two" => 2
+        _ => 0
+    }
+}
+
+fn label(n: int) string {
+    if n % 2 == 0 { "even" } else { "odd" }
+}
+
+fn half(x: double) double {
+    if x > 0.0 { x / 2.0 } else { 0.0 }
+}
+
+fn both(a: bool, b: bool) bool {
+    if a { b } else { false }
+}
+
+fn explicit(x: int) int {
+    if x > 0 {
+        return 1
+    } else {
+        return 2
+    }
+}
+
+fn explicit_elif(x: int) int {
+    if x > 100 {
+        return 3
+    } elif x > 10 {
+        return 2
+    } else {
+        return 1
+    }
+}
+
+fn early(x: int) int {
+    if x == 0 {
+        return 42
+    }
+    x + 1
+}
+
+// A value in some branches and a `return` in the others.
+fn mixed_if(x: int) int {
+    if x > 0 { 1 } else { return 2 }
+}
+
+fn mixed_elif(x: int) int {
+    if x > 100 { 3 } elif x > 10 { return 2 } else { 1 }
+}
+
+fn mixed_nested(a: int, b: int) int {
+    if a > 0 {
+        if b > 0 { 10 } else { return 20 }
+    } else {
+        return 30
+    }
+}
+
+// Ends in an `if` without `else`: only called where it returns.
+fn only_pos(x: int) int {
+    if x > 0 {
+        return 1
+    }
+}
+
+fn shout(n: int) void {
+    if n > 1 {
+        println("big")
+    }
+}
+
+fn main() void {
+    println(plain(4), plain(-1))
+    println(abs(-7), abs(7), abs(0))
+    println(sign(-5), sign(0), sign(9))
+    println(nested(1, 1), nested(1, 0), nested(0, 1), nested(0, 0))
+    println(blocks(15), blocks(3))
+    let shapes: List<Shape> = List.new()
+    shapes.push(Shape.Dot)
+    shapes.push(Shape.Circle(2))
+    shapes.push(Shape.Rect(3, 4))
+    for s in shapes {
+        println(area(s), perimeter(s), returning(s), mixed(s))
+    }
+    println(word("one"), word("two"), word("three"))
+    println(label(3), label(4), half(5.0), half(-1.0), both(true, true), both(true, false), both(false, true))
+    println(explicit(1), explicit(-1), explicit_elif(500), explicit_elif(50), explicit_elif(5))
+    println(early(0), early(5))
+    println(mixed_if(5), mixed_if(-5), mixed_elif(500), mixed_elif(50), mixed_elif(5))
+    println(mixed_nested(1, 1), mixed_nested(1, -1), mixed_nested(-1, 1))
+    println(only_pos(3))
+    shout(1)
+    shout(2)
+}
