@@ -634,6 +634,25 @@ parked because the right behavior is a design choice, not because it is hard.
   entry, so a worker that runs many such blocks grows its table.
 - `Task.spawn` is refused in a run with no workers. The browser playground has none.
 
+## Found while building AS3b (parked)
+
+- Nothing checks the stack a host gives a worker. `WORKER_STACK_BYTES` is documented as the minimum,
+  but the runtime cannot read the size of the thread or fiber that calls the worker loop. A host
+  with small stacks overflows on a deep recursion inside a task, which ends the process and is not
+  an error the program can see.
+- The default executor wakes every parked caller on each `wake`. With many idle workers, queuing one
+  task wakes all of them and all but one go back to sleep. A wake that says what changed (a task
+  queued, a task ended) or one condition variable for each waiter would avoid it. For a handful of
+  workers the cost is small.
+- The executor sees no task. A host cannot give one task a priority, pin it to a core or keep the
+  tasks of one job together, because it only runs worker loops. Per-task job submission was the
+  alternative that was not chosen (`docs/ASYNC_SYNC_DESIGN.md`, "AS3b decisions"); a host that needs
+  that would need a second method on the interface.
+- `Executor::run` blocks, and the thread that calls it runs `main`. A host whose frame loop owns the
+  main thread cannot start the program and return to its loop. A fiber host that runs a worker on the
+  same thread as `main` would also share that thread's output capture, which is attached per thread.
+- The native backend has no executor. How its runtime lends threads is part of AS8.
+
 ## Built
 
 **Unsuffixed integer literals: full context-driven typing (Rust style).**

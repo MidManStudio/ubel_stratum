@@ -2,8 +2,9 @@
 
 > **Status: the async core runs.** A call to an `async fn` builds a task that has not started,
 > `await` runs it where it is awaited, and `async { ... }` makes a task from a block. All of it
-> works in every tier. There are no threads yet: a task runs inline where it is awaited, so
-> nothing here runs in parallel. Parallelism is the next stage of a larger design, summarised below.
+> works in every tier. A task that is only awaited runs inline where it is awaited, and
+> `Task.spawn` runs one on a pool of worker threads (see below). Sharing data between tasks is the
+> next stage of a larger design, summarised below.
 
 ## Async functions and `await`
 
@@ -156,8 +157,22 @@ sent. A task sees the constants and statics as they were when the pool started, 
 write a static.
 
 A panic in a task reaches the one that awaits it, with its message, and a `fail` arrives as a
-failure. The pool has one worker fewer than the machine has logical cores, and at least one. There
-are no threads in the browser playground, so `Task.spawn` reports an error there.
+failure. The pool has one worker fewer than the machine has logical cores, and at least one. `ubel run
+--workers N` or the `UBEL_WORKERS` environment variable sets another number, and a program that
+embeds the interpreter calls `set_worker_count`. There are no threads in the browser playground, so
+`Task.spawn` reports an error there.
+
+### Who runs the workers
+
+The pool does not start threads itself. It hands the worker loops, and the program's own `main`, to
+an `Executor`, which decides where they run. The default executor gives every worker an operating
+system thread. An engine that owns its threads, to pin them to cores or to run the workers as fibers
+of its job system, brings an executor of its own and gives it to the interpreter with
+`set_executor`. Every wait of the pool goes through the executor (`park_until`), and so does every
+change a waiter could be waiting for (`wake`), so a fiber host can park a fiber where a thread host
+would block a thread. An executor may also say how many workers it wants (`preferred_workers`); an
+explicit `--workers` or `UBEL_WORKERS` count wins over that. A thread or fiber that runs a worker
+needs at least 128 MiB of stack, which the runtime cannot check.
 
 ## The decided design (the async core and real threads are built, sharing is not)
 
@@ -185,7 +200,7 @@ The record is `docs/ASYNC_SYNC_DESIGN.md`. In brief, the decisions are:
 - **The playground.** The browser build has no threads, so starting parallel
   work there is an error.
 
-The async core, the `using` cleanup and tasks on real threads are built (see
+The async core, the `using` cleanup and tasks on real threads, on a pool an engine can replace, are built (see
 [Generics and traits](./generics-traits.md#cleanup-with-using-and-dispose) for `using`). Delivery
-continues with the sharing rule, the lock types and the executor an engine can replace. [Project Status](../project-status.md) tracks it, and this guide
+continues with the sharing rule and the lock types. [Project Status](../project-status.md) tracks it, and this guide
 grows as those land.

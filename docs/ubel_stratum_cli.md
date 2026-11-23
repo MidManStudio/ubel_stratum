@@ -55,6 +55,14 @@ renderer `examples/diagnose.rs` uses, so the text matches everywhere. With
 then runs `main` through the interpreter. A failed check is reported exactly
 as `check` reports it (`check::report` is shared).
 
+`--workers N` sets the number of worker threads for a program that spawns tasks (`Task.spawn`).
+Without the flag the `UBEL_WORKERS` environment variable is read, and without that the runtime
+uses the logical cores minus one, at least one. `resolve_workers` settles it: the flag wins even
+when the variable is not a number, an empty or blank variable is unset, the value is trimmed, zero
+is a count (the program then has no workers and `Task.spawn` says so), and a variable that is not a
+number is a usage error (exit code 2) that names `UBEL_WORKERS` and the value. A program that never
+spawns ignores the setting. The flag belongs to `run` alone.
+
 ### `commands/build.rs`
 
 `ubel build <file> [-o PATH] [--cc PATH] [-O 0|1|2|3|s] [--keep-temps] [-- CLANG_ARGS]`. Runs the same check as `check`
@@ -92,6 +100,8 @@ Marked `[DEBUG]` in its help; the format is not stable. Mirrors
 `SemaContext::int_literal_types`, and passes it to
 `Interpreter::set_int_literal_types` before `run_program`. Without it the
 interpreter cannot know that `let x: u8 = 5` holds a `u8`.
+`run_file_with(path, workers)` is `run_file` with a worker count handed to
+`Interpreter::set_worker_count` before `run_program`; `run_file` calls it with `None`.
 
 ### `services/file_io.rs`, `output/printer.rs`, `output/json_output.rs`
 

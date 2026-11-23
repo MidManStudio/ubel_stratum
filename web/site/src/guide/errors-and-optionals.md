@@ -61,5 +61,5 @@ Failures travel up the call chain through `?` until something handles them.
 ## Async
 
 `async fn` and `await` work in every tier. An async function declares the task it returns,
-`async fn f() Task<int>`, a call builds a task that has not started, and `await` runs it. There
-are no threads yet, so a task runs where it is awaited. See [Async](./async.md).
+`async fn f() Task<int>`, a call builds a task that has not started, and `await` runs it. A
+task that is only awaited runs where it is awaited, and `Task.spawn` runs one on a worker thread. See [Async](./async.md).

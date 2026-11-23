@@ -208,7 +208,9 @@ verified safe.
   `Task<T>` result, cold tasks, `await`, async blocks and every tier, all without threads. The `using` cleanup has landed too (2026-11-18): a `using` block calls the
   `dispose` of each bound value whose type implements `Dispose`. Tasks run on real threads too
   (2026-11-19): `Task.spawn` hands a task to a pool of workers, values are copied at the boundary, and
-  `join()` waits. Next: the sharing rule and the lock types
+  `join()` waits. The pool runs on an executor interface (2026-11-21): a host can lend its own
+  threads or fibers, and `ubel run --workers N` or `UBEL_WORKERS` sets the worker count. Next: the
+  sharing rule and the lock types
 - Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a
   module is a file named by its path, cycles between modules are allowed, everything is private
   unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.
@@ -238,7 +240,7 @@ verified safe.
   cleaned up at the end
 - `fail` is accepted in a function whose result is not fallible, and the failure propagates when
   the program runs (`fn f() void { fail "x" }` checks clean)
-- There are no threads, locks, atomics or channels, `SyncShared<T>` is single-threaded, and
+- There are no locks, atomics or channels, `SyncShared<T>` is single-threaded, and
   `SyncShared.new` is LOW only
 - A `const` initializer that calls a function which reads another `const` stops with
   `undefined name` when the program runs, with no cycle involved. Pass the constant to the

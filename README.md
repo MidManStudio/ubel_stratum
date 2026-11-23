@@ -38,7 +38,7 @@ Early development. What exists today:
 | Front end: lexer, parser, name resolution, type inference, generics, traits, tier enforcement | **Working** |
 | LOW-tier safety: borrow, move and lifetime checking | **Working**, intra-function, with documented scope limits ([`docs/OUTLIVES_RULES.md`](docs/OUTLIVES_RULES.md), [`docs/MEMORY_MODEL.md`](docs/MEMORY_MODEL.md) §9) |
 | Tree-walking interpreter | **Working**; the reference for the language's behaviour |
-| Async and concurrency | `async fn`, `await`, `Task<T>`, `async { }` blocks, `using` with `Dispose`, and `Task.spawn` on a pool of worker threads, where a value that goes into a task is copied: **Working** in the interpreter. The sharing rule, locks, channels, atomics, scopes, cancellation and an executor an engine can replace are **designed, not built** ([`docs/ASYNC_SYNC_DESIGN.md`](docs/ASYNC_SYNC_DESIGN.md)) |
+| Async and concurrency | `async fn`, `await`, `Task<T>`, `async { }` blocks, `using` with `Dispose`, and `Task.spawn` on a pool of worker threads that an engine can replace through an executor interface, where a value that goes into a task is copied: **Working** in the interpreter. The sharing rule, locks, channels, atomics, scopes and cancellation are **designed, not built** ([`docs/ASYNC_SYNC_DESIGN.md`](docs/ASYNC_SYNC_DESIGN.md)) |
 | Modules | `summon` of the standard names, with `as` renames: **Working**. Loading other files is **designed, not built** ([`docs/MODULE_DESIGN.md`](docs/MODULE_DESIGN.md)) |
 | `ubel` command line (`check`, `run`, `build`) | **Working** ([`docs/ubel_stratum_cli.md`](docs/ubel_stratum_cli.md)) |
 | `ubel-lsp` language server | **Stub**: publishes diagnostics only ([`docs/ubel_stratum_lsp.md`](docs/ubel_stratum_lsp.md)) |
@@ -215,8 +215,9 @@ fn main() {
 What goes into a task is **copied**: a change made inside a task is not seen
 by the code that spawned it, and a value that cannot be copied (a `Shared`, a
 closure, another task) is refused with an error that names it. The browser
-playground has no threads, so `Task.spawn` reports an error there. How tasks
-will share data safely is the next piece of design work.
+playground has no threads, so `Task.spawn` reports an error there.
+`ubel run --workers N` (or the `UBEL_WORKERS` environment variable) sets how many worker
+threads the pool has. How tasks will share data safely is the next piece of design work.
 
 ### Errors have stable codes
 

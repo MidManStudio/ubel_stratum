@@ -92,6 +92,45 @@ those choices cost.
   cleaned up at the end, `fail` is accepted in a function that is not fallible (so a `dispose` can
   fail at run time), and the native backend reports `using` as unsupported.
 
+### AS3b decisions (2026-11-21)
+
+- Decided with the user: the executor interface is "the host lends threads or fibers". The runtime
+  keeps the task queue and builds the interpreters; the host decides which threads or fibers run
+  the worker loops and the program's own `main`, and how a waiting caller parks and wakes (item 3,
+  as recommended; the alternative was per-task job submission, where the host runs one job for each
+  task and never sees a worker loop). The worker count is set by the `--workers` flag of `ubel run`,
+  by the `UBEL_WORKERS` environment variable when the flag is absent, and through the API
+  (`Interpreter::set_worker_count`), as recommended. A worker that waits for a task blocks. If the
+  task is still queued it runs it itself, and it does not run other queued tasks while it waits (as
+  recommended).
+- Settled without a question:
+  - The interface is the `Executor` trait in `interpreter/executor.rs`: `run(Lend)`,
+    `park_until(ready)`, `wake()` and `preferred_workers()`. A `Lend` carries the number of workers,
+    the worker loop, a stop function and the program's `main`. A host starts that many workers
+    (`lend.worker()(i)` on a thread or fiber each), calls `lend.run_main()` once on the calling
+    thread, calls `lend.stop()` and returns when the workers have returned. `run` blocks, and the
+    thread that calls it is the one that runs `main`. `run_main` panics if it is called twice.
+  - `preferred_workers()` is an addition to the interface sketched in 2.8: a host that knows how
+    many threads it owns says so. The count a run uses is the explicit setting, else the host's
+    preference, else the logical cores minus one (at least one). Zero is a count: the program runs
+    with no workers, the host is not called, and `Task.spawn` reports that there are none.
+  - Every wait of the pool goes through the executor, the main thread's included. A worker with no
+    task and a thread that awaits a spawned task call `park_until`; queuing a task, ending one and
+    shutting the pool down each call `wake`. The pool has no condition variable of its own. The
+    default executor parks callers on one condition variable and wakes all of them on each `wake`.
+  - A host that cannot start a worker calls `stop()` for the ones it did start and returns an
+    error. `main` has not run then, and the error text is the reason the program did not start. The
+    default executor also stops the workers when `main` panics, so its thread scope cannot wait for
+    ever.
+  - `WORKER_STACK_BYTES` (128 MiB) moved from the pool to `stack.rs` and is documented as the
+    minimum stack of any thread or fiber a host lends. Nothing checks it.
+  - `--workers` belongs to `ubel run` alone. The flag wins over `UBEL_WORKERS`, also when the
+    variable is not a number; an empty or blank variable counts as unset; a variable that is not a
+    number is a usage error (exit code 2) that names it and its value.
+- Known gaps, recorded in `docs/PARKED_IDEAS.md`: the stack a host gives a worker is not checked, the
+  default executor wakes every parked caller on each wake, the executor sees no task, `run` blocks
+  and the caller runs `main`, and the native backend has no executor.
+
 ### AS3a decisions (2026-11-19)
 
 - Decided with the user: the interpreter keeps `Rc` inside each task, with a deep copy at the task
@@ -137,7 +176,7 @@ those choices cost.
   are removed only when nothing was added after them, a scope or lock that outlives one `await` is
   not there yet (AS5, AS6), and the native backend has no threads.
 
-## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17, `using` when AS1 landed, 2026-11-18, threads when AS3a landed, 2026-11-19)
+## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17, `using` when AS1 landed, 2026-11-18, threads when AS3a landed, 2026-11-19, the executor when AS3b landed, 2026-11-21)
 
 Each line was confirmed by running a program through `ubel check` or `ubel run`, or by reading
 the source named.
@@ -164,7 +203,8 @@ the source named.
 
 **Synchronization and sharing**
 
-- `Task.spawn` and `join` exist (AS3a, 2026-11-19). No `Mutex`, `Channel`, `Thread` or `Atomic` does (`NAME-001` for each).
+- `Task.spawn` and `join` exist (AS3a, 2026-11-19). The pool runs on an `Executor` that a host can
+  replace, and the worker count is a setting (AS3b, 2026-11-21). No `Mutex`, `Channel`, `Thread` or `Atomic` does (`NAME-001` for each).
 - `SyncShared.new` is LOW-only (`TIER-014` in other tiers). `SyncShared` is backed by the same
   `Rc<RefCell<Value>>` as `Shared`; `docs/MEMORY_MODEL.md` already records that it is "not
   actually `Arc<Mutex<_>>` yet".
@@ -327,7 +367,14 @@ at such a call site in LOW code so the allocation is not silent.
 - `spawn` either runs the task in parallel or reports an error (A13). Where there are no threads
   (the wasm playground), `spawn` reports the error. Awaiting a cold task inline needs no thread and
   works everywhere.
-- The default worker count and thread configuration are open (section 5, item 3).
+- Built in AS3b (2026-11-21): the interface is the `Executor` trait (`interpreter/executor.rs`), and
+  the host lends threads or fibers to the pool instead of receiving one job per task. The runtime
+  keeps the queue and the worker interpreters; the host runs the worker loops and the program's
+  `main`, parks a caller that has to wait and wakes it when the pool changes state. The default
+  executor gives each worker an operating-system thread. The default worker count (the logical
+  cores minus one, at least one) is replaced by `--workers`, `UBEL_WORKERS`,
+  `Interpreter::set_worker_count` or `Executor::preferred_workers`. Thread names and affinity are
+  not part of the interface: an engine that pins threads starts the threads itself.
 
 ### 2.9 Frame lock-step
 
@@ -476,8 +523,11 @@ a recommendation.
 3. **Executor interface shape.** The methods in 2.8, the default worker count (recommended:
    logical cores minus one, at least one), thread names and affinity for engines that pin
    threads. *Decided 2026-11-19:* logical cores minus one, at least one, and no pin or affinity
-   settings on the default pool. An engine that pins threads brings its own executor. The
-   interface itself is AS3b.
+   settings on the default pool. An engine that pins threads brings its own executor.
+   *Decided 2026-11-21 and built in AS3b:* the host lends threads or fibers to the pool, the count
+   is set by `--workers`, `UBEL_WORKERS` and the API, and a waiting worker blocks, runs its own
+   awaited task when that is still queued and runs no other queued task, all as recommended. See
+   "AS3b decisions" in section 0.
 4. **Awaiting a task more than once.** *Decided 2026-11-17:* a task is awaited at most once. A second
    await is a run-time error in every tier. The compile-time error where the move checker can see
    it is not built: the move checker tracks only LOW-tier `Unique` locals, so it needs a pass over
@@ -528,7 +578,7 @@ for traits.
 | **AS1** | **Done 2026-11-18.** `using` cleanup: the `Dispose` trait, run on every exit path (`return`, `break`, `continue`, `?`, failure, panic), reverse order for several bindings. The cleanup runs for a bound value whose type implements `Dispose`, and a binding of any other type is accepted and has none (**against the recommendation**, which was a type check). Cancellation arrives with AS6. Useful on its own. | AS0 |
 | **AS2** | **Done 2026-11-17.** Async core in sema and the interpreter: `async fn` typing, cold `Task<T>`, `await` that runs a task inline, tier rules opened. No threads yet. | AS0 |
 | **AS3a** | **Done 2026-11-19.** Threads in the interpreter: a worker interpreter on each thread, the copy at the task boundary (moved here from AS4), the pool, `Task.spawn`, `join`. | AS2 |
-| **AS3b** | The executor interface, a replaceable pool, the park hook, the worker-count setting. | AS3a |
+| **AS3b** | **Done 2026-11-21.** The executor interface (`Executor` and `Lend`: the host lends threads or fibers, and every wait and wake of the pool goes through it), a pool that runs on it, the park hook and the worker-count setting (`--workers`, `UBEL_WORKERS`, the API). | AS3a |
 | **AS4** | The sendable rule: explicit `Send` and `Sync` impls, the sema pass, a real `SyncShared`, `TIER-014` lifted for it. | AS3 |
 | **AS5** | The lock types, `Condvar`, `Semaphore`, `Barrier`, `Atomic`, `Channel`, parking through the executor, the guard rules and the async-aware lock. | AS1, AS3, AS4 |
 | **AS6** | Scopes, cancellation, failure capture. | AS1, AS3, AS5 |

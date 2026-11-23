@@ -114,6 +114,18 @@ tier: 4 letters
 stratum: 7 letters
 ```
 
+A program that starts tasks with `Task.spawn` runs them on a pool of worker threads. The pool has
+one thread fewer than the machine has logical cores, and at least one. `--workers N` sets another
+number, and the `UBEL_WORKERS` environment variable does the same when the flag is absent; the flag
+wins. `--workers 0` runs the program with no workers, and `Task.spawn` then reports that there are
+none. A program that never calls `Task.spawn` starts no thread and ignores both. A value that is not
+a whole number is a usage error and exits with `2`.
+
+```text
+$ ubel run --workers 4 crawl.ubl
+$ UBEL_WORKERS=2 ubel run crawl.ubl
+```
+
 ## `ubel build <file>`
 
 Checks the file exactly as `ubel check` does, then builds a **native
