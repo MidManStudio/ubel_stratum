@@ -37,9 +37,11 @@
 pub mod value;
 pub mod send;
 pub mod pool;
+pub mod executor;
 pub mod env;
 pub mod eval;
 
 pub use value::{EnumPayload, EvalResult, FunctionId, Signal, Value};
 pub use env::Environment;
 pub use eval::Interpreter;
+pub use executor::{DefaultExecutor, Executor, Lend};

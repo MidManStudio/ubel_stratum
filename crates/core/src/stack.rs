@@ -16,6 +16,11 @@
 /// through the largest debug-build frames of every pass, with a wide margin.
 pub const COMPILER_STACK_BYTES: usize = 256 * 1024 * 1024;
 
+/// The stack of a worker thread of the task pool: the same order of size the interpreter needs on
+/// the main thread. This is the minimum for any thread or fiber that a host lends to the pool
+/// through an `Executor` (`interpreter::executor`); the runtime cannot check what it is given.
+pub const WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
+
 /// Runs `f` on a thread with a [`COMPILER_STACK_BYTES`] stack and returns its
 /// result. A panic in `f` is re-raised on the caller. If the thread cannot be
 /// started, `f` runs on the current thread instead.

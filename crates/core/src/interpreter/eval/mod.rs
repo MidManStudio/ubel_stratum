@@ -24,6 +24,7 @@ use crate::ast::arena::AstArena;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use crate::ast::expressions::Lambda;
+use crate::interpreter::executor::Executor;
 use crate::interpreter::pool::{PoolShared, TaskHook};
 use crate::ast::common::{Span, TierAnnotation};
 use crate::error_management::errors::{OPERATOR_TRAITS, operator_method_of, operator_trait_arity};
@@ -135,6 +136,8 @@ pub struct Interpreter<'ast> {
     /// can spawn.
     pub(crate) pool: Option<Arc<PoolShared>>,
     pub(crate) worker_count: Option<usize>,
+    /// Who runs the workers of this run. `None` means the default executor, one thread per worker.
+    pub(crate) executor: Option<Arc<dyn Executor>>,
     /// True in an interpreter that runs on a worker thread. Only a worker runs a task it waits
     /// for, so that a task never runs against the statics of the thread that started the pool.
     pub(crate) is_worker: bool,
@@ -231,6 +234,7 @@ impl<'ast> Interpreter<'ast> {
             declared_functions: 0,
             pool: None,
             worker_count: None,
+            executor: None,
             is_worker: false,
             task_hook: None,
             program: None,

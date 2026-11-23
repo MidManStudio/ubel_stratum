@@ -40,6 +40,12 @@ pub fn check_file(path: &Path) -> Result<CheckOutcome, CliError> {
 }
 
 pub fn run_file(path: &Path) -> Result<RunOutcome, CliError> {
+    run_file_with(path, None)
+}
+
+/// Like `run_file`, with a worker thread count for programs that spawn tasks. `None` leaves the
+/// number to the runtime (logical cores minus one, at least one).
+pub fn run_file_with(path: &Path, workers: Option<usize>) -> Result<RunOutcome, CliError> {
     let outcome = check_file(path)?;
     if !outcome.report.is_clean() {
         return Ok(RunOutcome::Diagnostics(outcome));
@@ -65,6 +71,9 @@ pub fn run_file(path: &Path) -> Result<RunOutcome, CliError> {
     let mut interp = Interpreter::new(&arena);
     interp.set_int_literal_types(sema_ctx.int_literal_types);
     interp.set_trait_call_sites(sema_ctx.trait_call_sites);
+    if let Some(n) = workers {
+        interp.set_worker_count(n);
+    }
     match interp.run_program(&program) {
         Ok(())  => Ok(RunOutcome::Finished),
         Err(e)  => Ok(RunOutcome::RuntimeError(format!("{e}"))),

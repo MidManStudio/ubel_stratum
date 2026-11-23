@@ -8,6 +8,10 @@
 //! A task is awaited at most once, and `await` and `join` are the same thing for one: whoever
 //! awaits a task that no worker has taken yet runs it there and then, so a worker that waits on a
 //! task it spawned can never be waiting for a thread that is waiting for it.
+//!
+//! The threads themselves come from an `Executor` (`interpreter::executor`). This file builds the
+//! worker loops and the `main` closure and hands them over; the executor decides where they run,
+//! and every wait of the pool, the main thread's included, goes through its `park_until`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -19,14 +23,12 @@ use crate::ast::root::{Item, Program};
 use crate::ast::visitor::{walk_expr, AstVisitor};
 use crate::builtins::global::io::{attach_capture_sink, detach_capture_sink, share_capture_sink};
 use crate::interpreter::env::Environment;
+use crate::interpreter::executor::{DefaultExecutor, Executor, Lend};
 use crate::interpreter::pool::{Outcome, PoolShared, SendFn, SendTask, TaskHook, TaskSlot};
 use crate::interpreter::send::{self, Sent};
 use crate::interpreter::value::{EvalResult, FunctionId, Signal, TaskState, Value};
 
 use super::{FunctionBody, FunctionDef, Interpreter};
-
-/// The stack a worker gets, the same order of size the interpreter needs on the main thread.
-const WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
 
 /// What a worker needs to build the interpreter it runs tasks in.
 struct WorkerSetup {
@@ -117,9 +119,17 @@ fn names_used_by<'ast>(lambda: &'ast Lambda<'ast>) -> BTreeSet<String> {
 // ── The interpreter side ─────────────────────────────────────────
 
 impl<'ast> Interpreter<'ast> {
-    /// How many worker threads a program that spawns gets. Without this, `default_worker_count`.
+    /// How many worker threads a program that spawns gets. Without this, the executor's
+    /// `preferred_workers`, and without that `default_worker_count`. Zero is a count: the program
+    /// runs with no workers, and `Task.spawn` reports that.
     pub fn set_worker_count(&mut self, n: usize) {
         self.worker_count = Some(n);
+    }
+
+    /// Who runs the workers of a program that spawns. Without this, one operating-system thread
+    /// per worker (`DefaultExecutor`).
+    pub fn set_executor(&mut self, executor: Arc<dyn Executor>) {
+        self.executor = Some(executor);
     }
 
     /// A function each worker calls just before it starts a task. For tests of what runs at the
@@ -169,7 +179,16 @@ impl<'ast> Interpreter<'ast> {
         let claimed = if self.is_worker { slot.claim() } else { None };
         let outcome = match claimed {
             Some(task) => self.run_send_task(task),
-            None       => slot.wait(),
+            None => {
+                // Another thread has the task, or the task has not been picked up and this is the
+                // thread that started the pool. Park through the executor until it has ended.
+                let Some(pool) = self.pool.clone() else {
+                    return Err(Signal::Panic(
+                        "this task was spawned on worker threads that are no longer running".to_string()));
+                };
+                pool.executor().park_until(&|| slot.is_done());
+                slot.take()
+            }
         };
         match outcome {
             Outcome::Done(sent)    => Ok(sent.decode().pop().unwrap_or(Value::Void)),
@@ -286,44 +305,43 @@ impl<'ast> Interpreter<'ast> {
         finder.found
     }
 
-    /// Run `main` with a pool of workers beside it. The workers live inside a thread scope that
-    /// ends when `main` does, so they can read the program without any `unsafe`.
+    /// Run `main` with a pool of workers beside it. The workers and `main` are handed to the
+    /// executor, which starts the workers on its own threads (or fibers), runs `main` on the
+    /// calling thread and returns when `main` has ended and the workers have returned. Workers
+    /// borrow the program, so none of this needs any `unsafe`.
     pub(super) fn run_main_with_pool(&mut self, program: &'ast Program<'ast>) -> Result<(), String> {
-        let workers = self.worker_count.unwrap_or_else(default_worker_count);
+        let exec: Arc<dyn Executor> = match &self.executor {
+            Some(e) => e.clone(),
+            None    => Arc::new(DefaultExecutor::new()),
+        };
+        let workers = self.worker_count.or_else(|| exec.preferred_workers()).unwrap_or_else(default_worker_count);
         if workers == 0 || cfg!(target_arch = "wasm32") {
             return self.run_main();
         }
         let setup = self.worker_setup(program);
-        let shared = PoolShared::new(self.task_hook.clone());
+        let shared = PoolShared::new(exec.clone(), self.task_hook.clone());
         let sink = share_capture_sink();
 
-        let result = std::thread::scope(|scope| -> Result<(), String> {
-            for i in 0..workers {
-                let worker_shared = shared.clone();
-                let sink = sink.clone();
-                let setup = &setup;
-                let started = std::thread::Builder::new()
-                    .name(format!("ubel-worker-{i}"))
-                    .stack_size(WORKER_STACK_BYTES)
-                    .spawn_scoped(scope, move || {
-                        attach_capture_sink(sink);
-                        let mut interp = Interpreter::<'ast>::new_detached();
-                        interp.prepare_worker(program, setup, worker_shared.clone());
-                        interp.worker_loop(&worker_shared);
-                    });
-                if let Err(e) = started {
-                    shared.shut_down();
-                    return Err(format!("cannot start a worker thread: {e}"));
-                }
-            }
+        let worker = |_index: usize| {
+            attach_capture_sink(sink.clone());
+            let mut interp = Interpreter::<'ast>::new_detached();
+            interp.prepare_worker(program, &setup, shared.clone());
+            interp.worker_loop(&shared);
+            // The thread may be one the host keeps: leave no capture buffer attached to it.
+            attach_capture_sink(None);
+        };
+        let stop = || shared.shut_down();
+        let mut main_result: Option<Result<(), String>> = None;
+        let mut main = || {
             self.pool = Some(shared.clone());
-            let result = self.run_main();
+            main_result = Some(self.run_main());
             self.pool = None;
-            shared.shut_down();
-            result
-        });
+        };
+
+        let started = exec.run(Lend::new(workers, &worker, &mut main, &stop));
         detach_capture_sink();
-        result
+        started?;
+        main_result.unwrap_or_else(|| Err("the executor returned without running the program".to_string()))
     }
 
     fn worker_setup(&self, program: &Program<'_>) -> WorkerSetup {
@@ -390,7 +408,7 @@ impl<'ast> Interpreter<'ast> {
                     hook();
                 }
                 let outcome = self.run_send_task(task);
-                slot.finish(outcome);
+                shared.finish(&slot, outcome);
             }
         }
     }
