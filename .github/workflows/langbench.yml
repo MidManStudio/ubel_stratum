@@ -1,0 +1,83 @@
+name: Language benchmarks
+
+# Runs the cross-language benchmarks (crates/ubel_llvm/langbench) on a GitHub-hosted runner and puts the tables on the
+# run's summary page. Start it by hand: Actions, "Language benchmarks", Run workflow. Each job runs the whole suite once:
+# one with every core available, one with every timed process pinned to a single core (GC threads included), because
+# Go's and .NET's collectors run in parallel and Ubel's does not. The logic is in the scripts; this file only calls them.
+#
+# Tracks: compute (numeric loops), gc (Ubel HIGH vs C# and Go), arena (Ubel MID vs Zig, Odin and Rust),
+#         manual (Ubel LOW vs C, C++ and Rust). A tier Ubel cannot compile yet shows up as a row saying why.
+
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "compute, gc, arena, manual or all"
+        default: "all"
+      runs:
+        description: "timed runs per language (the best is the headline)"
+        default: "10"
+      size:
+        description: "bench (timed) or small (correctness only, fast)"
+        default: "bench"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "all cores"
+            pin: ""
+            artifact: "langbench-all-cores"
+          - label: "pinned to one core"
+            pin: "0"
+            artifact: "langbench-one-core"
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Choose where the results go
+        run: echo "OUT_DIR=$RUNNER_TEMP/langbench" >> "$GITHUB_ENV"
+
+      - name: Install the toolchains
+        run: bash crates/ubel_llvm/langbench/install_tools.sh
+
+      - name: Build Ubel
+        run: cargo build --release -p ubel_stratum_cli
+
+      - name: Run the benchmarks
+        env:
+          UBEL: ${{ github.workspace }}/target/release/ubel
+        run: |
+          args="--track ${{ inputs.track }} --size ${{ inputs.size }} --runs ${{ inputs.runs }}"
+          if [ -n "${{ matrix.pin }}" ]; then args="$args --pin ${{ matrix.pin }}"; fi
+          bash crates/ubel_llvm/langbench/run.sh $args
+
+      - name: Show the tables on the summary page
+        if: always()
+        run: |
+          if [ -f "$OUT_DIR/summary.md" ]; then
+            { echo "## ${{ matrix.label }}"; echo; cat "$OUT_DIR/summary.md"; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No summary was produced (see the log)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Keep the raw numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ runner.temp }}/langbench/summary.md
+            ${{ runner.temp }}/langbench/results.tsv
+            ${{ runner.temp }}/langbench/status.tsv
+          if-no-files-found: warn
