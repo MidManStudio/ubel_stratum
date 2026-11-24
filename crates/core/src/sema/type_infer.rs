@@ -5720,6 +5720,12 @@ impl<'a> InferCtx<'a> {
                             // not checked here, as before.
                             self.check_dyn_element_arg(kind, field, bare_ty, args);
 
+                            // `xs.push(v)` on a list whose element type nothing has fixed yet
+                            // (`let xs = List.new()`) fixes it to the type of `v`.
+                            if kind == instance::ReceiverKind::List && field == "push" {
+                                self.bind_list_elem_from_push(bare_ty, args);
+                            }
+
                             // A key handed to a dictionary whose own key type is
                             // not written anywhere (`let d = Dictionary.new()`)
                             // must be `Hash`: the annotation check cannot see
@@ -6598,6 +6604,28 @@ impl<'a> InferCtx<'a> {
                 self.ctx.expr_types.insert(span, z);
             }
         }
+    }
+
+    /// `xs.push(v)` on a list whose element type nothing has fixed yet (`let xs = List.new()`): the element type
+    /// becomes the type of `v`. A list whose element type is already known (an annotation, an earlier push) is left
+    /// alone, so nothing that was accepted before is rejected now, and so is a pushed value of unknown type.
+    fn bind_list_elem_from_push(&mut self, list_ty: TypeId, args: &[Arg]) {
+        let SemaType::List(elem) = self.ctx.types.get(list_ty).clone() else { return };
+        let elem = self.apply(elem);
+        if !matches!(self.ctx.types.get(elem), SemaType::Var(_)) || self.int_lit_var_of(elem).is_some() {
+            return;
+        }
+        let Some(arg) = args.first() else { return };
+        let sp = match &arg.kind {
+            ArgKind::Positional(e)       => e.span,
+            ArgKind::Named { value, .. } => value.span,
+        };
+        let Some(arg_ty) = self.ctx.expr_type(sp) else { return };
+        let arg_ty = self.apply(arg_ty);
+        if arg_ty.is_error() || matches!(self.ctx.types.get(arg_ty), SemaType::Unknown) {
+            return;
+        }
+        self.unify(elem, arg_ty, sp);
     }
 
     fn finish_int_literals(&mut self) {

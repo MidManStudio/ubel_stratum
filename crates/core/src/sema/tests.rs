@@ -1101,3 +1101,53 @@ fn test_sema_expr_types_have_their_inference_variables_resolved() {
         other => panic!("expected SemaType::List, got {:?}", other),
     }
 }
+
+
+// -- push fixes the element type of an untyped list --
+
+#[test]
+fn test_sema_push_fixes_the_element_type_of_an_untyped_list() {
+    // fn foo() { let xs = List.new(); xs.push(1) }
+    // Nothing fixes the element type of `xs` but the push; the type recorded for `List.new()` must end up `List<int>`
+    // (the native backend reads it; before, the element stayed an unbound variable).
+    let arena = AstArena::new();
+    const CALL_SPAN: Span = Span { start: 1, end: 1, line: 0, column: 0 };
+    const LET_SPAN:  Span = Span { start: 2, end: 2, line: 0, column: 0 };
+    const XS_SPAN:   Span = Span { start: 3, end: 3, line: 0, column: 0 };
+    const ARG_SPAN:  Span = Span { start: 4, end: 4, line: 0, column: 0 };
+    const PUSH_SPAN: Span = Span { start: 5, end: 5, line: 0, column: 0 };
+
+    let call = builtin_ctor_call(&arena, "List", CALL_SPAN);
+    let let_xs = Stmt {
+        kind: StmtKind::Let {
+            mutable: false,
+            binding: BindingTarget::Ident(arena.alloc_str("xs")),
+            ty:      None,
+            value:   call,
+        },
+        span: LET_SPAN,
+    };
+    let target = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("xs")), span: XS_SPAN });
+    let callee = arena.alloc(Expr { kind: ExprKind::Field { target, field: "push" }, span: Z });
+    let one    = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(1)), span: ARG_SPAN });
+    let args: &[Arg] = arena.alloc_slice_copy(&[Arg { kind: ArgKind::Positional(one), span: Z }]);
+    let push = Stmt {
+        kind: StmtKind::Expr(arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: PUSH_SPAN })),
+        span: Z,
+    };
+    let stmts = arena.alloc_slice_copy(&[let_xs, push]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+
+    let prog = prog_with(&arena, &[Item::Function(f)]);
+    let ctx  = sema::analyse(&prog, &arena, String::new())
+        .expect("sema should accept an untyped List.new() followed by a push");
+
+    let ty_id = ctx.expr_type(CALL_SPAN).expect("List.new() should have an inferred type");
+    match ctx.types.get(ty_id) {
+        SemaType::List(elem) => match ctx.types.get(*elem) {
+            SemaType::Int => {}
+            other => panic!("expected List<int> after the push, got an element of {:?}", other),
+        },
+        other => panic!("expected SemaType::List, got {:?}", other),
+    }
+}
