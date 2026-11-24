@@ -51,7 +51,7 @@ BSD awk) and under Termux with whatever is installed. Results go to `$OUT_DIR` (
   addressed by index, no crates), reset between iterations. Zig: `std.heap.ArenaAllocator`, reset with `retain_capacity`.
   Odin: `core:mem` `Arena` over one buffer, reset with `arena_free_all`. Ubel MID: `with arena` blocks.
 - **Build flags.** C and C++: `clang -O2 -ffp-contract=off` (C++17). Rust: `rustc -C opt-level=3 -C codegen-units=1`, safe code.
-  C#: .NET 8, Release, tiered PGO (the default). Go: `go build` defaults. Zig: `-OReleaseFast`. Odin: `-o:speed`. Ubel:
+  C#: Release, tiered PGO (the default), whatever .NET the machine has (8 in the sandbox, 11 on the hosted runner). Go: `go build` defaults. Zig: `-OReleaseFast`. Odin: `-o:speed`. Ubel:
   `ubel build -O 2`, which is the same LLVM and clang as the C build. Everything except Go and C# goes through LLVM.
 - **Timing.** Wall time, CPU time and peak memory of one process, by `timeit.c` (fork, wait4); build time and binary size
   are recorded too. One untimed correctness run per language, then N timed runs. **Best of N is the headline** (noise only
@@ -60,90 +60,129 @@ BSD awk) and under Termux with whatever is installed. Results go to `$OUT_DIR` (
 - **Not measured yet:** start-up time, multi-core scaling, a warm-up curve for the JIT, ARM. Go may fuse multiply-add on arm64
   and would then differ in the last bits, so the Go programs are only checked on x86-64.
 
-## First results (indicative)
+## Results on a GitHub-hosted runner (indicative)
 
-One virtual CPU (an Intel Xeon at 2.1 GHz) shared with other work, best of 5, measured 2026-11-22 with `ubel` built from this
-repository, clang 18, rustc 1.85, .NET 8.0, Go 1.22, Zig 0.13, Odin dev-2026-11. Read the ratios, not the milliseconds, and
-re-run with `--runs 10` (the workflow) before quoting any of it. "vs fastest" is the ratio to the fastest language in that row group.
+Run #1 of the workflow, started by hand on master `bc6f861`: both jobs passed in 9 min 45 s, `bench` input, best of 10 timed
+runs. Machine (from the run summary): Linux 7.0.0-1020-azure, AMD EPYC 7763, 4 CPUs. Toolchains: clang 21.1.8 (C, C++ and
+Ubel's native backend), rustc 1.100.0, .NET 11.0.100, Go 1.26.11, Zig 0.13.0, Odin dev-2026-11-nightly. The tables are the
+"all cores" job. The "pinned to one core" job (every timed process on CPU 0) is shown only for the `gc` track: everywhere
+else it agrees with the first job to within 0.3% (compute) or 3% (manual and arena, the C++ row being the largest).
 
-### Track `compute`: Compute baseline: loops and floating point, nothing allocated in the hot path
-
+### Track `compute`: loops and floating point, nothing allocated in the hot path
 
 #### nbody
 
 | language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| ubel | 1073.9 | 1235.4 | 1229.4 | 2.1 | 74 | 0.7 | 1.17x |
-| c | 935.2 | 966.2 | 964.6 | 1.9 | 16 | 0.1 | 1.02x |
-| rust | 915.7 | 1071.6 | 1062.3 | 2.1 | 11126 | 0.3 | 1.00x |
-| cs | 1058.7 | 1176.0 | 1165.7 | 24.0 | - | 1.8 | 1.16x |
-| go | 1514.7 | 1580.6 | 1572.6 | 1.5 | 1860 | 8.9 | 1.65x |
+| ubel | 1648.6 | 1651.4 | 1651.0 | 2.0 | 78 | 0.9 | 1.32x |
+| c | 1338.6 | 1341.2 | 1341.0 | 1.8 | 16 | 0.1 | 1.07x |
+| rust | 1249.8 | 1252.3 | 1252.1 | 2.2 | 4397 | 0.2 | 1.00x |
+| cs | 1571.0 | 1577.2 | 1572.5 | 25.8 | - | 8.0 | 1.26x |
+| go | 1751.2 | 1754.2 | 1758.7 | 2.1 | 2347 | 5.3 | 1.40x |
 
 #### spectralnorm
 
 | language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| ubel | 811.6 | 841.6 | 832.8 | 2.2 | 74 | 0.6 | 1.23x |
-| c | 732.3 | 807.7 | 790.1 | 2.1 | 16 | 0.1 | 1.11x |
-| rust | 757.4 | 800.8 | 792.9 | 2.2 | 11122 | 0.3 | 1.15x |
-| cs | 659.7 | 831.8 | 823.6 | 23.7 | - | 3.2 | 1.00x |
-| go | 688.1 | 803.4 | 795.9 | 1.6 | 1855 | 0.2 | 1.04x |
+| ubel | 946.1 | 947.8 | 947.7 | 2.1 | 78 | 0.7 | 1.03x |
+| c | 921.0 | 921.8 | 921.6 | 1.9 | 16 | 0.1 | 1.00x |
+| rust | 918.3 | 919.0 | 918.8 | 2.2 | 4390 | 0.1 | 1.00x |
+| cs | 969.7 | 971.8 | 968.8 | 25.4 | - | 0.7 | 1.06x |
+| go | 929.1 | 930.2 | 933.0 | 2.0 | 2347 | 0.2 | 1.01x |
 
 #### fannkuch
 
 | language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| ubel | 2505.3 | 2686.6 | 2674.2 | 2.1 | 73 | 0.5 | 1.26x |
-| c | 2263.4 | 2514.5 | 2506.3 | 2.0 | 16 | 0.1 | 1.14x |
-| rust | 1982.2 | 2230.2 | 2218.3 | 2.1 | 11121 | 0.3 | 1.00x |
-| cs | 2005.1 | 2246.7 | 2222.8 | 23.8 | - | 1.4 | 1.01x |
-| go | 2194.3 | 2587.2 | 2565.2 | 1.5 | 1851 | 0.3 | 1.11x |
+| ubel | 2900.4 | 2907.1 | 2906.8 | 2.0 | 73 | 0.7 | 1.32x |
+| c | 2314.9 | 2320.9 | 2320.6 | 1.8 | 16 | 0.1 | 1.05x |
+| rust | 2199.2 | 2203.8 | 2203.5 | 2.2 | 4390 | 0.1 | 1.00x |
+| cs | 2361.1 | 2396.3 | 2393.4 | 25.5 | - | 0.5 | 1.07x |
+| go | 2552.3 | 2565.9 | 2573.1 | 2.1 | 2347 | 0.2 | 1.16x |
 
-Geometric mean of the ratio to the fastest, over the programs of this track:
+Geometric mean of the ratio to the fastest over the three programs: Ubel 1.22x, C 1.04x, Rust 1.00x,
+C# 1.13x, Go 1.18x. (The report averages the ratios as printed, to two decimals; from the unrounded times
+Ubel is 1.21x and the others are the same to two decimals.)
 
-| language | geometric mean | programs |
-|---|---:|---:|
-| ubel | 1.22x | 3 |
-| c | 1.09x | 3 |
-| rust | 1.05x | 3 |
-| cs | 1.05x | 3 |
-| go | 1.24x | 3 |
-
-### Track `gc`: GC tier: Ubel HIGH against C# and Go
-
-
-#### binarytrees
+### Track `gc`: Ubel HIGH against C# and Go (binary-trees), all cores
 
 | language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| ubel-high | 1592.8 | 1893.8 | 1883.7 | 59.9 | 73 | 0.5 | 1.14x |
-| cs | 1401.1 | 1587.5 | 1579.6 | 188.3 | - | 1.2 | 1.00x |
-| go | 2773.7 | 3509.4 | 3469.4 | 48.1 | 1867 | 0.1 | 1.98x |
+| ubel-high | 1885.7 | 1902.8 | 1902.7 | 59.7 | 77 | 0.7 | 1.73x |
+| cs | 1088.5 | 1100.0 | 1098.3 | 222.1 | - | 0.3 | 1.00x |
+| go | 2494.1 | 2499.9 | 5251.8 | 38.1 | 2359 | 0.1 | 2.29x |
 
-### Track `arena`: Arena tier: Ubel MID against Zig, Odin and Rust
+The same track with every timed process pinned to one core:
 
+| language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ubel-high | 1901.1 | 1905.9 | 1905.6 | 59.7 | 77 | 0.7 | 1.32x |
+| cs | 1441.3 | 1453.8 | 1448.3 | 226.1 | - | 0.3 | 1.00x |
+| go | 3293.4 | 3316.0 | 3315.6 | 48.1 | 2359 | 0.1 | 2.29x |
 
-#### binarytrees_arena
+### Track `arena`: Ubel MID against Zig, Odin and Rust (binary-trees with every tree in an arena), all cores
 
 | language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | ubel-mid | n/a | | | | | | build_failed: an enum value in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet) |
-| zig | 487.4 | 500.2 | 495.2 | 16.2 | 1650 | 9.3 | 1.01x |
-| odin | 870.0 | 1032.5 | 1025.1 | 18.1 | 281 | 3.3 | 1.80x |
-| rust | 483.2 | 483.8 | 483.3 | 10.2 | 11122 | 0.2 | 1.00x |
+| zig | 555.1 | 556.2 | 556.1 | 16.0 | 1858 | 10.0 | 1.67x |
+| odin | 1114.9 | 1116.9 | 1116.8 | 18.0 | 281 | 3.5 | 3.36x |
+| rust | 331.8 | 333.2 | 333.0 | 10.2 | 4390 | 0.1 | 1.00x |
+
+### Track `manual`: Ubel LOW against C, C++ and Rust (binary-trees with every node freed by hand), all cores
+
+| language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ubel-low | n/a | | | | | | no_program: no ubel-low program for this track yet |
+| c | 2075.2 | 2091.5 | 2091.3 | 33.8 | 16 | 0.1 | 1.00x |
+| cpp | 2250.2 | 2316.9 | 2314.8 | 35.6 | 16 | 0.2 | 1.08x |
+| rust | 2526.1 | 2540.8 | 2540.6 | 34.1 | 4390 | 0.1 | 1.22x |
 
 ## Reading these numbers
 
-- **Compute (numeric loops):** the geometric mean of the ratio to the fastest is 1.22x for Ubel, against 1.05x for Rust and C#,
-  1.09x for C and 1.24x for Go. The median runs were up to about 15% above the best times, so differences of that size or
-  less are within this machine's noise.
-- **GC tier:** Ubel's collected heap is about 1.14x C#'s collector on binary-trees and well ahead of Go (1.98x of C#), and uses
-  about a third of C#'s memory. Go's gap is as measured with Go 1.22 on this VM and was not investigated.
-- **Arena tier:** Zig and Rust are level. Odin is about 1.8x with its plain `Arena`; its growing virtual-memory arena
-  (`core:mem/virtual`) measured about 5x, because it takes a mutex on each allocation and zeroes its memory on `free_all`
-  (read in its source; not profiled further). Ubel MID cannot run yet.
-- **Manual tier:** Rust `Box` and C `malloc` are close; C++ `new`/`delete` is about 1.3x of them (not investigated).
-  Ubel LOW has no program yet.
+- **Noise.** On this runner the median is within 0.6% of the best on every compute row except C# on fannkuch-redux (1.5%), and the
+  two jobs, which ran on separate machines, agree on every compute time to within 0.3%. So here a difference of a few percent is
+  probably real, unlike in the sandbox below (medians up to 15% above the best). It is one run: repeat the workflow on another
+  day before quoting a ratio, because two runner machines of the same kind can still differ.
+- **Compute.** Ubel's geometric mean is 1.22x of the fastest, the same as in the sandbox. Against C, which goes through
+  the same clang as Ubel (so the same optimiser): spectral-norm is level (1.03x), n-body is 1.23x and
+  fannkuch-redux 1.25x, a geometric mean of 1.17x. With the same optimiser, the likely place for the gap is the IR Ubel emits for
+  those loops (or the flags `ubel build` passes to clang). Not investigated; the first thing to read is the IR of the inner loops
+  of n-body and fannkuch-redux.
+- **GC tier.** Ubel HIGH takes 1.73x of C#'s time when the other cores are free and 1.32x when everything is on
+  one core (1.14x in the sandbox, with .NET 8), and is faster than Go in both (0.76x and 0.58x of Go's time).
+  Ubel's collector is single-threaded and stops the program, so the pinned view is the like-for-like one for collector
+  efficiency, and the all-cores view is what someone with a multi-core machine would see. In the all-cores job Go's collector
+  ran on other cores (median CPU time 5.25 s in a 2.5 s run), while C# was faster with more cores (1.09 s against 1.44 s)
+  and its CPU time was no higher than its wall time, so its gain was not just work moving to other cores; why is not
+  investigated, and neither is Go's gap to C# (2.29x in both jobs). Ubel's peak memory is about 27% of C#'s (60 MB against
+  222 MB) and above Go's (38 MB, 48 MB pinned).
+- **Arena tier.** Ubel MID cannot run (see below). Zig takes 1.67x and Odin 3.36x of Rust's time, against 1.01x and 1.80x in the
+  sandbox: Rust got faster on this machine (332 ms against 483 ms) while Zig (555 ms against 487 ms) and Odin (1115 ms against
+  870 ms) got slower. Why is not investigated. The programs differ in one known way: Rust's nodes are two `u32` indexes (8 bytes)
+  in a `Vec`, Zig's and Odin's are two pointers (16 bytes), and the peak memory is 10.2 MB for Rust against
+  16 and 18 MB. So this track compares whole program designs and not only allocators. A Rust row with pointers (unsafe) would be
+  the like-for-like row and has not been written.
+- **Manual tier.** C 1.00x, C++ 1.08x (1.12x pinned), Rust `Box` 1.22x (1.23x pinned). In the sandbox Rust was level with C and
+  C++ was about 1.3x. Not investigated.
+- **Not measured:** ARM, start-up time, multi-core scaling, a warm-up curve for the JIT, a second run of the workflow.
+
+## Earlier numbers: a one-CPU sandbox
+
+Measured 2026-11-22 on one virtual CPU (an Intel Xeon at 2.1 GHz) shared with other work, best of 5, with clang 18, rustc 1.85,
+.NET 8.0, Go 1.22, Zig 0.13 and Odin dev-2026-11. Medians were up to about 15% above the best times there, so differences of that
+size or less were noise. Ratios to the fastest in each row group:
+
+| measure | sandbox | hosted runner (all cores) |
+|---|---:|---:|
+| compute geometric mean: Ubel, C, Rust, C#, Go | 1.22x, 1.09x, 1.05x, 1.05x, 1.24x | 1.22x, 1.04x, 1.00x, 1.13x, 1.18x |
+| gc: Ubel HIGH, C#, Go | 1.14x, 1.00x, 1.98x | 1.73x, 1.00x, 2.29x |
+| arena: Zig, Odin, Rust | 1.01x, 1.80x, 1.00x | 1.67x, 3.36x, 1.00x |
+| manual: C, C++, Rust | C and Rust close, C++ about 1.3x of them | 1.00x, 1.08x, 1.22x |
+
+Ubel's peak memory on binary-trees was about a third of C#'s in the sandbox and about 27% on the runner. The Odin program uses the
+plain `core:mem` `Arena`; Odin's growing virtual-memory arena (`core:mem/virtual`) measured about 5x in the sandbox, because it takes
+a mutex on each allocation and zeroes its memory on `free_all` (read in its source, not profiled).
 
 ## What cannot run yet
 
