@@ -1,8 +1,8 @@
-// Not supported yet: a `List.new()` whose element type the emitter cannot see where it is written. Sema leaves it
-// unsolved (`List<?T>`) until the list is used, so the place it is stored in has to name the type.
+// Not supported yet: a `List.new()` whose element type nothing fixes. Here the list has no annotation and is never pushed
+// to, so sema leaves the element type unsolved (`List<?T>`) and the emitter has no type for the elements. A push
+// (`xs.push(1)`) fixes it, and so does an annotation (`let xs: List<int> = List.new()`).
 // expect-refusal: the element type is not known here
 fn main() void {
     let xs = List.new()
-    xs.push(1)
     println(xs.len())
 }

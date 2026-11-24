@@ -1,0 +1,68 @@
+// binary-trees on arenas (the MID tier): see binarytrees.ubl for the problem. Every tree lives in an arena that ends with
+// its `with arena` block, so a whole tree is released at once instead of being left to the collector.
+// The native backend does not compile this yet: it refuses an allocation in a `@tier(mid)` function that is not itself
+// inside a `with arena` (where a callee finds its caller's arena is not decided). The interpreter runs it.
+
+enum Tree {
+    Empty
+    Node(Tree, Tree)
+}
+
+@tier(mid)
+fn make(depth: int) Tree {
+    if depth == 0 {
+        return Tree.Node(Tree.Empty, Tree.Empty)
+    }
+    return Tree.Node(make(depth - 1), make(depth - 1))
+}
+
+@tier(mid)
+fn check(t: Tree) int {
+    match t {
+        Tree.Empty => 0
+        Tree.Node(l, r) => 1 + check(l) + check(r)
+    }
+}
+
+@tier(mid)
+fn stretch_check(depth: int) int {
+    with arena(512MB) {
+        return check(make(depth))
+    }
+}
+
+@tier(mid)
+fn rounds(depth: int, iterations: int) int {
+    let mut total = 0
+    for i in 0 .. iterations {
+        with arena(512MB) {
+            total += check(make(depth))
+        }
+    }
+    return total
+}
+
+@tier(mid)
+fn main() void {
+    let n = @N@
+    let min_depth = 4
+    let mut max_depth = min_depth + 2
+    if n > max_depth {
+        max_depth = n
+    }
+    let stretch = max_depth + 1
+    println($"stretch tree of depth {stretch} check: {stretch_check(stretch)}")
+    with arena(512MB) {
+        let long_lived = make(max_depth)
+        let mut d = min_depth
+        while d <= max_depth {
+            let mut iterations = 1
+            for k in 0 .. (max_depth - d + min_depth) {
+                iterations = iterations * 2
+            }
+            println($"{iterations} trees of depth {d} check: {rounds(d, iterations)}")
+            d += 2
+        }
+        println($"long lived tree of depth {max_depth} check: {check(long_lived)}")
+    }
+}

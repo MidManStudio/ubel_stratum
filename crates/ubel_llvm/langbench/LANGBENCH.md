@@ -1,141 +1,168 @@
-# Cross-language benchmarks (provisional)
+# Cross-language benchmarks by memory tier (provisional)
 
-The same four programs in Ubel, C, Rust and C#, built the way each language is normally built for speed,
-checked against the same expected output, and timed. This is the start of the answer to "how fast is Ubel
-next to the languages people compare against"; it is small on purpose, and everything here is provisional.
+Ubel lets you choose how a function's memory is managed: the garbage-collected heap (HIGH), arenas (MID) or manual
+ownership (LOW). These benchmarks put each tier next to the languages that manage memory the same way, and a compute
+baseline next to all of them:
+
+| track | Ubel tier | compared with | program |
+|---|---|---|---|
+| `compute` | (not tier-specific) | C, Rust, C#, Go | n-body, spectral-norm, fannkuch-redux |
+| `gc` | HIGH | C#, Go | binary-trees on the collected heap |
+| `arena` | MID | Zig, Odin, Rust | binary-trees with every tree in an arena that is reset, not freed node by node |
+| `manual` | LOW | C, C++, Rust | binary-trees with every node allocated and freed by hand |
+
+Everything here is provisional. **Ubel can only run the HIGH tier natively today**: the MID and LOW rows exist so the
+report shows the gap, with the reason, and fills in by itself when the backend can compile those programs (see "What
+cannot run yet").
+
+## Running it
+
+**On GitHub (no machine needed, works from a phone).** Upload `langbench.yml` to `.github/workflows/` (a workflow file
+has to be added by hand), then Actions, "Language benchmarks", Run workflow. Choose a track (default `all`), the number
+of timed runs (default 10) and `bench` or `small`. Two jobs run on two separate runners, one with all cores and one with
+every timed process pinned to a single core (the collectors in Go and .NET run in parallel, Ubel's does not, so both views
+matter). The tables appear on the run's summary page; the raw numbers are attached as artifacts. A hosted runner is a
+shared machine: read the ratios and compare runs of the same workflow, not absolute milliseconds.
+
+**On your own machine.**
 
 ```
 cd crates/ubel_llvm/langbench
-bash run.sh --size small                # correctness only: does every language print the expected output?
-bash run.sh --size bench --runs 10      # timed (each language's first run is a correctness run, not timed)
-bash run.sh --only nbody --langs "ubel c"
+bash install_tools.sh                       # Ubuntu only; adds Zig and Odin, fills in clang, Go and .NET if missing
+UBEL=/path/to/ubel bash run.sh --size small           # correctness only, every language, fast
+UBEL=/path/to/ubel bash run.sh --track gc --runs 10   # one track, timed
+bash run.sh --pin 0 --langs "ubel-high go"            # one core, two languages
 ```
 
-Environment: `UBEL` (the `ubel` binary, default `ubel`), `CLANG`, `RUSTC`, `DOTNET`, `OUT_DIR`. A language whose
-tool is missing is skipped, so the same script works on the 2010 MacBook Pro (bash 3.2, BSD awk, no GNU-only
-options; the timer `timeit.c` is built with `CLANG`) and under Termux. Results go to `$OUT_DIR/results.tsv`
-(every run) and `$OUT_DIR/summary.md`.
-
-## What "the standard benchmark" is
-
-There is no single official one. The two that language implementers actually cite:
-
-- **The Computer Language Benchmarks Game** (about ten small problems: n-body, spectral-norm, fannkuch-redux,
-  binary-trees, mandelbrot, fasta, k-nucleotide, reverse-complement, regex-redux, pidigits), run for many languages,
-  comparing CPU time, memory and code size. It is the one people mean when they compare languages. Its programs are
-  tiny, so it measures the compiler and the runtime (loops, floating point, allocation, strings), not whole applications.
-- **are-we-fast-yet** (Marr and others, 2016): a suite written for language implementations, heavier on objects,
-  closures and polymorphism (Richards, DeltaBlue, Havlak, JSON, and micro-benchmarks).
-
-We start with the first, because Ubel can compile four of its problems today. The programs here are written for this repo
-(same algorithm and the same operation order as the Game's problems, so results are bit for bit identical); they are
-not copies of the Game's programs. binary-trees is the one that matters most for Ubel: it is the allocation benchmark,
-and Ubel's whole point is choosing the memory tier (garbage collection, arena, manual) per function.
+`run.sh --help` lists the options. It needs `clang` (for the timer and for Ubel's native backend); every other language is
+optional and is skipped with a note when its tool is missing, so the same script runs on the 2010 MacBook Pro (bash 3.2,
+BSD awk) and under Termux with whatever is installed. Results go to `$OUT_DIR` (`summary.md`, `results.tsv`, `status.tsv`).
 
 ## Method
 
-- **Same work.** Same algorithm and operation order in every language. Each program prints a checksum-style result
-  (floating-point results are scaled by 1e9 and truncated to an integer, so no language needs fixed-precision formatting).
-  Every language must reproduce `expected_small.txt` on the small input (generated by the interpreter, which is the oracle,
-  and equal to the published reference values: n-body 1000 gives -0.169075164 and -0.169087605, spectral-norm 100 gives
-  1.274219991, fannkuch-redux 7 gives 228 and 16, binary-trees 10 gives the published checks); on the timed input every
-  language must print what C prints, or it is not timed.
-- **Build flags.** C: `clang -O2 -ffp-contract=off`. Rust: `rustc -C opt-level=3 -C codegen-units=1`, safe code, bounds
-  checks on. C#: .NET 8, Release, tiered PGO (the default). Ubel: `ubel build -O 2`, which is the same LLVM and the same clang
-  as the C build. `-ffp-contract=off` keeps fused multiply-add from changing the last bits on machines that have it.
-- **Timing.** Wall time, CPU time and peak memory of one process, by `timeit.c` (fork, wait4). One untimed correctness run
-  per language, then N timed runs. **Best of N is the headline** (noise only ever adds time); the median is printed next
-  to it because the gap between the two shows how noisy the machine was.
-- **Not measured yet:** start-up time, compile time, binary size, code size, multi-core, a warm-up curve for the JIT.
-  C# pays for its start-up and JIT inside the numbers below (not separated out yet).
+- **Same work.** Each program is written once per language with the same algorithm and the same operation order, so the
+  results are bit for bit the same. Floating-point results are scaled by 1e9 and truncated to an integer, so no language
+  needs fixed-precision formatting. Every language must print `expected_small.txt` on the small input (generated by the
+  interpreter, the oracle, and equal to the published reference values: n-body 1000 gives -0.169075164 and -0.169087605,
+  spectral-norm 100 gives 1.274219991, fannkuch-redux 7 gives 228 and 16, binary-trees 10 gives the published checks); on the
+  timed input every language must print what the first one prints, or it is not timed.
+- **What each language does for memory in binary-trees.** Ubel HIGH: enum nodes on the collected heap. C#, Go: collected
+  heap. C: `malloc`/`free`. C++: `new`/`delete`. Rust (manual): `Box`. Rust (arena): a hand-written bump arena (a `Vec` of nodes
+  addressed by index, no crates), reset between iterations. Zig: `std.heap.ArenaAllocator`, reset with `retain_capacity`.
+  Odin: `core:mem` `Arena` over one buffer, reset with `arena_free_all`. Ubel MID: `with arena` blocks.
+- **Build flags.** C and C++: `clang -O2 -ffp-contract=off` (C++17). Rust: `rustc -C opt-level=3 -C codegen-units=1`, safe code.
+  C#: .NET 8, Release, tiered PGO (the default). Go: `go build` defaults. Zig: `-OReleaseFast`. Odin: `-o:speed`. Ubel:
+  `ubel build -O 2`, which is the same LLVM and clang as the C build. Everything except Go and C# goes through LLVM.
+- **Timing.** Wall time, CPU time and peak memory of one process, by `timeit.c` (fork, wait4); build time and binary size
+  are recorded too. One untimed correctness run per language, then N timed runs. **Best of N is the headline** (noise only
+  ever adds time); the median is printed next to it because the gap between them shows how noisy the machine was.
+  `--pin CPU` runs each timed process on one core.
+- **Not measured yet:** start-up time, multi-core scaling, a warm-up curve for the JIT, ARM. Go may fuse multiply-add on arm64
+  and would then differ in the last bits, so the Go programs are only checked on x86-64.
 
-## Results (indicative)
+## First results (indicative)
 
-A shared one-core virtual machine, so read ratios, not milliseconds. Measured 2026-11-21, five runs each. Re-run on a quiet
-machine with `--runs 10` before quoting any of this.
+One virtual CPU (an Intel Xeon at 2.1 GHz) shared with other work, best of 5, measured 2026-11-22 with `ubel` built from this
+repository, clang 18, rustc 1.85, .NET 8.0, Go 1.22, Zig 0.13, Odin dev-2026-11. Read the ratios, not the milliseconds, and
+re-run with `--runs 10` (the workflow) before quoting any of it. "vs fastest" is the ratio to the fastest language in that row group.
 
-- machine: Linux 6.18.44-fc-v726 x86_64, Intel(R) Xeon(R) Processor @ 2.30GHz
-- C: Ubuntu clang version 18.1.3 (1ubuntu1), -O2 -ffp-contract=off
-- Rust: rustc 1.85.1 (4eb161250 2025-03-15) (built from a source tarball), -C opt-level=3 -C codegen-units=1
-- C#: .NET 8.0.134, Release, tiered PGO on (the default)
-- Ubel: /home/claude/work/target/release/ubel build -O 2 (LLVM backend through clang-18)
+### Track `compute`: Compute baseline: loops and floating point, nothing allocated in the hot path
 
-## binarytrees
 
-| language | best wall ms | median wall ms | median CPU ms | peak memory MB | vs C (best) | vs C (median) |
-|---|---:|---:|---:|---:|---:|---:|
-| ubel | 1557.3 | 1578.0 | 1561.3 | 59.9 | 1.38x | 1.19x |
-| c | 1126.5 | 1326.7 | 1322.6 | 33.9 | 1.00x | 1.00x |
-| rust | 1083.1 | 1106.2 | 1104.1 | 34.1 | 0.96x | 0.83x |
-| cs | 1299.5 | 1341.8 | 1328.5 | 188.5 | 1.15x | 1.01x |
+#### nbody
 
-## fannkuch
+| language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ubel | 1073.9 | 1235.4 | 1229.4 | 2.1 | 74 | 0.7 | 1.17x |
+| c | 935.2 | 966.2 | 964.6 | 1.9 | 16 | 0.1 | 1.02x |
+| rust | 915.7 | 1071.6 | 1062.3 | 2.1 | 11126 | 0.3 | 1.00x |
+| cs | 1058.7 | 1176.0 | 1165.7 | 24.0 | - | 1.8 | 1.16x |
+| go | 1514.7 | 1580.6 | 1572.6 | 1.5 | 1860 | 8.9 | 1.65x |
 
-| language | best wall ms | median wall ms | median CPU ms | peak memory MB | vs C (best) | vs C (median) |
-|---|---:|---:|---:|---:|---:|---:|
-| ubel | 2434.9 | 2469.7 | 2462.8 | 2.1 | 1.11x | 1.11x |
-| c | 2202.4 | 2228.0 | 2221.9 | 2.0 | 1.00x | 1.00x |
-| rust | 1884.1 | 1909.8 | 1904.9 | 2.1 | 0.86x | 0.86x |
-| cs | 2164.5 | 2212.9 | 2206.9 | 23.9 | 0.98x | 0.99x |
+#### spectralnorm
 
-## nbody
+| language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ubel | 811.6 | 841.6 | 832.8 | 2.2 | 74 | 0.6 | 1.23x |
+| c | 732.3 | 807.7 | 790.1 | 2.1 | 16 | 0.1 | 1.11x |
+| rust | 757.4 | 800.8 | 792.9 | 2.2 | 11122 | 0.3 | 1.15x |
+| cs | 659.7 | 831.8 | 823.6 | 23.7 | - | 3.2 | 1.00x |
+| go | 688.1 | 803.4 | 795.9 | 1.6 | 1855 | 0.2 | 1.04x |
 
-| language | best wall ms | median wall ms | median CPU ms | peak memory MB | vs C (best) | vs C (median) |
-|---|---:|---:|---:|---:|---:|---:|
-| ubel | 1042.9 | 1217.1 | 1036.6 | 2.2 | 1.28x | 1.48x |
-| c | 813.5 | 819.7 | 819.3 | 2.0 | 1.00x | 1.00x |
-| rust | 888.7 | 894.9 | 893.4 | 2.1 | 1.09x | 1.09x |
-| cs | 945.8 | 949.1 | 948.1 | 24.2 | 1.16x | 1.16x |
+#### fannkuch
 
-## spectralnorm
+| language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ubel | 2505.3 | 2686.6 | 2674.2 | 2.1 | 73 | 0.5 | 1.26x |
+| c | 2263.4 | 2514.5 | 2506.3 | 2.0 | 16 | 0.1 | 1.14x |
+| rust | 1982.2 | 2230.2 | 2218.3 | 2.1 | 11121 | 0.3 | 1.00x |
+| cs | 2005.1 | 2246.7 | 2222.8 | 23.8 | - | 1.4 | 1.01x |
+| go | 2194.3 | 2587.2 | 2565.2 | 1.5 | 1851 | 0.3 | 1.11x |
 
-| language | best wall ms | median wall ms | median CPU ms | peak memory MB | vs C (best) | vs C (median) |
-|---|---:|---:|---:|---:|---:|---:|
-| ubel | 675.1 | 908.3 | 686.3 | 2.2 | 1.03x | 1.36x |
-| c | 657.0 | 666.5 | 664.0 | 2.0 | 1.00x | 1.00x |
-| rust | 650.3 | 670.0 | 669.5 | 2.2 | 0.99x | 1.01x |
-| cs | 664.6 | 680.0 | 679.6 | 23.9 | 1.01x | 1.02x |
+Geometric mean of the ratio to the fastest, over the programs of this track:
 
-## Geometric mean of the ratio to C (over the programs above)
+| language | geometric mean | programs |
+|---|---:|---:|
+| ubel | 1.22x | 3 |
+| c | 1.09x | 3 |
+| rust | 1.05x | 3 |
+| cs | 1.05x | 3 |
+| go | 1.24x | 3 |
 
-| language | vs C (best) | vs C (median) | programs |
-|---|---:|---:|---:|
-| ubel | 1.19x | 1.28x | 4 |
-| c | 1.00x | 1.00x | 4 |
-| rust | 0.97x | 0.94x | 4 |
-| cs | 1.07x | 1.04x | 4 |
+### Track `gc`: GC tier: Ubel HIGH against C# and Go
 
-Best-of-N is the headline on a noisy machine (noise only ever adds time); the median shows how noisy the runs were.
+
+#### binarytrees
+
+| language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ubel-high | 1592.8 | 1893.8 | 1883.7 | 59.9 | 73 | 0.5 | 1.14x |
+| cs | 1401.1 | 1587.5 | 1579.6 | 188.3 | - | 1.2 | 1.00x |
+| go | 2773.7 | 3509.4 | 3469.4 | 48.1 | 1867 | 0.1 | 1.98x |
+
+### Track `arena`: Arena tier: Ubel MID against Zig, Odin and Rust
+
+
+#### binarytrees_arena
+
+| language | best wall ms | median wall ms | median CPU ms | peak MB | binary KB | build s | vs fastest (best) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ubel-mid | n/a | | | | | | build_failed: an enum value in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet) |
+| zig | 487.4 | 500.2 | 495.2 | 16.2 | 1650 | 9.3 | 1.01x |
+| odin | 870.0 | 1032.5 | 1025.1 | 18.1 | 281 | 3.3 | 1.80x |
+| rust | 483.2 | 483.8 | 483.3 | 10.2 | 11122 | 0.2 | 1.00x |
 
 ## Reading these numbers
 
-- **spectral-norm** is plain floating-point loops: Ubel is within a few percent of C, as expected, because it is the same
-  LLVM and the same code shape.
-- **fannkuch-redux** (integer arrays): Ubel is about 11% behind C; Rust is faster than C here. Not investigated.
-- **n-body** (structs in a list): Ubel is about 28% behind C. A likely cause is that every `Body` is its own GC object and
-  `bodies[i]` is a bounds-checked load through the list, where C has one contiguous array of structs. That is a hypothesis;
-  it has not been profiled.
-- **binary-trees** (allocation): Ubel's garbage-collected tier is about 1.4x C's `malloc`/`free` and uses about 1.8x its
-  memory, and uses about a third of the memory of C#'s collector. This is the HIGH tier only.
-- All four Ubel programs were checked equal to the interpreter, to C, to Rust and to C#.
+- **Compute (numeric loops):** the geometric mean of the ratio to the fastest is 1.22x for Ubel, against 1.05x for Rust and C#,
+  1.09x for C and 1.24x for Go. The median runs were up to about 15% above the best times, so differences of that size or
+  less are within this machine's noise.
+- **GC tier:** Ubel's collected heap is about 1.14x C#'s collector on binary-trees and well ahead of Go (1.98x of C#), and uses
+  about a third of C#'s memory. Go's gap is as measured with Go 1.22 on this VM and was not investigated.
+- **Arena tier:** Zig and Rust are level. Odin is about 1.8x with its plain `Arena`; its growing virtual-memory arena
+  (`core:mem/virtual`) measured about 5x, because it takes a mutex on each allocation and zeroes its memory on `free_all`
+  (read in its source; not profiled further). Ubel MID cannot run yet.
+- **Manual tier:** Rust `Box` and C `malloc` are close; C++ `new`/`delete` is about 1.3x of them (not investigated).
+  Ubel LOW has no program yet.
 
-## What this cannot show yet, and what is next
+## What cannot run yet
 
-- **The tier comparison** (the same binary-trees on the MID tier, in an arena, and on LOW) is blocked: the interpreter and sema
-  accept an arena version, but the native backend refuses an allocation in a `@tier(mid)` function that is not itself inside a
-  `with arena` ("where it allocates is not decided yet"). That is a design decision (how a MID callee finds the arena of its
-  caller), not a missing feature. Once it is made, the arena run is the number that tests Ubel's central claim.
-- **More Game problems** need features Ubel does not compile yet: mandelbrot (writes raw bytes), fasta and k-nucleotide
-  (strings, dictionaries, input), reverse-complement and regex-redux (input, regular expressions), pidigits (big integers).
-  The next candidates by effort are mandelbrot (print a checksum instead of the bitmap) and fasta.
-- **are-we-fast-yet** needs classes, closures in lists and traits in the native backend.
-- Numbers from the phone (armv7 under Termux) and the 2010 laptop, run with the same script, would show how the ratios move
-  on very different CPUs.
-- A column for compile time and binary size, and a start-up (hello world) row.
+- **Ubel MID (arena).** The interpreter and sema accept `programs/binarytrees_arena/binarytrees_arena.ubl`, but the native
+  backend refuses an allocation in a `@tier(mid)` function that is not itself inside a `with arena` ("where it allocates is
+  not decided yet"). Where a MID callee finds its caller's arena is a design decision, not a missing feature.
+- **Ubel LOW (manual).** There is no LOW allocation in the native backend and no `binarytrees.low.ubl` yet; when LOW can
+  allocate and free, add that file and the `ubel-low` row fills in (it is already in `tracks.txt`).
+
+## Adding a program or a language
+
+A program is a directory under `programs/` with a source file per language (`NAME.ubl`, `NAME.c`, `NAME.cpp`, `NAME.rs`,
+`NAME.cs`, `NAME.go`, `NAME.zig`, `NAME.odin`; `NAME.low.ubl` for Ubel LOW), a `sizes` file (`small=` and `bench=`) and
+`expected_small.txt`. The problem size is the placeholder `@N@` in each source. Then list the program in `tracks.txt` with
+the languages to compare. A new language needs a case in `run.sh` (`tool_of`, `ext_of`, one build command), a line in
+`install_tools.sh`, and its sources.
 
 ## Found by writing these
 
-Writing binary-trees found a real bug in the native backend: a function whose last statement is an `if` or a `match` is its
-value in the interpreter, but native code compiled it and then stopped with "a function with a return type reached its end
-without returning". Fixed with example `54_tail_value` (and the refusals `u_tail_if_no_else`, `u_tail_elif_no_else`);
-see `docs/LLVM_POC.md`, Findings.
+Writing binary-trees found a bug in the native backend: a function whose last statement is an `if` or a `match` is its value
+in the interpreter, but native code compiled it and then stopped with "a function with a return type reached its end
+without returning". Fixed (example `54_tail_value`; see `docs/LLVM_POC.md`, Findings).

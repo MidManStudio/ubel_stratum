@@ -1,0 +1,8 @@
+# track | programs | languages | description
+# Language tokens: ubel, ubel-high, ubel-mid (the program's .ubl file); ubel-low (the program's .low.ubl file, if there is one);
+# c, cpp, rust, cs, go, zig, odin (the program's file with that extension). A language with no file for a program is
+# reported as "no program yet"; one that fails to build is reported with the first line of the error. Nothing aborts the run.
+compute | nbody spectralnorm fannkuch | ubel c rust cs go | Compute baseline: loops and floating point, nothing allocated in the hot path
+gc      | binarytrees                 | ubel-high cs go    | GC tier: Ubel HIGH against C# and Go
+arena   | binarytrees_arena           | ubel-mid zig odin rust | Arena tier: Ubel MID against Zig, Odin and Rust
+manual  | binarytrees                 | ubel-low c cpp rust | Manual tier: Ubel LOW against C, C++ and Rust
