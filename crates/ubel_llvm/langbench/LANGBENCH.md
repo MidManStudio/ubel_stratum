@@ -157,7 +157,7 @@ The same track with every timed process pinned to one core:
   and its CPU time was no higher than its wall time, so its gain was not just work moving to other cores; why is not
   investigated, and neither is Go's gap to C# (2.29x in both jobs). Ubel's peak memory is about 27% of C#'s (60 MB against
   222 MB) and above Go's (38 MB, 48 MB pinned).
-- **Arena tier.** Ubel MID cannot run (see below). Zig takes 1.67x and Odin 3.36x of Rust's time, against 1.01x and 1.80x in the
+- **Arena tier.** Ubel MID could not run in this run (the build was refused); it runs since chat 10, see below. Zig takes 1.67x and Odin 3.36x of Rust's time, against 1.01x and 1.80x in the
   sandbox: Rust got faster on this machine (332 ms against 483 ms) while Zig (555 ms against 487 ms) and Odin (1115 ms against
   870 ms) got slower. Why is not investigated. The programs differ in one known way: Rust's nodes are two `u32` indexes (8 bytes)
   in a `Vec`, Zig's and Odin's are two pointers (16 bytes), and the peak memory is 10.2 MB for Rust against
@@ -184,11 +184,32 @@ Ubel's peak memory on binary-trees was about a third of C#'s in the sandbox and 
 plain `core:mem` `Arena`; Odin's growing virtual-memory arena (`core:mem/virtual`) measured about 5x in the sandbox, because it takes
 a mutex on each allocation and zeroes its memory on `free_all` (read in its source, not profiled).
 
+## Ubel MID in the sandbox (chat 10, indicative)
+
+Since chat 10 (stage 1 of decision D10, provisional) a `@tier(mid)` function that allocates outside its own `with arena` takes
+its caller's arena as a hidden parameter, and `programs/binarytrees_arena/binarytrees_arena.ubl` builds natively and prints the
+expected output (`run.sh --size small` checks it). First timings, in the one-CPU sandbox of the earlier table (best of 7, N=18),
+so not comparable with the hosted-runner tables above; read the ratios:
+
+| language | best wall ms | peak MB | vs fastest |
+|---|---:|---:|---:|
+| ubel-mid | 2136.0 | 34.0 | 5.22x |
+| rust | 409.5 | 10.2 | 1.00x |
+| ubel-high (the gc track's program, same N, same machine) | 1995.8 | 59.8 | |
+
+So the arena tier was no faster than the GC tier on this program (1.07x of its time). Most of the time was the kernel, not
+the code: one run of the MID binary spent 0.52 s in user code and 1.93 s in the system, with 820,635 minor page
+faults. Every `with arena(512MB)` round gets a fresh 512 MB chunk from `malloc` (an `mmap`) and gives it back at the end, so
+each round touches fresh zero pages; the runtime keeps a cache only for the default 64 KB chunk. As an experiment, not delivered,
+retaining one big chunk (at least 1 MB, reused when the next request has exactly the same size) took one run to 0.40 s
+(0.38 s user, 0.02 s system, 12,362 faults, 49 MB peak): close to Rust's best of 410 ms and about
+5 times faster than the Ubel HIGH run above (a different program, binary-trees on the GC heap). That is a memory
+retention policy, so a decision for the owner. One more difference is visible in the programs: an Ubel enum node is 32 bytes (a
+tag and two pointers, 24 bytes, rounded to the 16-byte alignment of the allocator), against 8 in the Rust program and 16 in Zig.
+Not measured: the hosted runner, 32-bit, ARM, the effect of 24-byte nodes, and the experiment under the equivalence suite.
+
 ## What cannot run yet
 
-- **Ubel MID (arena).** The interpreter and sema accept `programs/binarytrees_arena/binarytrees_arena.ubl`, but the native
-  backend refuses an allocation in a `@tier(mid)` function that is not itself inside a `with arena` ("where it allocates is
-  not decided yet"). Where a MID callee finds its caller's arena is a design decision, not a missing feature.
 - **Ubel LOW (manual).** There is no LOW allocation in the native backend and no `binarytrees.low.ubl` yet; when LOW can
   allocate and free, add that file and the `ubel-low` row fills in (it is already in `tracks.txt`).
 

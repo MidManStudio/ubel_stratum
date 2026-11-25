@@ -1,7 +1,7 @@
 // binary-trees on arenas (the MID tier): see binarytrees.ubl for the problem. Every tree lives in an arena that ends with
 // its `with arena` block, so a whole tree is released at once instead of being left to the collector.
-// The native backend does not compile this yet: it refuses an allocation in a `@tier(mid)` function that is not itself
-// inside a `with arena` (where a callee finds its caller's arena is not decided). The interpreter runs it.
+// `make` allocates outside any `with arena` of its own, so the native backend gives it its caller's arena as a hidden
+// parameter (decision D10, stage 1, provisional); every call to it below sits inside a `with arena`.
 
 enum Tree {
     Empty

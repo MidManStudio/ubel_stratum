@@ -1,6 +1,7 @@
-// Not supported yet: building a string in a MID function outside `with arena`. Where it would be
-// allocated is the same open question as for a struct literal there, so the emitter must refuse.
-// expect-refusal: outside `with arena`
+// Not supported: an interpolated string in a MID function outside `with arena`. The function would allocate it in
+// its caller's arena (D10, stage 1), but sema tags an interpolated string with its arena only inside a lexical
+// `with arena`, so the string would have no checked lifetime.
+// expect-refusal: an interpolated string in a `@tier(mid)` function
 @tier(mid)
 fn tag(n: int) int {
     let s = $"n={n}"

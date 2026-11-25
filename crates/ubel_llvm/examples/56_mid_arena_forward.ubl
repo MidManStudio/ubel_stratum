@@ -1,0 +1,92 @@
+// The hidden arena parameter (D10, stage 1) through chains, mutual recursion, a capturing closure, and a function that
+// has an arena of its own as well. Inside `with arena` a call passes the innermost arena; outside one, a function passes on the
+// arena it was given. `return`, `break` and `continue` inside a local arena destroy only the local arenas, never
+// the caller's (the harness runs this with UBEL_CHECK_LEAKS=1 and a double destroy would crash).
+struct Node {
+    v: int
+}
+
+@tier(mid)
+fn mk(v: int) Node {
+    return Node { v = v }
+}
+
+@tier(mid)
+fn mk_twice(v: int) int {
+    let a = mk(v)
+    let b = mk(v + 1)
+    return a.v + b.v
+}
+
+@tier(mid)
+fn mk_chain(v: int) int {
+    return mk_twice(v) + mk_twice(v + 10)
+}
+
+@tier(mid)
+fn even_nodes(n: int) int {
+    if n == 0 {
+        return 0
+    }
+    let x = mk(n)
+    return x.v + odd_nodes(n - 1)
+}
+
+@tier(mid)
+fn odd_nodes(n: int) int {
+    if n == 0 {
+        return 0
+    }
+    let x = mk(n * 100)
+    return x.v + even_nodes(n - 1)
+}
+
+@tier(mid)
+fn mixed(n: int) int {
+    let outer = mk(n)
+    let mut total = outer.v
+    for i in 0 .. n {
+        with arena(1KB) {
+            let inner = mk(i)
+            if i == 2 {
+                continue
+            }
+            if i == 4 {
+                break
+            }
+            total += inner.v
+        }
+    }
+    with arena(1KB) {
+        let early = mk(1000)
+        if n > 3 {
+            return total + early.v
+        }
+    }
+    let after = mk(7)
+    return total + after.v
+}
+
+// a capturing closure is an object too: it is allocated in the caller's arena
+@tier(mid)
+fn scaled(k: int, v: int) int {
+    let f = fn(x: int) x * k
+    return f(v) + f(v + 1)
+}
+
+@tier(mid)
+fn main() void {
+    with arena(1MB) {
+        println(scaled(3, 4))
+        println(mk_chain(1))
+        println(even_nodes(5))
+        println(mixed(3))
+        println(mixed(6))
+    }
+    with arena(1MB) {
+        with arena(1MB) {
+            println(mk_chain(2))
+        }
+        println(mk_chain(3))
+    }
+}

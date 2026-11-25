@@ -1,0 +1,22 @@
+// Not supported: allocating inside the body of a closure written in a MID function. The body is a separate
+// function that does not hold the enclosing function's arena, so there is nowhere to allocate (D10, stage 1).
+// expect-refusal: in a closure inside a `@tier(mid)` function
+struct P {
+    x: int
+}
+
+@tier(mid)
+fn run(k: int) int {
+    let f = fn(x: int) {
+        let p = P { x = x + k }
+        return p.x
+    }
+    return f(1)
+}
+
+@tier(mid)
+fn main() void {
+    with arena(1KB) {
+        println(run(2))
+    }
+}

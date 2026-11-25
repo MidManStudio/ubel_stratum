@@ -1,0 +1,58 @@
+// The caller's arena must be scannable when a callee stores GC pointers in it (D10, stage 1). `note` calls the closure
+// that builds a GC string and stores the string in a struct in the arena it was given, so the only holder of the string
+// is that arena object (no copy is left in the caller's frame); `pair_of` passes the arena on to `note` twice and keeps
+// only the second note. While `churn` builds millions of garbage strings, a collection runs inside the
+// block and any string the collector failed to keep would be reused and come back wrong. The `with arena` block never
+// allocates a pointer-holding object itself: only the calls can make its arena scannable.
+struct Note {
+    text: string
+    n:    int
+}
+
+@tier(mid)
+fn note(mk: fn(int) string, n: int) Note {
+    return Note { text = mk(n), n = n }
+}
+
+@tier(mid)
+fn pair_of(mk: fn(int) string, n: int) Note {
+    let first = note(mk, n)
+    return note(mk, first.n + 1)
+}
+
+@tier(mid)
+fn probe(mk: fn(int) string, churn: fn(int) int) int {
+    let mut ok = 0
+    with arena(256) {
+        let a = note(mk, 1)
+        let b = pair_of(mk, 2)
+        let hits = churn(1500000)
+        if hits == 1500000 {
+            ok += 1
+        }
+        if a.text == "label-1" && b.text == "label-3" {
+            ok += 1
+        }
+        if a.n + b.n == 4 {
+            ok += 1
+        }
+    }
+    return ok
+}
+
+fn main() void {
+    let mk = fn(n: int) $"label-{n}"
+    let churn = fn(r: int) {
+        let mut i = 0
+        let mut hits = 0
+        while i < r {
+            let s = $"x{i}"
+            if s == $"x{i}" {
+                hits += 1
+            }
+            i += 1
+        }
+        return hits
+    }
+    println(probe(mk, churn))
+}

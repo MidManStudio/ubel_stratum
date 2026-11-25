@@ -1,0 +1,12 @@
+// Not supported: `main` as a MID function that allocates outside `with arena`. A function without an arena of its
+// own allocates in its caller's, and nothing calls `main` with one (D10, stage 1).
+// expect-refusal: `main` allocates in its caller's arena
+struct P {
+    x: int
+}
+
+@tier(mid)
+fn main() void {
+    let p = P { x = 1 }
+    println(p.x)
+}

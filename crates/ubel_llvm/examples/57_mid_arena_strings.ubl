@@ -1,0 +1,29 @@
+// Strings built in a MID function outside `with arena` (D10, stage 1): string `+` and a string method that
+// builds are allowed there when the function can take its caller's arena, so every call is inside `with arena`.
+// (A run-time string `+` or method result is a GC string, as inside `with arena` today. An interpolated string is
+// not allowed there yet: see u_string_mid.)
+@tier(mid)
+fn greet(name: string) string {
+    return "hi " + name
+}
+
+@tier(mid)
+fn shout(s: string) string {
+    return s.to_upper()
+}
+
+@tier(mid)
+fn bang(s: string) string {
+    return s.trim() + "!"
+}
+
+@tier(mid)
+fn main() void {
+    with arena(64KB) {
+        println(greet("ann"))
+        println(shout(greet("bob")))
+        println(bang("  yo  "))
+        let t = greet("cy")
+        println(t.len())
+    }
+}

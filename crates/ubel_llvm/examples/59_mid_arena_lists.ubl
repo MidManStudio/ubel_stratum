@@ -1,0 +1,47 @@
+// Lists, a `for` over a list and boxed optionals in MID functions outside `with arena` (D10, stage 1). Each of
+// them allocates in the GC heap, which a MID function may do only with an arena in sight, so these functions take
+// their caller's arena and every call is inside `with arena`. (The lists themselves still live in the GC heap:
+// lists in arenas are a later step.)
+@tier(mid)
+fn squares(n: int) List<int> {
+    let xs: List<int> = List.new()
+    for i in 0 .. n {
+        xs.push(i * i)
+    }
+    return xs
+}
+
+@tier(mid)
+fn total(xs: List<int>) int {
+    let mut t = 0
+    for x in xs {
+        t += x
+    }
+    return t
+}
+
+@tier(mid)
+fn last_or(xs: List<int>, d: int) int {
+    let l = xs.last() or return d
+    return l
+}
+
+@tier(mid)
+fn pop_two(xs: List<int>) int {
+    let a = xs.pop() or return -1
+    let b = xs.pop() or return -2
+    return a * 100 + b
+}
+
+@tier(mid)
+fn main() void {
+    with arena(64KB) {
+        let xs = squares(6)
+        println(xs)
+        println(total(xs))
+        println(last_or(xs, 0 - 1))
+        println(pop_two(xs))
+        println(pop_two(xs))
+        println(last_or(squares(0), 0 - 1))
+    }
+}

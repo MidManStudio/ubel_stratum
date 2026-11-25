@@ -1,0 +1,61 @@
+// A MID function that allocates outside any `with arena` of its own allocates in its CALLER's arena (decision
+// D10, stage 1, provisional: the emitter gives it a hidden first parameter, the arena). `leaf`, `make` and `pair`
+// build values for the caller; every call sits inside a `with arena`, and `make` forwards the arena it was given to
+// itself and to `leaf`.
+enum Tree {
+    Empty
+    Node(Tree, Tree)
+}
+
+struct Pair {
+    a: int
+    b: int
+}
+
+@tier(mid)
+fn leaf() Tree {
+    return Tree.Node(Tree.Empty, Tree.Empty)
+}
+
+@tier(mid)
+fn make(depth: int) Tree {
+    if depth == 0 {
+        return leaf()
+    }
+    return Tree.Node(make(depth - 1), make(depth - 1))
+}
+
+@tier(mid)
+fn count(t: Tree) int {
+    match t {
+        Tree.Empty => 0
+        Tree.Node(l, r) => 1 + count(l) + count(r)
+    }
+}
+
+@tier(mid)
+fn pair(a: int, b: int) Pair {
+    return Pair { a = a, b = b }
+}
+
+@tier(mid)
+fn sum_pairs(n: int) int {
+    let mut t = 0
+    for i in 0 .. n {
+        let p = pair(i, i * 2)
+        t += p.a + p.b
+    }
+    return t
+}
+
+@tier(mid)
+fn main() void {
+    with arena(1MB) {
+        let t = make(5)
+        println(count(t))
+        println(sum_pairs(10))
+    }
+    with arena(64KB) {
+        println(count(make(3)))
+    }
+}

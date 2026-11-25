@@ -1,6 +1,6 @@
-// Not supported yet: a string method that builds a new string in a `@tier(mid)` function outside
-// `with arena`. Where such a result should live there is not decided (string `+` is refused too).
-// expect-refusal: outside `with arena` (where it allocates is not decided yet)
+// Not supported: a HIGH function with no arena open calling a MID function that allocates in its caller's arena
+// (here `tidy`, whose string method builds a string). There is no arena to pass (D10, stage 1).
+// expect-refusal: allocates in its caller's arena
 @tier(mid)
 fn tidy(s: string) int {
     return s.trim().len()

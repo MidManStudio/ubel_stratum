@@ -1,7 +1,6 @@
-// Not supported yet: a closure that captures, written in a MID function outside `with arena`. The
-// closure object has to go somewhere, and where a MID function outside an arena allocates is the same
-// open question as for a struct literal there.
-// expect-refusal: outside `with arena`
+// Not supported: a HIGH function with no arena open calling a MID function that allocates in its caller's arena
+// (here `run`, which creates a capturing closure). There is no arena to pass (D10, stage 1).
+// expect-refusal: allocates in its caller's arena
 @tier(mid)
 fn run(k: int) int {
     let f = fn(x: int) x + k

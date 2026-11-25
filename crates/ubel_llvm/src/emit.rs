@@ -468,10 +468,32 @@ struct Emitter<'a> {
     arena_ids: Vec<(usize, String)>,
     ret: Ty,
     cur_tier: TierAnnotation,
+    /// Stage 1 of D10 (provisional): a `@tier(mid)` function that allocates outside any `with arena` of its own takes the
+    /// arena of its caller as a hidden first parameter (`ptr %arena.in`), and a call with no arena of its own open passes
+    /// its own on. `needs` is the set of such functions assumed for this pass, `discovered` the set this pass found, and
+    /// `emit_program` repeats the pass until they agree (the set only grows, so it ends).
+    needs: BTreeSet<String>,
+    discovered: BTreeSet<String>,
+    /// The function being emitted allocated, or called one that allocates, with no arena of its own open.
+    cur_needs: bool,
 }
 
+/// Emit the program. Which MID functions take the hidden arena is found by emitting until the set stops growing: the
+/// emitter itself is the judge of what allocates, so there is no second walk over the syntax tree to keep in step.
 pub(crate) fn emit_program(program: &Program, ctx: &SemaContext) -> R<String> {
-    let mut e = Emitter::new(ctx);
+    let mut needs: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let (out, found) = emit_pass(program, ctx, &needs)?;
+        let next: BTreeSet<String> = needs.union(&found).cloned().collect();
+        if next == needs {
+            return Ok(out);
+        }
+        needs = next;
+    }
+}
+
+fn emit_pass(program: &Program, ctx: &SemaContext, needs: &BTreeSet<String>) -> R<(String, BTreeSet<String>)> {
+    let mut e = Emitter::new(ctx, needs.clone());
     e.collect_structs(program)?;
 
     // The front end injects the prelude (Ordering, Hasher and the core traits) as ordinary items with
@@ -502,12 +524,16 @@ pub(crate) fn emit_program(program: &Program, ctx: &SemaContext) -> R<String> {
             e.function(f)?;
         }
     }
-    Ok(e.finish())
+    let found = std::mem::take(&mut e.discovered);
+    Ok((e.finish(), found))
 }
 
 impl<'a> Emitter<'a> {
-    fn new(ctx: &'a SemaContext) -> Self {
+    fn new(ctx: &'a SemaContext, needs: BTreeSet<String>) -> Self {
         Emitter {
+            needs,
+            discovered: BTreeSet::new(),
+            cur_needs: false,
             ctx,
             sigs: HashMap::new(),
             structs: Vec::new(),
@@ -1246,8 +1272,12 @@ impl<'a> Emitter<'a> {
         self.arenas.clear();
         self.ret = sig.ret;
         self.cur_tier = f.tier;
+        self.cur_needs = false;
 
         let mut header_params = Vec::new();
+        if self.needs.contains(f.name) {
+            header_params.push("ptr %arena.in".to_string());
+        }
         for (i, p) in f.params.iter().enumerate() {
             if let ParamKind::Named { name, mutable, .. } = p.kind {
                 let ty = sig.params[i];
@@ -1265,6 +1295,15 @@ impl<'a> Emitter<'a> {
 
         self.lower_body(f.body.stmts)?;
         self.end_body();
+        if self.cur_needs {
+            if f.name == "main" {
+                return unsupported(
+                    f.span,
+                    "`main` allocates in its caller's arena (or calls a function that does) outside `with arena`, and nothing calls `main` with one (open `with arena` in `main` and allocate inside it)",
+                );
+            }
+            self.discovered.insert(f.name.to_string());
+        }
 
         let _ = writeln!(self.funcs, "; tier: {}", tier_name(f.tier));
         let _ = writeln!(
@@ -2073,10 +2112,23 @@ impl<'a> Emitter<'a> {
         Ok(Val { v: p, ty: Ty::Struct(sid) })
     }
 
+    /// The arena of this function's caller, for a MID function with no arena of its own open (stage 1 of D10): the
+    /// hidden `%arena.in` parameter. Asking for it is what makes the function one that takes the parameter. A closure
+    /// body is a separate function that does not hold it, and LOW and HIGH code have no such arena.
+    fn base_arena(&mut self) -> Option<String> {
+        if self.cur_tier == TierAnnotation::Mid && self.arenas.is_empty() && self.in_arena_closure.is_empty() {
+            self.cur_needs = true;
+            Some("%arena.in".to_string())
+        } else {
+            None
+        }
+    }
+
     /// Where an object written here is allocated: `Some(arena)` inside `with arena`, `None`
-    /// (the GC heap) in a HIGH function, and refused elsewhere, because the language does not
-    /// say yet where a MID function outside `with arena`, or LOW code, allocates.
-    fn alloc_site(&self, span: Span, what: &str) -> R<Option<String>> {
+    /// (the GC heap) in a HIGH function, the caller's arena in a MID function with none of its own open
+    /// (the hidden parameter), and refused elsewhere: LOW code, whose allocation is not decided, and the
+    /// body of a closure, which does not hold an arena yet.
+    fn alloc_site(&mut self, span: Span, what: &str) -> R<Option<String>> {
         if let Some(a) = self.arenas.last() {
             return Ok(Some(a.clone()));
         }
@@ -2088,10 +2140,13 @@ impl<'a> Emitter<'a> {
         }
         match self.cur_tier {
             TierAnnotation::High => Ok(None),
-            TierAnnotation::Mid => unsupported(
-                span,
-                format!("{what} in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"),
-            ),
+            TierAnnotation::Mid => match self.base_arena() {
+                Some(a) => Ok(Some(a)),
+                None => unsupported(
+                    span,
+                    format!("{what} in a closure inside a `@tier(mid)` function (a closure's body does not hold an arena yet, so there is nowhere to allocate it)"),
+                ),
+            },
             TierAnnotation::Low => unsupported(span, format!("{what} in `@tier(low)` (how LOW allocates is not decided yet)")),
         }
     }
@@ -2696,17 +2751,14 @@ impl<'a> Emitter<'a> {
 
     /// Boxing a number or bool for an optional allocates in the GC heap: LOW must not, and MID code outside
     /// `with arena` has no decided place to allocate (the same rule as for lists).
-    fn box_alloc_allowed(&self, span: Span, what: &str) -> R<()> {
-        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+    fn box_alloc_allowed(&mut self, span: Span, what: &str) -> R<()> {
+        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false) || self.base_arena().is_some();
         match self.cur_tier {
             TierAnnotation::Low => unsupported(
                 span,
                 format!("{what} in `@tier(low)` (its value is boxed in the GC heap, which LOW must not use)"),
             ),
-            TierAnnotation::Mid if !in_arena => unsupported(
-                span,
-                format!("{what} in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"),
-            ),
+            TierAnnotation::Mid if !in_arena => unsupported(span, format!("{what} in a closure inside a `@tier(mid)` function (a closure's body does not hold an arena yet)")),
             _ => Ok(()),
         }
     }
@@ -3079,16 +3131,13 @@ impl<'a> Emitter<'a> {
 
     /// Creating or growing a list allocates in the GC heap, like building a string: LOW must not, and MID code
     /// outside `with arena` has no decided place to allocate.
-    fn list_alloc_allowed(&self, span: Span, what: &str) -> R<()> {
-        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+    fn list_alloc_allowed(&mut self, span: Span, what: &str) -> R<()> {
+        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false) || self.base_arena().is_some();
         match self.cur_tier {
             TierAnnotation::Low => {
                 unsupported(span, format!("{what} in `@tier(low)` (a list lives in the GC heap, which LOW must not use)"))
             }
-            TierAnnotation::Mid if !in_arena => unsupported(
-                span,
-                format!("{what} in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"),
-            ),
+            TierAnnotation::Mid if !in_arena => unsupported(span, format!("{what} in a closure inside a `@tier(mid)` function (a closure's body does not hold an arena yet)")),
             _ => Ok(()),
         }
     }
@@ -3593,6 +3642,25 @@ impl<'a> Emitter<'a> {
             self.need(sig.params[i], &v, ae.span)?;
             ops.push(format!("{} {}", sig.params[i].ir(), v.v));
         }
+        if self.needs.contains(name) {
+            // A MID function that allocates in its caller's arena: the innermost arena open here, or this
+            // function's own caller's when none is open (then this function takes the hidden parameter too).
+            let arena = match self.arenas.last().cloned() {
+                Some(a) => a,
+                None => match self.base_arena() {
+                    Some(a) => a,
+                    None => {
+                        return unsupported(
+                            e.span,
+                            format!("the call to `{name}` outside `with arena`: it is a `@tier(mid)` function that allocates in its caller's arena, and none is open here (call it inside `with arena`, or from a `@tier(mid)` function that is itself called inside one)"),
+                        )
+                    }
+                },
+            };
+            // The callee may store pointers to GC objects in the arena and cannot make it scannable itself.
+            self.mark_scan(&Some(arena.clone()));
+            ops.insert(0, format!("ptr {arena}"));
+        }
         let boundary = if sig.tier != self.cur_tier {
             format!(" ; {} -> {} call", tier_name(self.cur_tier), tier_name(sig.tier))
         } else {
@@ -3649,13 +3717,13 @@ impl<'a> Emitter<'a> {
             return Err(CompileError::at(e.span, "wrong number of arguments"));
         }
         if builds {
-            let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+            let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false) || self.base_arena().is_some();
             match self.cur_tier {
                 TierAnnotation::Low => {
                     return unsupported(callee.span, format!("the string method `{field}` in `@tier(low)` (it allocates in the GC heap, which LOW must not)"));
                 }
                 TierAnnotation::Mid if !in_arena => {
-                    return unsupported(callee.span, format!("the string method `{field}` in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)"));
+                    return unsupported(callee.span, format!("the string method `{field}` in a closure inside a `@tier(mid)` function (a closure's body does not hold an arena yet)"));
                 }
                 _ => {}
             }
@@ -4118,13 +4186,13 @@ impl<'a> Emitter<'a> {
     /// from MID code, which is only allowed inside `with arena` (a MID function outside one has no
     /// decided place to allocate), and never in LOW.
     fn str_concat(&mut self, l: &Val, r: &Val, span: Span) -> R<Val> {
-        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false);
+        let in_arena = !self.arenas.is_empty() || self.in_arena_closure.last().copied().unwrap_or(false) || self.base_arena().is_some();
         match self.cur_tier {
             TierAnnotation::Low => {
                 return unsupported(span, "string `+` in `@tier(low)` (it allocates in the GC heap, which LOW must not)");
             }
             TierAnnotation::Mid if !in_arena => {
-                return unsupported(span, "string `+` in a `@tier(mid)` function outside `with arena` (where it allocates is not decided yet)");
+                return unsupported(span, "string `+` in a closure inside a `@tier(mid)` function (a closure's body does not hold an arena yet)");
             }
             _ => {}
         }
@@ -4162,6 +4230,12 @@ impl<'a> Emitter<'a> {
             Val(Val),
         }
         let arena = self.alloc_site(e.span, "an interpolated string")?;
+        if arena.as_deref() == Some("%arena.in") {
+            return unsupported(
+                e.span,
+                "an interpolated string in a `@tier(mid)` function outside `with arena` (sema tags an interpolated string with its arena only inside `with arena`, so it cannot give the string a lifetime in the caller's arena yet; build it inside `with arena`)",
+            );
+        }
         if arena.is_some() && !self.sema_tags_arena_string(e) {
             return unsupported(
                 e.span,
