@@ -1440,3 +1440,64 @@ fn main() {
 ```
 
 **Fix:** Declare the task: `async fn count() Task<int>`. The body still returns the `int`.
+
+### TYPE-145
+
+**MarkerImplField** — `` `impl Send for Holder`: field `cell` has type `Shared<int>`, which is not `Send` ``
+
+An `impl Send` or an `impl Sync` for a struct or an enum where a field, or the payload of a variant, has a type without that marker. The impl is checked against every field of a struct and every payload of every variant of an enum, under the conditions the impl wrote on its type parameters, and only the first part that fails is named. `Shared<T>`, references, borrowed views, function values and tasks have neither marker, and a struct or an enum has one only through an impl of its own. An `unsafe impl` is not checked.
+
+<!-- ubel-test: error TYPE-145 -->
+```ubel
+struct Holder { cell: Shared<int> }
+
+impl Send for Holder {
+}
+
+fn main() {
+}
+```
+
+```text
+>>> error[TYPE-145]: `impl Send for Holder`: field `cell` has type `Shared<int>`, which is not `Send`
+  --> 3:1
+    |
+  3 | impl Send for Holder {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+  ~> help: give the field a type that is `Send`, or, if the type is sound to use that way, write `unsafe impl Send for ...` (trusted, not checked)
+  <~
+<<<
+```
+
+**Fix:** Give the field a type that is `Send`. If the type is sound to use that way in spite of what the compiler can see, write `unsafe impl Send for Holder {}`, which is trusted and not checked.
+
+### TYPE-146
+
+**UnsafeImplNotMarker** — `` `unsafe impl` is only for `Send` and `Sync`, found an inherent impl ``
+
+An `unsafe impl` of anything but the prelude's `Send` or `Sync`: an impl of another trait, or an impl with no trait. The impl is still read as an ordinary impl, so only the keyword is reported.
+
+<!-- ubel-test: error TYPE-146 -->
+```ubel
+struct Gauge { reading: int }
+
+unsafe impl Gauge {
+    fn read(self) int { return self.reading }
+}
+
+fn main() {
+}
+```
+
+```text
+>>> error[TYPE-146]: `unsafe impl` is only for `Send` and `Sync`, found an inherent impl
+  --> 3:1
+    |
+  3 | unsafe impl Gauge {
+    | ^^^^^^^^^^^^^^^^^^^
+  ~> help: drop `unsafe`: an impl of any other trait is checked like every impl
+  <~
+<<<
+```
+
+**Fix:** Drop `unsafe`. An impl of any other trait is checked like every impl.

@@ -209,8 +209,9 @@ verified safe.
   `dispose` of each bound value whose type implements `Dispose`. Tasks run on real threads too
   (2026-11-19): `Task.spawn` hands a task to a pool of workers, values are copied at the boundary, and
   `join()` waits. The pool runs on an executor interface (2026-11-21): a host can lend its own
-  threads or fibers, and `ubel run --workers N` or `UBEL_WORKERS` sets the worker count. Next: the
-  sharing rule and the lock types
+  threads or fibers, and `ubel run --workers N` or `UBEL_WORKERS` sets the worker count. `Send` and `Sync` exist
+  as marker traits with checked impls and `unsafe impl` (2026-11-24); nothing enforces them at
+  `Task.spawn` yet. Next: the send flag on tasks and a real `SyncShared`, then the lock types
 - Modules (`summon`) are designed and not built (`docs/MODULE_DESIGN.md`, decided 2026-11-15): a
   module is a file named by its path, cycles between modules are allowed, everything is private
   unless marked `pub`, impls apply program-wide, and a whole module can set a default tier.

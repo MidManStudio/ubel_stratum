@@ -174,6 +174,54 @@ would block a thread. An executor may also say how many workers it wants (`prefe
 explicit `--workers` or `UBEL_WORKERS` count wins over that. A thread or fiber that runs a worker
 needs at least 128 MiB of stack, which the runtime cannot check.
 
+### Send and Sync
+
+A value can go into a task only when its type is `Send`, and a task can use a shared view of a value
+only when its type is `Sync`. Both are traits with no methods. A struct or an enum has one only when
+it says so with an `impl`, and nothing is worked out from its fields, so forgetting the impl is an
+error wherever `Send` is asked for and not a quiet default. The impl is checked against the fields:
+
+<!-- ubel-test: run -->
+```ubel
+struct Job { id: int, name: string }
+
+impl Send for Job {
+}
+
+fn main() {
+    let job = Job { id = 1, name = "index" }
+    println(job.name)
+}
+```
+
+`impl Send for Job` is accepted because every field of `Job` is `Send`. A field that is not, such as
+a `Shared<int>`, makes the impl an error (`TYPE-145`) that names the field:
+
+<!-- ubel-test: error TYPE-145 -->
+```ubel
+struct Holder { cell: Shared<int> }
+
+impl Send for Holder {
+}
+
+fn main() {
+}
+```
+
+A type that is safe to send in spite of what the compiler can see takes `unsafe impl Send for Holder
+{}`. That impl is trusted and not checked, so it is the one place a data race can be introduced, and
+`unsafe` makes it easy to find. `unsafe impl` is for `Send` and `Sync` only.
+
+A built-in type needs no impl and cannot be given one. Numbers, `bool`, `char` and `string` have both
+markers. A tuple, an optional, a `List`, a `Dictionary` and the other collections have a marker when
+every part has it. `Unique<T>` has what `T` has, and `SyncShared<T>` has both when `T` is `Send`.
+`Shared<T>`, references, borrowed views, function values and tasks have neither. A generic function
+asks for a marker with a bound, `fn run<T: Send>(x: T)`, and a generic type makes its impl
+conditional, `impl<T: Send> Send for Box<T> {}`.
+
+The compiler does not yet refuse a value that is not `Send` at `Task.spawn`: that check is the next
+step. Until then a closure, a `Shared`, a task or a pool is still refused when the task starts.
+
 ## The decided design (the async core and real threads are built, sharing is not)
 
 The record is `docs/ASYNC_SYNC_DESIGN.md`. In brief, the decisions are:

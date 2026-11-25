@@ -719,6 +719,16 @@ way, so that `return Task.spawn(t).join()` reads a value (`tests/call_and_return
 `Task` anywhere else in an expression is still an error. What `Task.spawn` and `join` mean is type
 inference's rule and the interpreter's; the parser reads an ordinary call.
 
+### 5.7e `unsafe impl`
+
+`unsafe` at item level can only start an impl. `parse_decl` routes `TokenType::Unsafe` to
+`parse_unsafe_impl`, which consumes the keyword and requires `impl` next (anything else is an error
+at that token, followed by `recover_to_decl`). It then parses the block with `parse_impl_block` and
+sets `ImplBlock::is_unsafe`; the span of the block starts at `unsafe`. Attributes before it belong
+to the impl as usual. Whether the trait may be unsafe is not the parser's question: `Send` and
+`Sync` take an `unsafe impl`, and every other one is `TYPE-146` in sema. `unsafe { }` as a statement
+or an expression is unchanged (`parse_unsafe_block`).
+
 ### 5.8 `{` after a bare identifier — Struct Literal vs Block
 
 Found via exploratory testing (nested `while` loops doing a diagonal

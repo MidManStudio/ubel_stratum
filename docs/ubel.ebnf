@@ -147,7 +147,9 @@ DefaultMethod   ::= Attributes? "fn" Ident GenericParams? "(" ParamList? ")" Ret
    default for its methods. See docs/TRAITS_TIERS_SPEC.md. *)
 
 (* ── Impl ── *)
-ImplBlock     ::= "impl" GenericParams? (QualifiedIdent GenericArgs? "for")? TypeExpr "{" ImplItem* "}"
+(* `unsafe` is for the prelude's `Send` and `Sync` only (TYPE-146 otherwise): a trusted impl
+   that is not checked against the fields. See docs/ASYNC_SYNC_DESIGN.md, AS4a. *)
+ImplBlock     ::= "unsafe"? "impl" GenericParams? (QualifiedIdent GenericArgs? "for")? TypeExpr "{" ImplItem* "}"
 ImplItem      ::= MethodDecl
 
 (* ── Extend ── *)

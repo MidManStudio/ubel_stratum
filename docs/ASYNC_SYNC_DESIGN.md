@@ -92,6 +92,51 @@ those choices cost.
   cleaned up at the end, `fail` is accepted in a function that is not fallible (so a `dispose` can
   fail at run time), and the native backend reports `using` as unsupported.
 
+### AS4 decisions (2026-11-24)
+
+- Decided with the user:
+  - An `impl Send` or `impl Sync` is checked against the fields of its type, and a separate
+    `unsafe impl Send` is trusted (the open question of the AS3 round). This is against the
+    recommendation, which was checked only. The cost is the one recorded in section 3: a trusted
+    impl can declare a struct that holds a `Shared<T>` sendable, a data race the compiler cannot
+    see. It is written `unsafe impl`, so it can be found by searching.
+  - Sema knows that a task is sendable through a send flag on the task type, computed where the
+    task is built (an async call or an `async {}` block). `Task.spawn` accepts only a sendable task,
+    and a task that is only awaited needs no `Send` (as recommended). This is AS4b.
+  - A `SyncShared<T>` takes its lock for each access until the AS5 lock types exist, and a compound
+    assignment such as `s.n += 1` is one locked step (as recommended). `s.n = s.n + 1` is two locks
+    and can lose an update. This is AS4c.
+- AS4 is delivered in three slices: AS4a the marker traits, `unsafe impl` and the checked impls;
+  AS4b the send flag and the `Task.spawn` check; AS4c the real `SyncShared`, with `TIER-014` lifted
+  for it.
+- Settled without a question in AS4a:
+  - `Send` and `Sync` are prelude traits with no methods (`@tier(low)`, in `prelude.rs`). They are
+    not in the derive list: `@derive(Send)` is `TYPE-116`.
+  - `unsafe impl` is a new item form (`ImplBlock::is_unsafe`). It is accepted for `Send` and `Sync`
+    only: an `unsafe impl` of any other trait, or of no trait, is `TYPE-146`. It is allowed in every
+    tier.
+  - A plain impl is checked against every field of a struct and every payload of every variant of
+    an enum (`TYPE-145`), under the conditions the impl wrote on its parameters. Only the first
+    failing part is named. A trusted impl is not checked.
+  - A built-in type has both markers when its parts do, and no impl is accepted for one
+    (`TYPE-129`), trusted or not. Numbers, `bool`, `char` and `string` have both. A tuple, an array,
+    an optional, a fallible, a `List`, `Set`, `Queue`, `Stack`, `InlineList` and `Dictionary` have a
+    marker when every part has it, `Sync` included. `Unique<T>` has what `T` has. `SyncShared<T>`
+    has both when `T` is `Send`.
+  - `Shared<T>`, every reference and ownership handle (`GcRef`, `ArenaRef`, `PoolRef`, `OwnedRef`),
+    a borrowed view, a pool, a query, a function value and a task have neither. A function value is
+    refused although a declared function can be sent at run time today, because sema cannot tell a
+    declared function from a lambda (parked).
+  - A user enum with no payload needs an impl like any other type, so the row of section 2.3 that
+    treated it as copy is rewritten. The prelude's own `Ordering` has both without one.
+  - A bound `T: Send` is read before wrappers are peeled, unlike the other prelude traits: a
+    `Shared<int>` is not `Send` although its contents are, and the error names the type as written.
+  - A program that declares its own trait called `Send` or `Sync` keeps it as an ordinary trait,
+    as with every prelude name.
+- Known gaps, recorded in `docs/PARKED_IDEAS.md`: a function value is refused by sema but not by
+  the run-time boundary, `Sync` for a collection follows its elements, and no tool lists the
+  `unsafe impl`s of a program.
+
 ### AS3b decisions (2026-11-21)
 
 - Decided with the user: the executor interface is "the host lends threads or fibers". The runtime
@@ -176,7 +221,7 @@ those choices cost.
   are removed only when nothing was added after them, a scope or lock that outlives one `await` is
   not there yet (AS5, AS6), and the native backend has no threads.
 
-## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17, `using` when AS1 landed, 2026-11-18, threads when AS3a landed, 2026-11-19, the executor when AS3b landed, 2026-11-21)
+## 1. Where things stand (probed 2026-11-14 on live master; async updated when AS2 landed, 2026-11-17, `using` when AS1 landed, 2026-11-18, threads when AS3a landed, 2026-11-19, the executor when AS3b landed, 2026-11-21, the marker traits when AS4a landed, 2026-11-24)
 
 Each line was confirmed by running a program through `ubel check` or `ubel run`, or by reading
 the source named.
@@ -204,7 +249,9 @@ the source named.
 **Synchronization and sharing**
 
 - `Task.spawn` and `join` exist (AS3a, 2026-11-19). The pool runs on an `Executor` that a host can
-  replace, and the worker count is a setting (AS3b, 2026-11-21). No `Mutex`, `Channel`, `Thread` or `Atomic` does (`NAME-001` for each).
+  replace, and the worker count is a setting (AS3b, 2026-11-21). `Send` and `Sync` exist as marker traits
+  that a type takes with a checked impl, and nothing uses them at `Task.spawn` yet (AS4a,
+  2026-11-24). No `Mutex`, `Channel`, `Thread` or `Atomic` does (`NAME-001` for each).
 - `SyncShared.new` is LOW-only (`TIER-014` in other tiers). `SyncShared` is backed by the same
   `Rc<RefCell<Value>>` as `Shared`; `docs/MEMORY_MODEL.md` already records that it is "not
   actually `Arc<Mutex<_>>` yet".
@@ -291,12 +338,16 @@ type is `Sync`.
 
 | Value | Crosses by |
 |---|---|
-| `int`, `bool`, `double`, immutable `string`, enum without payload | copy |
-| Struct, tuple, enum with payload, `List`, `Dictionary`, `Queue`, `Stack`, `Set`, `InlineList` of sendable parts (HIGH) | deep copy at the boundary |
+| `int`, `bool`, `double`, `char`, immutable `string`, the prelude's `Ordering` | copy |
+| A struct or an enum with an `impl Send`; a tuple, array, optional, `List`, `Dictionary`, `Queue`, `Stack`, `Set`, `InlineList` of sendable parts (HIGH) | deep copy at the boundary |
 | `Unique<T>` with sendable `T` | move |
 | `SyncShared<T>`, `Mutex<T>`, `RwLock<T>`, `Atomic<T>`, `Channel<T>`, `Semaphore`, `Barrier`, `Condvar` | shared handle |
 | `Shared<T>` (not thread-safe), `GcRef` into another task's heap, `ArenaRef`, a borrow into a detached task | not sendable: compile error |
 | A lock guard | not sendable, and may not be live across `await` (A15) |
+
+AS4a (2026-11-24) built the rule as two marker traits, `Send` and `Sync`; "AS4 decisions" in
+section 0 says what has each. Enforcing it at `Task.spawn` is AS4b. Until then a closure, a
+`Shared`, a task or a pool is still refused when the task starts, naming its kind.
 
 Copy at the boundary means a task never sees later mutations by its parent and the parent never
 sees the task's. Results come back by the same rule. The copy is cycle-aware.
@@ -442,9 +493,10 @@ structurally from the fields. As decided, a struct or enum that crosses into a t
 `impl Send` of its own, and forgetting it is a compile error, so the table of section 2.3 (which says
 "of sendable parts") is rewritten at AS4. The built-in types (`List`, `Dictionary`, tuples, arrays,
 closures) still need compiler rules that depend on their parts, because conditional impls on built-in
-types are not built (`TYPE-129`). It is open whether an `impl Send` is checked against the fields or
-trusted. A checked one adds only the opt-in. A trusted one lets a struct that holds a `Shared<T>` be
-declared sendable, which is a data race the compiler cannot see. A generic library can still write
+types are not built (`TYPE-129`). Decided 2026-11-24: an `impl Send` is checked against the fields
+(`TYPE-145`), and an `unsafe impl Send` is trusted. The checked impl adds only the opt-in. The
+trusted one lets a struct that holds a `Shared<T>` be declared sendable, which is a data race the
+compiler cannot see; it can be found by searching for `unsafe impl`. A generic library can still write
 `T: Send` as a bound.
 
 ---
@@ -579,7 +631,9 @@ for traits.
 | **AS2** | **Done 2026-11-17.** Async core in sema and the interpreter: `async fn` typing, cold `Task<T>`, `await` that runs a task inline, tier rules opened. No threads yet. | AS0 |
 | **AS3a** | **Done 2026-11-19.** Threads in the interpreter: a worker interpreter on each thread, the copy at the task boundary (moved here from AS4), the pool, `Task.spawn`, `join`. | AS2 |
 | **AS3b** | **Done 2026-11-21.** The executor interface (`Executor` and `Lend`: the host lends threads or fibers, and every wait and wake of the pool goes through it), a pool that runs on it, the park hook and the worker-count setting (`--workers`, `UBEL_WORKERS`, the API). | AS3a |
-| **AS4** | The sendable rule: explicit `Send` and `Sync` impls, the sema pass, a real `SyncShared`, `TIER-014` lifted for it. | AS3 |
+| **AS4a** | **Done 2026-11-24.** `Send` and `Sync` as prelude marker traits, `unsafe impl`, impls checked against the fields (`TYPE-145`, `TYPE-146`), the rules for built-in types. | AS3 |
+| **AS4b** | The send flag on the task type and the `Task.spawn` check, so that a value that is not sendable is a compile error. | AS4a |
+| **AS4c** | A real `SyncShared`: a lock for each access, `TIER-014` lifted for it. | AS4a |
 | **AS5** | The lock types, `Condvar`, `Semaphore`, `Barrier`, `Atomic`, `Channel`, parking through the executor, the guard rules and the async-aware lock. | AS1, AS3, AS4 |
 | **AS6** | Scopes, cancellation, failure capture. | AS1, AS3, AS5 |
 | **AS7** | `async` methods in traits and boxed `dyn` calls. | AS2 |

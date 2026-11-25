@@ -38,7 +38,7 @@ traits, impls, parameters).
   `TraitBound { name, args, span }` is the one shape for a trait written with its
   type arguments: it is also what `GenericParam.bounds` holds (`T: Convert<int>`)
   and `ImplBlock` carries the arguments of its trait as `trait_args`
-  (`impl Convert<int> for X`).
+  (`impl Convert<int> for X`). `ImplBlock.is_unsafe` is set by `unsafe impl` (AS4a).
 
 **Tests:** see `sema/tests.rs`, referenced under `sema/name_resolution.rs`
 and `sema/type_infer.rs` below.
@@ -68,6 +68,12 @@ and resolves every name reference to a definition.
 **What it does:** Pass 2 of semantic analysis. Builds the type table,
 infers expression types, and checks function signatures against call
 sites.
+
+`sema/type_infer/marker_traits.rs` (AS4a) holds the rules of `Send` and `Sync`:
+`marker_status` says whether a type has a marker (`bound_status` asks it before any wrapper is
+peeled), and `check_marker_impls` checks every `impl Send` and `impl Sync` against the fields of
+its type (`TYPE-145`) and every `unsafe impl` against the traits that may be unsafe
+(`TYPE-146`). `crates/rd_parser/tests/send_sync_markers.rs` covers them.
 
 **Tests:** `sema/tests.rs`,
 `test_sema_discard_param_type_is_enforced_at_call_site`.

@@ -653,6 +653,22 @@ parked because the right behavior is a design choice, not because it is hard.
   same thread as `main` would also share that thread's output capture, which is attached per thread.
 - The native backend has no executor. How its runtime lends threads is part of AS8.
 
+## Found while building AS4a (parked)
+
+- A function value is not `Send` to sema, but a function declared in the program can be sent at run
+  time today (a lambda cannot). Sema cannot tell the two apart from the type alone, so AS4b has to
+  decide whether a declared function gets a type or a flag of its own, or whether a function value
+  stays refused. No program is affected yet, because nothing enforces `Send`.
+- `Sync` for a collection follows its elements, which assumes that a shared view of a collection is
+  read only. That holds for a borrow at LOW. Whether it holds for a shared handle at HIGH is for AS6
+  (scopes), where `Sync` is first used.
+- A user enum with no payload needs `impl Send` like any other type. The prelude's `Ordering` is the
+  one type that has both markers without an impl. A shortcut for plain data was not added.
+- `unsafe impl` is accepted in every tier, and no tool lists the trusted impls of a program. An
+  `ubel` command or a lint that lists every `unsafe impl` would make them easy to audit.
+- A marker impl is reported at the impl and names the field in the text. The span of the field
+  itself is not used.
+
 ## Built
 
 **Unsuffixed integer literals: full context-driven typing (Rust style).**

@@ -242,6 +242,8 @@ family in `TierError`.
 | TYPE-142 | NotAStruct |
 | TYPE-143 | AwaitOutsideAsync |
 | TYPE-144 | AsyncReturnNotTask |
+| TYPE-145 | MarkerImplField |
+| TYPE-146 | UnsafeImplNotMarker |
 
 ### TIER-0xx — tier & arena enforcement, `errors/tier/mod.rs`
 
@@ -438,6 +440,8 @@ larger effort, not started.
 - `TYPE-142` `NotAStruct` — *Error*. "`Score` is an alias for `int`, which is not a struct or an enum". A struct literal written with the name of an alias whose target is neither; an alias of a struct is seen through (`type P = Point`, `P { x = 1 }`). The fields of the literal are still checked. Suggestion: "a struct literal needs the name of a struct; write a value of `int` directly, or alias a struct".
 - `TYPE-143` `AwaitOutsideAsync` — *Error*. "`await` is only valid inside an async function or an async block". An `await` in a plain function, in a method that is not async, in a constant or static initializer, or inside a plain lambda (even one written in an async function: `await` does not reach through a closure). Raised by type inference from a flag it keeps for the body it is checking; one report per `await`. No suggestion.
 - `TYPE-144` `AsyncReturnNotTask` — *Error*. "an async function returns `Task<T>`, found `int`". An `async fn` whose declared result is not a `Task<T>`, written at the function (`async fn f() int`, `async fn f() void`, `Task<int>!`). The declared type is `Task<T>` and the body returns `T`; with no declared result, `async fn f()` is `Task<void>` and is fine. `Task<int!>`, a task that yields a fallible value, is fine. One report per function, at the signature. No suggestion.
+- `TYPE-145` `MarkerImplField` — *Error*. "`impl Send for Holder`: field `cell` has type `Shared<int>`, which is not `Send`". An `impl Send` or `impl Sync` for a struct or an enum where a field of the struct, or a positional or named field of a variant, has a type without that marker (`marker_status`). Raised by `check_marker_impls` once the impls are registered, at the impl. An impl for a generic type is read in its own scope, so a `T` has the marker only through a bound the impl wrote. Only the first failing part is named, as `field `x``, `field 0 of variant `V`` or `field `x` of variant `V``. An `unsafe impl` is not checked, and an impl that registration refused (`TYPE-128`, `TYPE-129`) is not checked again. Suggestion: "give the field a type that is `Send`, or, if the type is sound to use that way, write `unsafe impl Send for ...` (trusted, not checked)".
+- `TYPE-146` `UnsafeImplNotMarker` — *Error*. "`unsafe impl` is only for `Send` and `Sync`, found an impl of `Show`" (or "found an inherent impl"). An `unsafe impl` of any trait but the prelude's `Send` or `Sync`, or of no trait. A program that declares its own `Send` keeps it as an ordinary trait, so an `unsafe impl` of it is this error. The impl is still read as an ordinary impl. Raised by `check_marker_impls`. Suggestion: "drop `unsafe`: an impl of any other trait is checked like every impl".
 
 **TIER-0xx**
 - `TIER-001` `ArenaInWrongTier` — *Error*. "`with arena` is only valid in `@tier(mid)`; this function is `@tier(x)`". Suggestion: annotate with `@tier(mid)` or remove the arena block.

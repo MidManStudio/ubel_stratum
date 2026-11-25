@@ -128,6 +128,7 @@ use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
 mod impl_patterns;
 mod dyn_trait;
 mod builtin_ops;
+mod marker_traits;
 use self::impl_patterns::{ImplGuard, ImplPattern};
 use std::rc::Rc;
 
@@ -612,6 +613,11 @@ struct InferCtx<'a> {
     /// and nothing satisfies it natively: it is an ordinary trait to bounds
     /// and impls, and only a `for` loop treats it specially.
     iterator_trait:   Option<DefId>,
+    /// The prelude's `Send` and `Sync` by definition, and back by name (AS4a). They are marker
+    /// traits with no methods and rules of their own (`marker_status`), so like `Iterator`
+    /// they stay out of `prelude_traits`. Present only for one the program did not shadow.
+    marker_traits:    HashMap<DefId, &'static str>,
+    marker_defs:      HashMap<&'static str, DefId>,
     /// The prelude's operator traits (`Add`, `Neg`, ...) by definition, and
     /// back by name; present only for one the program did not shadow. Like
     /// `Iterator`, ordinary generic traits to bounds and impls.
@@ -777,6 +783,8 @@ impl<'a> InferCtx<'a> {
             prelude_traits:    HashMap::new(),
             prelude_defs:      HashMap::new(),
             iterator_trait:    None,
+            marker_traits:     HashMap::new(),
+            marker_defs:       HashMap::new(),
             operator_traits:   HashMap::new(),
             operator_defs:     HashMap::new(),
             operator_impls:    HashMap::new(),
@@ -1898,6 +1906,14 @@ impl<'a> InferCtx<'a> {
                 self.iterator_trait = self.ctx.top_level_def(t.name);
                 continue;
             }
+            if t.name == "Send" || t.name == "Sync" {
+                if let Some(def_id) = self.ctx.top_level_def(t.name) {
+                    let name: &'static str = if t.name == "Send" { "Send" } else { "Sync" };
+                    self.marker_traits.insert(def_id, name);
+                    self.marker_defs.insert(name, def_id);
+                }
+                continue;
+            }
             if let Some(op) = OPERATOR_TRAITS.iter().find(|o| o.0 == t.name) {
                 if let Some(def_id) = self.ctx.top_level_def(t.name) {
                     self.operator_traits.insert(def_id, op.0);
@@ -2374,6 +2390,10 @@ impl<'a> InferCtx<'a> {
     /// An unknown or error type counts as implementing it, so an earlier
     /// error does not cascade into this one.
     fn bound_status(&mut self, ty: TypeId, trait_def: DefId) -> Option<bool> {
+        // `Send` and `Sync` are about where a value lives, so no wrapper is peeled first.
+        if let Some(name) = self.marker_traits.get(&trait_def).copied() {
+            return self.marker_status(name, ty);
+        }
         let ty = self.peel_wrappers(ty);
         if ty == TypeId::ERROR { return Some(true); }
         // A `dyn Trait` has the trait and every trait it builds on, and no other.
@@ -2525,7 +2545,9 @@ impl<'a> InferCtx<'a> {
 
     fn report_unsatisfied(&mut self, ty: TypeId, trait_def: DefId, args: &[TypeId], span: Span, dict_key: bool) {
         if !self.reported_obligations.insert((span, trait_def)) { return; }
-        let ty = self.peel_wrappers(ty);
+        // A marker is about where a value lives, so the type is named as written: `Shared<int>`,
+        // not the `int` inside it.
+        let ty = if self.marker_traits.contains_key(&trait_def) { self.apply(ty) } else { self.peel_wrappers(ty) };
         if dict_key && !self.reported_dict_keys.insert((span.line, ty)) { return; }
         let applied: Vec<TypeId> = args.iter().map(|a| self.deep_apply(*a)).collect();
         let trait_name = self.trait_ref_text(trait_def, &applied);
@@ -2839,6 +2861,15 @@ impl<'a> InferCtx<'a> {
                 return;
             }
         };
+        // `Send` and `Sync` of a built-in type are what its parts are: no impl can change that.
+        if self.marker_traits.contains_key(&trait_def) {
+            let builtin_target = pattern.is_some_and(|p| p.builtin)
+                || (pattern.is_none() && self.builtin_target(i.target_type).is_some());
+            if builtin_target {
+                self.report_unsupported(marker_traits::MARKER_ON_BUILTIN, i.span);
+                return;
+            }
+        }
         // The prelude's `Iterator<T>` is what a `for` loop calls on a struct or
         // an enum. A built-in type is walked by the loop itself, so an impl
         // for one would never be called.
@@ -3542,6 +3573,7 @@ impl<'a> InferCtx<'a> {
         self.register_trait_impls(program);
         self.impls_registered = true;
         self.check_impl_supertraits();
+        self.check_marker_impls(program);
         // `dyn` types written before their trait was collected.
         self.check_dyn_uses(true);
         // Requirements raised by signatures that had to wait for the impls.

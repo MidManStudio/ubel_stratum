@@ -132,6 +132,8 @@ written. `TIER-002`, `TIER-003` and `TIER-007` are retired and their numbers are
 | [TYPE-142](./type.md#type-142) | NotAStruct |
 | [TYPE-143](./type.md#type-143) | AwaitOutsideAsync |
 | [TYPE-144](./type.md#type-144) | AsyncReturnNotTask |
+| [TYPE-145](./type.md#type-145) | MarkerImplField |
+| [TYPE-146](./type.md#type-146) | UnsafeImplNotMarker |
 
 ## For contributors
 
