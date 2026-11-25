@@ -72,7 +72,7 @@ The emitter's own list of refusals is the authority (87 distinct messages in `em
 | **Patterns and control** | guards (`where`), nested patterns, struct-style variants, destructuring `let` and `for`, `break` with a value, an `if` expression that lacks an `else` |
 | **Operators** | most operators on bools, any operator on structs, enums or closures |
 | **Strings** | format specifiers in interpolation, `chars`, `split` (they return lists) |
-| **Memory** | allocation in LOW (decision open), building a string or a struct in MID outside `with arena` (decision open), `with gc`/`heap`/`pool`, `Pool<T>`/`Handle<T>` |
+| **Memory** | allocation in LOW (decision open), an interpolated string, a closure body or `main` allocating in MID outside `with arena` (the rest is stage 1 of D10, provisional), `with gc`/`heap`/`pool`, `Pool<T>`/`Handle<T>` |
 | **Closures** | captures of mutable variables, closures that capture more than 30 variables, a closure inside a closure inside an arena |
 
 How much does each group matter? The first refusal of each `ok_` fixture, measured with the binary after M3b on 2026-11-20

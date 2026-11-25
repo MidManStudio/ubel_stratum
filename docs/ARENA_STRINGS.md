@@ -46,7 +46,7 @@ interpolation literal arm, one line at the top of `binop_result`.
 - Interpolation outside an arena: a GC object of `8 + length` bytes with mask 0. Inside: bump `8 + length`
   in the current arena (a string holds no pointers), but only when sema tags the literal `&arena string`
   (this patch); without it the emitter refuses.
-- `+` on strings: always a GC object, wherever it is written; refused in LOW and in MID outside `with arena`.
+- `+` on strings: always a GC object, wherever it is written; refused in LOW; in MID outside `with arena` it is allowed only in a function that takes its caller's arena (D10, stage 1).
 - Ordering: byte-wise, `ubel_str_cmp`.
 - A string field in a struct or enum allocated in an arena is allowed: such an arena is created
   scannable (docs/LLVM_POC.md, "Scannable arenas"), so a GC string stored there is kept alive.
