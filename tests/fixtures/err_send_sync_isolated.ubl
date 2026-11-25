@@ -1,0 +1,37 @@
+// tests/fixtures/err_send_sync_isolated.ubl
+// What an `impl Send` or `impl Sync` can get wrong. The impl is checked against the fields of its
+// type: a `Shared<int>` is not `Send`, a field whose own type has no impl is not either, and an
+// enum is checked variant by variant. Only the first failing part of a type is named. The same
+// type can fail `Sync` and not `Send`, and the impls that hold are not reported.
+// Expected: sema FAIL (MarkerImplField TYPE-145 four times).
+
+struct Holder { cell: Shared<int> }
+
+impl Send for Holder {
+}
+
+struct Inner { n: int }
+
+struct Outer { inner: Inner, cell: Shared<int> }
+
+impl Send for Outer {
+}
+
+enum Slot {
+    Empty,
+    Full(Shared<int>),
+}
+
+impl Send for Slot {
+}
+
+struct Fine { n: int }
+
+impl Send for Fine {
+}
+
+impl Sync for Holder {
+}
+
+fn main() void {
+}

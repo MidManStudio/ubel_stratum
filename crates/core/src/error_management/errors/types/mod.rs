@@ -84,6 +84,22 @@ pub enum TypeError {
         span:  Span,
     },
 
+    /// `impl Send for T {}` or `impl Sync for T {}` where a field of `T` (or the payload of one
+    /// of its variants) is not `Send` or `Sync`. An `unsafe impl` is not checked.
+    MarkerImplField {
+        marker:    String,
+        type_name: String,
+        part:      String,
+        part_type: String,
+        span:      Span,
+    },
+
+    /// `unsafe impl` of something other than `Send` or `Sync`, or of no trait at all.
+    UnsafeImplNotMarker {
+        found: String,
+        span:  Span,
+    },
+
     /// `*`/`deref` used on a non-reference type.
     DerefOnNonReference {
         found: String,
@@ -523,6 +539,8 @@ impl TypeError {
             TypeError::AwaitOnNonTask             { span, .. } => *span,
             TypeError::AwaitOutsideAsync          { span, .. } => *span,
             TypeError::AsyncReturnNotTask         { span, .. } => *span,
+            TypeError::MarkerImplField            { span, .. } => *span,
+            TypeError::UnsafeImplNotMarker        { span, .. } => *span,
             TypeError::DerefOnNonReference        { span, .. } => *span,
             TypeError::InvalidFormatSpec          { span, .. } => *span,
             TypeError::AlternateFormatWithoutBase { span, .. } => *span,
@@ -587,6 +605,12 @@ impl TypeError {
 
             TypeError::AsyncReturnNotTask { found, .. } =>
                 format!("an async function returns `Task<T>`, found `{}`", found),
+
+            TypeError::MarkerImplField { marker, type_name, part, part_type, .. } =>
+                format!("`impl {marker} for {type_name}`: {part} has type `{part_type}`, which is not `{marker}`"),
+
+            TypeError::UnsafeImplNotMarker { found, .. } =>
+                format!("`unsafe impl` is only for `Send` and `Sync`, found {}", found),
 
             TypeError::DerefOnNonReference { found, .. } =>
                 format!("`*`/`deref` requires a reference type (`&T`/`ref T`), found `{}`", found),
@@ -769,6 +793,12 @@ impl TypeError {
             TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "numeric base" =>
                 Some("`x`/`X`/`o`/`b` only apply to int, drop it or format an int value".to_string()),
 
+            TypeError::MarkerImplField { marker, .. } =>
+                Some(format!("give the field a type that is `{marker}`, or, if the type is sound to use that way, write `unsafe impl {marker} for ...` (trusted, not checked)")),
+
+            TypeError::UnsafeImplNotMarker { .. } =>
+                Some("drop `unsafe`: an impl of any other trait is checked like every impl".to_string()),
+
             TypeError::AlternateFormatWithoutBase { .. } =>
                 Some("add a trailing base, e.g. `{value:#x}`, or drop the `#`".to_string()),
 
@@ -929,6 +959,8 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::AwaitOnNonTask { .. }             => "TYPE-106",
             TypeError::AwaitOutsideAsync { .. }          => "TYPE-143",
             TypeError::AsyncReturnNotTask { .. }         => "TYPE-144",
+            TypeError::MarkerImplField { .. }            => "TYPE-145",
+            TypeError::UnsafeImplNotMarker { .. }        => "TYPE-146",
             TypeError::CannotInferType { .. }            => "TYPE-107",
             TypeError::GenericArgCountMismatch { .. }    => "TYPE-108",
             TypeError::UnknownVariant { .. }             => "TYPE-109",

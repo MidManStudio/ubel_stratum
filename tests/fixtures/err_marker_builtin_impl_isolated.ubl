@@ -1,0 +1,26 @@
+// tests/fixtures/err_marker_builtin_impl_isolated.ubl
+// A built-in type has `Send` and `Sync` when its parts do, and no impl can say otherwise, so an
+// impl of either for a built-in type is not supported, `unsafe` or not. A second impl for one
+// struct overlaps the first. The valid impl in between is not reported.
+// Expected: sema FAIL (UnsupportedTraitFeature TYPE-129 three times, OverlappingImpl TYPE-128
+// once).
+
+struct Job { id: int }
+
+impl Send for Job {
+}
+
+impl Send for int {
+}
+
+impl Sync for List<int> {
+}
+
+unsafe impl Send for string {
+}
+
+impl Send for Job {
+}
+
+fn main() void {
+}

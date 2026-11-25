@@ -1,0 +1,30 @@
+// tests/fixtures/err_unsafe_impl_isolated.ubl
+// `unsafe impl` is for `Send` and `Sync` only. An impl of any other trait, or an inherent impl,
+// cannot be unsafe: it is reported, and the impl itself is still read as an ordinary one. The
+// `unsafe impl` of `Send` and of `Sync` in between is trusted and not reported.
+// Expected: sema FAIL (UnsafeImplNotMarker TYPE-146 twice).
+
+trait Show {
+    fn show(self) string
+}
+
+struct Gauge { reading: int }
+
+unsafe impl Show for Gauge {
+    fn show(self) string { return "gauge" }
+}
+
+unsafe impl Gauge {
+    fn read(self) int { return self.reading }
+}
+
+struct Raw { handle: Shared<int> }
+
+unsafe impl Send for Raw {
+}
+
+unsafe impl Sync for Raw {
+}
+
+fn main() void {
+}

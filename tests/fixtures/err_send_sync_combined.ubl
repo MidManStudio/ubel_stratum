@@ -1,0 +1,52 @@
+// tests/fixtures/err_send_sync_combined.ubl
+// `Send` and `Sync` through bounds and generics. A bound is not met by a `Shared<int>` (the
+// wrapper is what is not `Send`, not its contents), a task, a function value, or a struct with no
+// impl, and a generic struct meets it only through the condition its impl wrote. A type
+// parameter with no bound is not `Send`, and a generic impl without the bound is refused for the
+// field it cannot vouch for. An `unsafe impl` is not checked, and anything that is not `Send` or
+// `Sync` cannot be one.
+// Expected: sema FAIL (UnsatisfiedBound TYPE-126 six times, MarkerImplField TYPE-145 once,
+// UnsafeImplNotMarker TYPE-146 once).
+
+trait Show {
+    fn show(self) string
+}
+
+fn needs_send<T: Send>(x: T) void {
+}
+
+fn lacks<T>(x: T) void {
+    needs_send(x)
+}
+
+struct Plain { n: int }
+
+struct Box<T> { v: T }
+
+impl<T: Send> Send for Box<T> {
+}
+
+struct Leaky<T> { v: T }
+
+impl<T> Send for Leaky<T> {
+}
+
+struct Raw { handle: Shared<int> }
+
+unsafe impl Send for Raw {
+}
+
+unsafe impl Show for Plain {
+    fn show(self) string { return "plain" }
+}
+
+fn go(s: Shared<int>, t: Task<int>, f: fn(int) int, p: Plain, b: Box<Shared<int>>) void {
+    needs_send(s)
+    needs_send(t)
+    needs_send(f)
+    needs_send(p)
+    needs_send(b)
+}
+
+fn main() void {
+}

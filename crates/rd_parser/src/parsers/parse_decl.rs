@@ -103,6 +103,8 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.parse_trait_decl(attrs, vis).map(Item::Trait),
             TokenType::Impl  =>
                 self.parse_impl_block(attrs).map(Item::Impl),
+            TokenType::Unsafe =>
+                self.parse_unsafe_impl(attrs).map(Item::Impl),
             TokenType::Extend =>
                 self.parse_extend_decl(attrs).map(Item::Extend),
             TokenType::Const => {
@@ -957,6 +959,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         Some(ImplBlock {
             attributes: attrs,
+            is_unsafe: false,
             tier: if tier == TierAnnotation::High { None } else { Some(tier) },
             generic_params,
             trait_path,
@@ -965,6 +968,25 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             methods: self.arena.alloc_slice_clone(&methods),
             span,
         })
+    }
+
+    /// `unsafe impl Send for T {}`: the `unsafe` keyword in front of an impl block. Whether the
+    /// trait may be unsafe is not the parser's question (`TYPE-146`, in sema).
+    pub(crate) fn parse_unsafe_impl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+    ) -> Option<ImplBlock<'ast>> {
+        let lo = self.span();
+        self.cursor.advance(); // consume `unsafe`
+        if !self.cursor.is_at(&TokenType::Impl) {
+            self.expected(&["'impl' after 'unsafe'"]);
+            self.recover_to_decl();
+            return None;
+        }
+        let mut block = self.parse_impl_block(attrs)?;
+        block.is_unsafe = true;
+        block.span = lo.merge(&block.span);
+        Some(block)
     }
 
     // ── Extend declaration ────────────────────────────────────────────────────

@@ -1,0 +1,45 @@
+// tests/fixtures/ok_send_sync_combined.ubl
+// `Send` and `Sync` through bounds, generics and `unsafe impl`. A bound `T: Send` is met by
+// scalars, strings, collections and tuples of them, a struct with an impl, and a generic struct
+// whose impl is conditional on its parameter. A type parameter is `Send` through its own bound.
+// `Raw` holds a `Shared<int>`, which is not `Send`, so a plain impl would be refused; the
+// `unsafe impl` is trusted and makes it `Send` for a bound.
+// Expected: sema OK, interpret OK.
+
+fn needs_send<T: Send>(x: T) void {
+}
+
+fn pass_on<T: Send>(x: T) void {
+    needs_send(x)
+}
+
+struct Point { x: int, y: int }
+
+impl Send for Point {
+}
+
+struct Box<T> { v: T }
+
+impl<T: Send> Send for Box<T> {
+}
+
+struct Raw { handle: Shared<int> }
+
+unsafe impl Send for Raw {
+}
+
+fn forward(r: Raw) void {
+    needs_send(r)
+}
+
+fn main() void {
+    let names: List<string> = List.new()
+    needs_send(1)
+    needs_send("text")
+    needs_send(names)
+    needs_send((1, "one"))
+    needs_send(Point { x = 1, y = 2 })
+    needs_send(Box { v = Point { x = 3, y = 4 } })
+    pass_on(Box { v = 5 })
+    println("accepted")
+}

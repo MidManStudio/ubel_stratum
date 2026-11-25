@@ -210,6 +210,9 @@ pub struct MethodSig<'ast> {
 pub struct ImplBlock<'ast> {
     /// `@cfg(...)`, `@doc(...)` before the `impl` keyword.
     pub attributes:  &'ast [Attribute<'ast>],
+    /// `unsafe impl`: a trusted impl, not checked against the fields of its type. Only `Send`
+    /// and `Sync` take it (`TYPE-146` otherwise).
+    pub is_unsafe:   bool,
     /// Tier applied to all methods in this block unless individually overridden.
     /// `None` = methods default to `High` unless they carry `@tier` themselves.
     pub tier:        Option<TierAnnotation>,

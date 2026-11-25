@@ -1,0 +1,40 @@
+// tests/fixtures/ok_send_sync_isolated.ubl
+// `Send` and `Sync`, the marker traits behind the sendable rule (AS4a). A struct or an enum says it
+// has one with an `impl` that has no methods, and the compiler checks that impl against the
+// fields: `Job` holds a string and a list of strings, `Msg` has a payload in every kind of
+// variant, and `Counter` holds a `SyncShared`, which has both when its contents are `Send`.
+// Nothing here uses a task. The impls only have to be accepted, and a program that has them
+// runs as it did before.
+// Expected: sema OK, interpret OK.
+
+struct Job { id: int, name: string, tags: List<string> }
+
+impl Send for Job {
+}
+
+impl Sync for Job {
+}
+
+enum Msg {
+    Quit,
+    Move(int, int),
+    Say { text: string },
+}
+
+impl Send for Msg {
+}
+
+struct Counter { total: SyncShared<int> }
+
+impl Send for Counter {
+}
+
+impl Sync for Counter {
+}
+
+fn main() void {
+    let tags: List<string> = List.new()
+    let job = Job { id = 7, name = "build", tags = tags }
+    println(job.id)
+    println(job.name)
+}
