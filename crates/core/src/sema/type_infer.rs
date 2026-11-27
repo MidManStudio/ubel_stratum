@@ -1114,6 +1114,24 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    /// D1 v2, first step (provisional, decision D10): the result of a call to a user-defined `@tier(mid)` function that
+    /// returns a struct or an enum is built in the caller's arena (the native backend hands such a function the arena of its
+    /// caller), so a call written inside `with arena` is tagged like a freshly built value, as the result of a method call
+    /// already is. Without this the result of such a call passes every escape check. An optional or a list of such values
+    /// is not covered yet.
+    fn tag_mid_call_result<'ast>(&mut self, callee: &Expr<'ast>, result: TypeId) -> TypeId {
+        let Some(def) = self.callee_fn_def(callee) else { return result };
+        if !matches!(self.ctx.symbols.lookup(def).kind, DefKind::Function { tier: TierAnnotation::Mid, .. }) {
+            return result;
+        }
+        let resolved = self.apply(result);
+        let holds_object = match self.ctx.types.get(resolved).clone() {
+            SemaType::Named { def, .. } => matches!(self.ctx.symbols.lookup(def).kind, DefKind::Struct { .. } | DefKind::Enum),
+            _ => false,
+        };
+        if holds_object { self.maybe_arena_ref(result) } else { result }
+    }
+
     /// GAP 2 — resolve `ty` and return `Some(arena)` only if its
     /// *outermost* layer is `SemaType::ArenaRef`. This is deliberately
     /// shallow (unlike `SemaType::scope_ref_kind`, which recurses):
@@ -7645,7 +7663,7 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                 }
-                return_type
+                self.tag_mid_call_result(callee, return_type)
             }
             SemaType::Var(_)   => self.fresh_var(),
             SemaType::Unknown  => self.unknown(),

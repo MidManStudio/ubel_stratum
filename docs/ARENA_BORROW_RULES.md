@@ -103,6 +103,7 @@ root lockfile needs 1.78 or newer); CI runs them.
 - **Methods and trait methods** go through a separate argument loop and still reject arena
   arguments.
 - **Closures as lending targets** wait for D2 (does a function type carry a tier) and A7.
+- **Results of a `@tier(mid)` call (D1 v2, first step, provisional).** The result of a call to a user-defined `@tier(mid)` function that returns a struct or an enum is built in the caller's arena, so a call written inside `with arena` is tagged with that block's arena like a freshly built value (the result of a method call already was). It then follows the rules above: it can be lent with `&` and read, but not kept outside the block, returned from it, or passed by value. Fixtures: `err_arena_mid_result_escape`, `err_arena_mid_result_enum_escape`, `err_arena_mid_result_by_value`, `ok_arena_mid_result_borrow`, and `ok_arena_low_result_untagged` (the result of a `@tier(low)` call is not arena memory and is not tagged). An optional or a list of such values is not covered yet.
 - **Region-polymorphic results** (`pick` above) are refused. Allowing them means instantiating `L`
   with the caller's arena and tagging the result, and `SemaType::Named` carries no lifetime
   arguments, so a returned edge struct could not be tagged. A possible v2.
