@@ -75,6 +75,7 @@ void ubel_trap_no_return(void);
 
 /* Number of arenas created and not yet destroyed. A correct program ends with 0. */
 uint64_t ubel_arena_live(void);
+uint64_t ubel_arena_big_reuses(void); /* how many big arena chunks were served from the cache of kept chunks (a test and statistics hook) */
 
 /* ---------------------------------------------------------------- HIGH --- */
 

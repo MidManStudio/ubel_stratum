@@ -534,6 +534,7 @@ static uint64_t last_live;
 static uint64_t bytes_since_gc;
 static uint64_t trigger_delta = MIN_TRIGGER;
 static uint64_t min_trigger   = MIN_TRIGGER;
+static int      big_cache_off; /* UBEL_ARENA_CACHE=0: big arena chunks are freed at once, not kept (see the arena section) */
 /* Debug mode (UBEL_GC_STRESS=N, ubel_gc_set_stress): collect before every N-th allocation. It is
  * implemented by holding trigger_delta at 0, so the existing check in front of every allocation
  * fires each time and the normal fast path pays nothing for it. */
@@ -592,6 +593,8 @@ void ubel_gc_init(void *stack_base_) {
         long v = strtol(sx, NULL, 10);
         if (v >= 1) stress_every = (uint64_t)v;
     }
+    const char *ac = getenv("UBEL_ARENA_CACHE"); /* 0: free big arena chunks at once instead of keeping them for reuse */
+    if (ac && strtol(ac, NULL, 10) == 0) big_cache_off = 1;
     trigger_delta = stress_every ? 0 : min_trigger;
 }
 
@@ -1096,9 +1099,35 @@ typedef struct arena_chunk {
 static arena_chunk *chunk_cache;
 static unsigned     chunk_cache_n;
 
+/* Big chunks (an arena opened with 1 MiB or more, such as `with arena(512MB)`) are kept for reuse instead of being
+ * freed. Giving a 512 MB chunk back to the system and asking for another every round makes the kernel zero fresh pages
+ * again each time: in the arena binary-trees benchmark that was three quarters of the run (820,000 page faults). A request
+ * is served from this list only by a chunk of exactly the requested size, at most ARENA_BIG_MAX chunks are kept, and
+ * UBEL_ARENA_CACHE=0 turns it off. Like the 64 KiB cache above, a kept chunk holds stale bytes: nothing reads memory
+ * that was not bumped (see scan_arena_roots). Provisional, a decision for the owner. */
+#define ARENA_BIG_MIN 1048576u
+#define ARENA_BIG_MAX 4u
+
+static arena_chunk *big_cache;
+static unsigned     big_cache_n;
+static uint64_t     big_cache_reuses;
+
 static void arena_install_chunk(ubel_arena *a, uint64_t payload) {
-    arena_chunk *c;
-    if (payload == ARENA_DEFAULT_CHUNK && chunk_cache) {
+    arena_chunk *c = NULL;
+    if (payload >= ARENA_BIG_MIN && big_cache) {
+        for (arena_chunk **pp = &big_cache; *pp; pp = &(*pp)->next) {
+            if ((*pp)->size == payload) {
+                c = *pp;
+                *pp = c->next;
+                big_cache_n--;
+                big_cache_reuses++;
+                break;
+            }
+        }
+    }
+    if (c) {
+        /* a kept big chunk of exactly this size */
+    } else if (payload == ARENA_DEFAULT_CHUNK && chunk_cache) {
         c = chunk_cache;
         chunk_cache = c->next;
         chunk_cache_n--;
@@ -1117,6 +1146,8 @@ static ubel_arena *scan_head;
 static uint64_t arenas_live;
 
 uint64_t ubel_arena_live(void) { return arenas_live; }
+
+uint64_t ubel_arena_big_reuses(void) { return big_cache_reuses; }
 
 ubel_arena *ubel_arena_create(uint64_t chunk_size) {
     ubel_arena *a = (ubel_arena *)malloc(sizeof *a);
@@ -1224,6 +1255,10 @@ void ubel_arena_destroy(ubel_arena *a) {
             c->next = chunk_cache;
             chunk_cache = c;
             chunk_cache_n++;
+        } else if (c->size >= ARENA_BIG_MIN && !big_cache_off && big_cache_n < ARENA_BIG_MAX) {
+            c->next = big_cache;
+            big_cache = c;
+            big_cache_n++;
         } else {
             free(c);
         }

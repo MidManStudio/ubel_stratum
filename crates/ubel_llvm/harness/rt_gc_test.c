@@ -1021,6 +1021,66 @@ static void t_str_helpers(void) {
 /* The string-building helpers allocate in the arena they are given, and in the GC heap when it is NULL. The
  * arena path must not touch the collector's allocation count and must bump the arena by the rounded size of
  * the result; the GC path must allocate exactly one object. */
+/* Big arena chunks (1 MiB and more) are kept for reuse, only for the same size, and at most four of them are kept. Every
+ * test runs in a fresh process, so the cache starts empty. */
+static void t_arena_big_reuse(void) {
+    const uint64_t big = 2u * 1024u * 1024u;
+    const uint64_t one_mib = 1024u * 1024u;
+    const uint64_t live0 = ubel_arena_live(); /* the harness keeps its own root table in an arena */
+    CHECK(ubel_arena_big_reuses() == 0, "starts with no reuse");
+
+    /* the limit: exactly 1 MiB is a big chunk, 16 bytes less is not */
+    ubel_arena *x = ubel_arena_create(one_mib);
+    ubel_arena_destroy(x);
+    ubel_arena *y = ubel_arena_create(one_mib);
+    CHECK(ubel_arena_big_reuses() == 1, "a chunk of exactly 1 MiB is kept and reused");
+    ubel_arena_destroy(y);
+    ubel_arena *z = ubel_arena_create(one_mib - 16);
+    ubel_arena_destroy(z);
+    ubel_arena *z2 = ubel_arena_create(one_mib - 16);
+    CHECK(ubel_arena_big_reuses() == 1, "a chunk 16 bytes under 1 MiB is not");
+    ubel_arena_destroy(z2);
+
+    ubel_arena *a = ubel_arena_create(big);
+    char *p = (char *)a->cur;
+    memset(a->cur, 0x11, (size_t)(a->end - a->cur));
+    ubel_arena_destroy(a);
+
+    ubel_arena *b = ubel_arena_create(big);
+    CHECK(ubel_arena_big_reuses() == 2, "a big chunk of the same size is served from the cache");
+    CHECK((char *)b->cur == p, "and it is the same chunk");
+    CHECK(b->end - b->cur == (long)big, "with the size that was asked for");
+    ubel_arena_destroy(b);
+
+    /* another size is never served by a kept chunk, and its whole payload is usable (the sanitizers see a short chunk) */
+    ubel_arena *c = ubel_arena_create(2 * big);
+    CHECK(ubel_arena_big_reuses() == 2, "a request of another size is not served by a kept chunk");
+    CHECK(c->end - c->cur == (long)(2 * big), "the payload is as large as asked");
+    memset(c->cur, 0x22, (size_t)(c->end - c->cur));
+    ubel_arena_destroy(c);
+
+    /* at most four chunks are kept in all: the 1 MiB, 2 MiB and 4 MiB chunks above are three of them */
+    ubel_arena *many[6];
+    for (int i = 0; i < 6; i++) many[i] = ubel_arena_create(big);
+    CHECK(ubel_arena_big_reuses() == 3, "the kept 2 MiB chunk is used first");
+    for (int i = 0; i < 6; i++) ubel_arena_destroy(many[i]);
+    for (int i = 0; i < 6; i++) many[i] = ubel_arena_create(big);
+    CHECK(ubel_arena_big_reuses() == 5, "exactly two more kept chunks come back (the cap is four in all)");
+    for (int i = 0; i < 6; i++) ubel_arena_destroy(many[i]);
+
+    CHECK(ubel_arena_live() == live0, "no arena of this test is left alive");
+}
+
+/* UBEL_ARENA_CACHE=0 (main sets it before the runtime reads it) turns the cache off: nothing is ever reused. */
+static void t_arena_cache_off(void) {
+    const uint64_t big = 2u * 1024u * 1024u;
+    ubel_arena *a = ubel_arena_create(big);
+    ubel_arena_destroy(a);
+    ubel_arena *b = ubel_arena_create(big);
+    CHECK(ubel_arena_big_reuses() == 0, "with the cache turned off a big chunk is freed at once");
+    ubel_arena_destroy(b);
+}
+
 static void t_str_build_arena(void) {
     ubel_arena *a = ubel_arena_create(0);
     int64_t sb[16], fb[8], tb[8];
@@ -1080,6 +1140,8 @@ static const test tests[] = {
     {"global_roots", t_global_roots, NULL},
     {"str_helpers", t_str_helpers, NULL},
     {"str_build_arena", t_str_build_arena, NULL},
+    {"arena_big_reuse", t_arena_big_reuse, NULL},
+    {"arena_cache_off", t_arena_cache_off, NULL},
 };
 #define NTESTS (sizeof tests / sizeof tests[0])
 
@@ -1106,6 +1168,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < NTESTS; i++) {
         if (strcmp(argv[1], tests[i].name) != 0) continue;
         if (tests[i].trigger_kb) setenv("UBEL_GC_TRIGGER_KB", tests[i].trigger_kb, 1);
+        if (strcmp(argv[1], "arena_cache_off") == 0) setenv("UBEL_ARENA_CACHE", "0", 1); /* read by ubel_gc_init */
         ubel_gc_init(__builtin_frame_address(0));
         roots_init();
         tests[i].fn();

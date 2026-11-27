@@ -188,25 +188,28 @@ a mutex on each allocation and zeroes its memory on `free_all` (read in its sour
 
 Since chat 10 (stage 1 of decision D10, provisional) a `@tier(mid)` function that allocates outside its own `with arena` takes
 its caller's arena as a hidden parameter, and `programs/binarytrees_arena/binarytrees_arena.ubl` builds natively and prints the
-expected output (`run.sh --size small` checks it). First timings, in the one-CPU sandbox of the earlier table (best of 7, N=18),
-so not comparable with the hosted-runner tables above; read the ratios:
+expected output (`run.sh --size small` checks it). The tree is lent to `check` with `&`, because sema lets an arena value cross
+a call only as a borrow. Timings in the one-CPU sandbox of the earlier table (best of 7, N=18), so not comparable with the
+hosted-runner tables above; read each ratio against the Rust row of the same session:
 
-| language | best wall ms | peak MB | vs fastest |
-|---|---:|---:|---:|
-| ubel-mid | 2136.0 | 34.0 | 5.22x |
-| rust | 409.5 | 10.2 | 1.00x |
-| ubel-high (the gc track's program, same N, same machine) | 1995.8 | 59.8 | |
+| session | language | best wall ms | peak MB | vs rust |
+|---|---|---:|---:|---:|
+| first build of stage 1 | ubel-mid | 2136.0 | 34.0 | 5.22x |
+| first build of stage 1 | rust | 409.5 | 10.2 | 1.00x |
+| big chunks kept for reuse (the default now) | ubel-mid | 497.6 | 49.9 | 1.01x |
+| big chunks kept for reuse (the default now) | rust | 494.4 | 10.2 | 1.00x |
 
-So the arena tier was no faster than the GC tier on this program (1.07x of its time). Most of the time was the kernel, not
-the code: one run of the MID binary spent 0.52 s in user code and 1.93 s in the system, with 820,635 minor page
-faults. Every `with arena(512MB)` round gets a fresh 512 MB chunk from `malloc` (an `mmap`) and gives it back at the end, so
-each round touches fresh zero pages; the runtime keeps a cache only for the default 64 KB chunk. As an experiment, not delivered,
-retaining one big chunk (at least 1 MB, reused when the next request has exactly the same size) took one run to 0.40 s
-(0.38 s user, 0.02 s system, 12,362 faults, 49 MB peak): close to Rust's best of 410 ms and about
-5 times faster than the Ubel HIGH run above (a different program, binary-trees on the GC heap). That is a memory
-retention policy, so a decision for the owner. One more difference is visible in the programs: an Ubel enum node is 32 bytes (a
-tag and two pointers, 24 bytes, rounded to the 16-byte alignment of the allocator), against 8 in the Rust program and 16 in Zig.
-Not measured: the hosted runner, 32-bit, ARM, the effect of 24-byte nodes, and the experiment under the equivalence suite.
+The first build was no faster than the GC tier, and most of its time was the kernel: one run spent 0.52 s in user code and 1.93 s
+in the system, with 820,635 minor page faults. Every `with arena(512MB)` round got a fresh 512 MB chunk from `malloc` (an `mmap`)
+and gave it back at the end, so each round touched fresh zero pages. The runtime now keeps up to four chunks of 1 MiB or more
+for reuse after their arena ends, and serves a new arena only from a kept chunk of exactly the size it asks for;
+`UBEL_ARENA_CACHE=0` turns that off (decision for the owner, adopted 2026-11-27, provisional). Single runs of the same build:
+with the cache 0.68 s (0.66 s user, 0.02 s system, 12,363 faults), with `UBEL_ARENA_CACHE=0` 2.76 s
+(0.70 s user, 1.95 s system, 820,635 faults). Peak memory rises because a kept chunk stays mapped
+(49.9 MB against 34.0 MB). A kept chunk holds stale bytes; the runtime never reads memory that was not bumped, and a
+throwaway run that filled every reused arena chunk with 0xA5 left all 139 equivalence results unchanged. The Rust program's nodes
+are 8 bytes and an Ubel enum node is 32 (a tag and two pointers, 24 bytes, rounded to the 16-byte alignment of the allocator), yet
+the two are level here; why is not investigated. Not measured: the hosted runner, 32-bit, ARM, 24-byte nodes.
 
 ## What cannot run yet
 
