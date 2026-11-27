@@ -1,0 +1,34 @@
+// tests/fixtures/ok_arena_mid_result_borrow.ubl
+// D1 v2, first step (provisional, decision D10): the tagged result of a `@tier(mid)` call lives in the arena of the
+// block it is written in and is lent to a callee with `&`. A call outside any block is not tagged, so `total` simply
+// hands its own caller's arena on.
+//
+// Expected: sema OK, zero errors.
+struct Node {
+    v: int
+}
+
+@tier(mid)
+fn mk(v: int) Node {
+    return Node { v = v }
+}
+
+@tier(mid)
+fn read(n: &Node) int {
+    return n.v
+}
+
+@tier(mid)
+fn total() int {
+    let a = mk(1)
+    return read(&a)
+}
+
+@tier(mid)
+fn main() void {
+    with arena(1KB) {
+        let n = mk(3)
+        println(read(&n))
+        println(total())
+    }
+}

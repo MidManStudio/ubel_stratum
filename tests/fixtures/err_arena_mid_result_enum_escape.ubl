@@ -1,0 +1,33 @@
+// tests/fixtures/err_arena_mid_result_enum_escape.ubl
+// D1 v2, first step (provisional, decision D10): the same escape for an enum. `make` builds the tree in its caller's
+// arena, so inside the inner `with arena` its result is scoped to that block and cannot be kept in `keep`.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+enum Tree {
+    Empty
+    Node(Tree, Tree)
+}
+
+@tier(mid)
+fn make(depth: int) Tree {
+    if depth == 0 {
+        return Tree.Node(Tree.Empty, Tree.Empty)
+    }
+    return Tree.Node(make(depth - 1), make(depth - 1))
+}
+
+@tier(mid)
+fn bad() int {
+    let mut keep = make(1)
+    with arena(1KB) {
+        keep = make(2)
+    }
+    return 0
+}
+
+@tier(mid)
+fn main() void {
+    with arena(1MB) {
+        println(bad())
+    }
+}

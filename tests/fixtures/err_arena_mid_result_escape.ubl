@@ -1,0 +1,30 @@
+// tests/fixtures/err_arena_mid_result_escape.ubl
+// D1 v2, first step (provisional, decision D10): the result of a call to a `@tier(mid)` function that returns a struct is
+// built in the caller's arena, so inside `with arena` it is scoped to that block like a freshly built value. Assigning it
+// to a binding declared outside the block lets it outlive its arena: rejected, as the same escape written as a literal.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+struct Node {
+    v: int
+}
+
+@tier(mid)
+fn mk(v: int) Node {
+    return Node { v = v }
+}
+
+@tier(mid)
+fn bad() int {
+    let mut keep = mk(1)
+    with arena(1KB) {
+        keep = mk(2)
+    }
+    return keep.v
+}
+
+@tier(mid)
+fn main() void {
+    with arena(1MB) {
+        println(bad())
+    }
+}

@@ -24,7 +24,7 @@
 //!
 //! Everything else is refused with a located "not supported yet" error instead of being
 //! guessed at: enums, strings as values, collections, closures, generics, struct methods,
-//! `&mut`, explicit `*` dereference, references to anything but a struct, `match`, sized
+//! `&mut`, explicit `*` dereference, references to anything but a struct or an enum, `match`, sized
 //! integers, floats.
 //!
 //! # Lowering model
@@ -1000,7 +1000,8 @@ impl<'a> Emitter<'a> {
                 }
                 match self.ty_of_type(inner)? {
                     Ty::Struct(sid) => Ok(Ty::Struct(sid)),
-                    _ => unsupported(t.span, "references to anything but a struct (`&L int` and the like)"),
+                    Ty::Enum(eid) => Ok(Ty::Enum(eid)),
+                    _ => unsupported(t.span, "references to anything but a struct or an enum (`&L int` and the like)"),
                 }
             }
             TypeKind::Named { path, args } => {
@@ -1976,16 +1977,16 @@ impl<'a> Emitter<'a> {
             ExprKind::Lambda(lam) => self.lambda(e, lam),
             ExprKind::If(ife) => self.if_value(ife, e.span),
             ExprKind::StructLit { path, fields } => self.struct_lit(e, path, fields),
-            // `&x` of a struct is the struct's own pointer: the interpreter's reference to a
-            // struct aliases it, and sema has already checked the lifetime.
+            // `&x` of a struct or an enum is its own pointer: the interpreter's reference to either
+            // aliases it, and sema has already checked the lifetime.
             ExprKind::Borrow { mutable, place } => {
                 if mutable {
                     return unsupported(e.span, "`&mut` borrows");
                 }
                 let v = self.expr(place)?;
                 match v.ty {
-                    Ty::Struct(_) => Ok(v),
-                    _ => unsupported(e.span, "borrowing anything but a struct value (`&n` of an int)"),
+                    Ty::Struct(_) | Ty::Enum(_) => Ok(v),
+                    _ => unsupported(e.span, "borrowing anything but a struct or an enum value (`&n` of an int)"),
                 }
             }
             ExprKind::Deref(_) => {

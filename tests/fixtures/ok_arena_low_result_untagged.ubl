@@ -1,0 +1,29 @@
+// tests/fixtures/ok_arena_low_result_untagged.ubl
+// D1 v2, first step (provisional, decision D10): only the result of a `@tier(mid)` call is tagged with an arena. A
+// `@tier(low)` function's result is a manually owned object, not arena memory, so it may be kept in a binding declared
+// outside the block the call is written in.
+//
+// Expected: sema OK, zero errors.
+
+struct Node {
+    v: int
+}
+
+@tier(low)
+fn low_make(v: int) Node {
+    return Node { v = v }
+}
+
+@tier(mid)
+fn keepit() int {
+    let mut keep = low_make(1)
+    with arena(1KB) {
+        keep = low_make(2)
+    }
+    return keep.v
+}
+
+@tier(mid)
+fn main() void {
+    println(keepit())
+}

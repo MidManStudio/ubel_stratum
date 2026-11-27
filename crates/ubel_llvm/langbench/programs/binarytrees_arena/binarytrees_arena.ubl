@@ -1,7 +1,8 @@
 // binary-trees on arenas (the MID tier): see binarytrees.ubl for the problem. Every tree lives in an arena that ends with
 // its `with arena` block, so a whole tree is released at once instead of being left to the collector.
 // `make` allocates outside any `with arena` of its own, so the native backend gives it its caller's arena as a hidden
-// parameter (decision D10, stage 1, provisional); every call to it below sits inside a `with arena`.
+// parameter (decision D10, stage 1, provisional); every call to it below sits inside a `with arena`. A tree that lives in an
+// arena is lent to `check` with `&`, because sema lets an arena value cross a call only as a borrow.
 
 enum Tree {
     Empty
@@ -17,7 +18,7 @@ fn make(depth: int) Tree {
 }
 
 @tier(mid)
-fn check(t: Tree) int {
+fn check(t: &Tree) int {
     match t {
         Tree.Empty => 0
         Tree.Node(l, r) => 1 + check(l) + check(r)
@@ -27,7 +28,8 @@ fn check(t: Tree) int {
 @tier(mid)
 fn stretch_check(depth: int) int {
     with arena(512MB) {
-        return check(make(depth))
+        let t = make(depth)
+        return check(&t)
     }
 }
 
@@ -36,7 +38,8 @@ fn rounds(depth: int, iterations: int) int {
     let mut total = 0
     for i in 0 .. iterations {
         with arena(512MB) {
-            total += check(make(depth))
+            let t = make(depth)
+            total += check(&t)
         }
     }
     return total
@@ -63,6 +66,7 @@ fn main() void {
             println($"{iterations} trees of depth {d} check: {rounds(d, iterations)}")
             d += 2
         }
-        println($"long lived tree of depth {max_depth} check: {check(long_lived)}")
+        let long_check = check(&long_lived)
+        println($"long lived tree of depth {max_depth} check: {long_check}")
     }
 }

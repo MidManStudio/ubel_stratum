@@ -1,0 +1,27 @@
+// tests/fixtures/err_arena_mid_result_by_value.ubl
+// D1 v2, first step (provisional, decision D10): a struct has reference semantics, so passing the tagged result of a
+// `@tier(mid)` call to a function by value passes the arena object itself. Only a borrow may cross the call
+// (`read(&n)`, see ok_arena_mid_result_borrow.ubl): rejected at the call.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+struct Node {
+    v: int
+}
+
+@tier(mid)
+fn mk(v: int) Node {
+    return Node { v = v }
+}
+
+@tier(mid)
+fn read(n: Node) int {
+    return n.v
+}
+
+@tier(mid)
+fn main() void {
+    with arena(1KB) {
+        let n = mk(3)
+        println(read(n))
+    }
+}
